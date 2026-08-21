@@ -33,13 +33,29 @@
 // （别名赋值无法可靠地静态识别），等于用一个真实的回归缺口换一条日志的干净。
 process.env.NODE_ENV ??= 'production';
 
-// 用 .then/catch 而非顶层 await import：cli.ts 是顶层 await 模块，其内部任何
-// process.exit（如首次运行引导里用户按 Esc 取消）都发生在模块执行中途。若此处
-// 顶层 await，进程退出时 main 的 await 仍未 settle，Node 24 打
-// 「Detected unsettled top-level await」警告。改为 .then 后本模块立即执行完、
-// 进程靠 cli 的事件循环存活，警告消除，且 cli 内 process.exit 的退出码不受影响。
-// 加载失败（语法错误/缺依赖）由 catch 打印并以码 1 退出。
-import('./cli.js').catch((e) => {
-  console.error(e);
-  process.exit(1);
+// 堆内存保障：长会话（50+ 轮、大 transcript）下 Node.js 默认堆上限（约 1.5GB）不够，
+// 会导致 FATAL ERROR: Ineffective mark-compacts near heap limit。
+// 检测当前堆上限，若低于目标值则用 execPath 重新拉起进程并附加 --max-old-space-size。
+// 无静态 import，走动态 import node:v8 和 node:child_process。
+const TARGET_HEAP_MB = Number(process.env.STEP_CODE_MAX_HEAP_MB) || 4096;
+
+Promise.all([import('node:v8'), import('node:child_process')]).then(([v8, cp]) => {
+  const currentHeapMB = v8.default.getHeapStatistics().heap_size_limit / 1024 / 1024;
+  if (currentHeapMB >= TARGET_HEAP_MB * 0.9 || process.env.STEP_CODE_HEAP_REEXEC) {
+    // 堆够大，或已经是 re-exec 后的进程 → 加载 cli
+    import('./cli.js').catch((e) => { console.error(e); process.exit(1); });
+    return;
+  }
+  // 堆不够，re-exec 加 --max-old-space-size
+  try {
+    cp.execFileSync(process.execPath, [`--max-old-space-size=${TARGET_HEAP_MB}`, ...process.argv.slice(1)], {
+      stdio: 'inherit',
+      env: { ...process.env, STEP_CODE_HEAP_REEXEC: '1' },
+    });
+    process.exit(0);
+  } catch (e: any) {
+    if (e?.status != null) process.exit(e.status);
+    console.error('heap re-exec failed:', e);
+    process.exit(1);
+  }
 });
