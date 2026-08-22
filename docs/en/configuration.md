@@ -43,6 +43,8 @@ There is only this one user-level file, with no project-level config.toml. The l
 |-----------|------|
 | Project-level skills | `<project>/.agents/skills/`, `<project>/.step-code/skills/` |
 | Project-level sub-agents | `<project>/.step-code/agents/` |
+| Project-level custom commands | `<project>/.step-code/commands/builtin/*.md`, see [Commands](./commands.md) |
+| Project-level review rules | `<project>/.step-code/review/rules/*.md`, see [Commands](./commands.md#review-rule-files) |
 | Project conventions | `<project>/AGENTS.md` and similar; see [How AGENTS.md works](./agents-md.md) |
 
 MCP server declarations (`mcp.json`) and `[[hooks]]` follow the same rule: only the user-level file is read.

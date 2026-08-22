@@ -49,6 +49,8 @@ All 26 commands (the table below has 27 rows, because `/skill reload` is listed 
 | `/reflect` | Review the full session history, distill reusable methodology, and print it; the output also enters the conversation stream, so you can say "remember item N" to have the agent save it to memory |
 | `/agents` | List sub-agent sessions spawned from the current session; select one to drill in and read back its history |
 | `/export-debug-zip` | Export a session debug bundle (session body + redacted config + runtime logs) |
+| `/context` | Show the current context window token breakdown: how much system prompt / tools / messages each take, with a component view (prefix/skills/AGENTS.md/memory). Read-only, runs instantly while busy |
+| `/review [--since <time>] [--commit <hash>] [dir]` | Code review without modifying files. With no argument, reviews `git diff HEAD`; `--since`/`--commit` specify a range; a trailing directory limits the scope. Built-in rules + project rules in `.step-code/review/rules/*.md` stack together. See [Commands](./commands.md#review-command) |
 | `/usage [--all]` | Show per-model token usage and cache hit rate for this session; `--all` aggregates every session in this working directory (including crash leftovers that have an event log but no snapshot). Read-only, runs instantly while busy |
 | `/resume [id]` (alias `/sessions`) | With no argument, opens the interactive session picker (main sessions only); with an id, resumes directly |
 | `/lang [zh\|en]` | With no argument, shows the current language; with an argument, switches the interface between Chinese and English and writes `language` back to `config.toml` |
@@ -97,7 +99,7 @@ This re-reads `config.toml` without restarting the process and without touching 
 |------|------|
 | Esc | See "The layered semantics of Esc" below |
 | Ctrl+C | During generation the input box takes priority: when the input box has content it only clears the input box and **does not interrupt the turn**; only when the input box is empty does it interrupt the current turn (to interrupt while you have a draft, press once to clear and once more to interrupt). When idle, the first press clears the input box and arms the "press again to quit" state (auto-cancelled after 5 seconds without a second press), and the second press quits |
-| Ctrl+B | Send all foreground bash tasks to the background: the process keeps running, the tool call returns a background task id immediately, and the final-state notification and status bar `bg:N` badge stay in sync. Foreground tasks are now registered at process start, so user-initiated detach and foreground-timeout auto-detach share the same release path; interrupting with Esc / Ctrl+C no longer kills a task that has already been detached |
+| Ctrl+B | Send all foreground tasks (bash or sub-agent) to the background: the process keeps running, the tool call returns a background task id immediately, and the final-state notification and status bar `bg:N` badge stay in sync. When busy with foreground tasks, a hint appears below the input box. Foreground tasks are now registered at process start, so user-initiated detach and foreground-timeout auto-detach share the same release path; interrupting with Esc / Ctrl+C no longer kills a task that has already been detached |
 | Ctrl+O | Open the full-screen viewer: recent expandable tool output and thinking content, grouped by turn and rendered in full; ↑↓ or `k`/`j` to scroll by line, PgUp/PgDn to page, ←/→ to switch turns, Home/`g` to jump to the top, End/`G` to jump to the bottom, Esc/`q`/Ctrl+O to close (output already committed to history stays a collapsed summary in the conversation area) |
 | Alt+V | Paste an image from the clipboard: appends the placeholder `[image #1 (width×height)]` at the end of the input box, which you can edit and delete like ordinary text and which expands into the image on submit. Available only when idle. On Windows it uses the built-in PowerShell; on macOS the built-in osascript; on Linux it needs `xclip` (X11) or `wl-clipboard` (Wayland) installed, and prints a note when they are missing |
 | ↑ / ↓ | With an empty input box, walks back through send history (bash-style draft stashing); when a menu is visible, they belong to menu selection; while busy with an empty input box, ↑ first recalls one entry from the tail of the send queue for editing |
@@ -276,6 +278,10 @@ step export-debug-zip [sessionId]       # export a debug bundle
 | `-V, --version` / `-h, --help` | Version number / help |
 
 Headless subcommands (they do not enter the TUI): `step sessions list`, `step sessions show <id>`, `step sessions delete <id>`, `step sessions rename <id> <name>`, `step doctor config [path]`, `step export-debug-zip [sessionId]`. Both `doctor config` and `export-debug-zip` run before the config is read, so you can validate and export a debug bundle even when the config is broken.
+
+## Custom commands and review rules
+
+Slash commands are not limited to built-ins. You can define your own commands by placing markdown files in project or user directories, and you can put rule files under `.step-code/review/rules/` for `/review` to load. For the full format and examples, see [Commands](./commands.md).
 
 ## Non-interactive mode
 
