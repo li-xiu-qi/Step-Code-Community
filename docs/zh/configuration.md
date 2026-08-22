@@ -37,6 +37,8 @@ provider = "stepfun"                 # 默认 stepfun（anthropic 协议）
 |-----------|------|
 | 项目级 skills | `<项目>/.agents/skills/`、`<项目>/.step-code/skills/` |
 | 项目级子 agent | `<项目>/.step-code/agents/` |
+| 项目级自定义命令 | `<项目>/.step-code/commands/builtin/*.md`，见[命令体系](./commands.md) |
+| 项目级 review 规则 | `<项目>/.step-code/review/rules/*.md`，见[命令体系](./commands.md#review-规则文件) |
 | 项目规范 | `<项目>/AGENTS.md` 等，见 [AGENTS.md 机制](./agents-md.md) |
 
 MCP server 声明（`mcp.json`）与 `[[hooks]]` 同理，只读用户级一份。

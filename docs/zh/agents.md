@@ -100,6 +100,29 @@ model: step35
 
 并行子 agent 额外受 `[subagent].max_concurrent`（默认 4）的并发上限约束——超出的排队等空槽。子 agent 因限流（429）失败时不白占槽位，会退回队尾延迟重试，TUI 会提示重排队次数。授权确认始终串行进行（多个审批不会交错弹出）。这些都由模型自动处理，你不需要显式控制。
 
+### 外部 agent 驱动
+
+`spawn_agent` 除了派生子 agent 处理子任务，还可以驱动外部 coding CLI 作为子 agent。只需在 `subagent_type` 指定外部类型，step-code 会 spawn 对应 CLI 子进程、解析其输出、收集结果回灌。
+
+| 类型 | 驱动方式 | 说明 |
+|------|----------|------|
+| `claude-code` | spawn Claude Code CLI | 解析 stream-json 输出 |
+| `codex` | spawn codex app-server | JSON-RPC 2.0 stdio 协议对话 |
+
+这些类型由内置注册表提供，无需额外配置。外部 agent 与内部子 agent 共享同 `spawn_agent` 工具，模型根据任务性质自动选择。
+
+### ACP 服务端模式
+
+`step --acp` 启动 ACP（Agent Client Protocol）JSON-RPC stdio 服务端，让 IDE 或外部工具通过 stdin/stdout 驱动 step-code。
+
+支持的方法：
+
+- `initialize` — 版本协商
+- `session/new` — 创建 agent 会话
+- `session/prompt` — 发送文本任务，跑一轮 agent
+- `session/cancel` — 取消当前 turn
+- `session/update` — 流式通知（server → client）
+
 ## 编排能力
 
 比单个子 agent 更强的编排：现在有两种方式，详见 [JS 动态工作流（`dynamic_workflow`）](#js-动态工作流dynamic_workflow)与 [子 agent（`spawn_agent`）](#子-agentspawn_agent)。

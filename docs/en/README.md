@@ -17,6 +17,7 @@ This guide follows the order you are likely to need things in. If you are new, s
 | [Installation](./installation.md) | Requirements, building from source, the global command, upgrading and uninstalling |
 | [Configuration](./configuration.md) | API keys, every config.toml field, multi-protocol providers, multiple providers and models, thinking, hooks, environment variables, data directories |
 | [Interactive use](./interactive.md) | TUI layout, slash commands, keybindings, the three permission tiers, plan mode, the model selector, plugin management |
+| [Commands](./commands.md) | Custom command format, three command types, review rule files, load locations and priority |
 | [Tools](./tools.md) | Parameters and behavioral limits of every built-in tool, parallel execution, result feedback, permission gating |
 | [Sub-agents and automation](./agents.md) | spawn_agent, parallel execution, dynamic_workflow, goals, cron, background tasks |
 | [Session management](./sessions.md) | Persistence, resuming, forking, compaction, review, non-interactive output |

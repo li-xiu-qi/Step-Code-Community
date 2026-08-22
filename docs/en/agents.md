@@ -105,6 +105,29 @@ The access surface of `spawn_agent` depends on the type: `explore` declares no s
 
 Parallel sub-agents are additionally bound by the concurrency limit of `[subagent].max_concurrent` (default 4); anything beyond it queues for a free slot. A sub-agent that fails due to rate limiting (429) does not hold a slot idle: it goes back to the end of the queue for a delayed retry, and the TUI reports the number of requeues. Permission confirmations always happen serially (multiple approvals never pop up interleaved). All of this is handled automatically by the model; you do not need to control it explicitly.
 
+### External agent drivers
+
+Beyond spawning internal sub-agents, `spawn_agent` can also drive external coding CLIs as sub-agents. Just specify the external type in `subagent_type`, and step-code will spawn the corresponding CLI subprocess, parse its output, and collect the result.
+
+| Type | Driver | Description |
+|------|--------|-------------|
+| `claude-code` | Spawn Claude Code CLI | Parse stream-json output |
+| `codex` | Spawn codex app-server | JSON-RPC 2.0 stdio protocol conversation |
+
+These types are provided by the built-in registry with no extra configuration. External agents share the same `spawn_agent` tool with internal sub-agents; the model picks the right one based on the task.
+
+### ACP server mode
+
+`step --acp` starts an ACP (Agent Client Protocol) JSON-RPC stdio server, allowing IDEs or external tools to drive step-code via stdin/stdout.
+
+Supported methods:
+
+- `initialize` — version negotiation
+- `session/new` — create an agent session
+- `session/prompt` — send a text task, run one agent turn
+- `session/cancel` — cancel the current turn
+- `session/update` — streaming notifications (server → client)
+
 ## Orchestration (spawn_agent and dynamic_workflow)
 
 Orchestration stronger than a single sub-agent is now handled by two tools:

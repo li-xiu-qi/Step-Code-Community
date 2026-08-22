@@ -44,6 +44,8 @@ pi-tui 终端界面：顶部欢迎框，中间是会话流（你的输入、模�
 | `/reflect` | 回顾完整会话历史，提炼可复用方法论并打印；产出同时注入会话流——可直接说「记住第 N 条」让 agent 沉淀到记忆目录 |
 | `/agents` | 列出当前会话派生的子 agent 会话，选中可下钻只读回看该子 agent 的历史 |
 | `/export-debug-zip` | 导出会话调试包（会话正文 + 脱敏配置 + 运行日志） |
+| `/context` | 显示当前上下文窗口 token 分解：system prompt / tools / messages 各占多少，分段展示 prefix/skills/AGENTS.md/memory 等组件。只读，忙碌时也可即时执行 |
+| `/review [--since <时间>] [--commit <hash>] [目录]` | 代码审查，不修改文件。无参审查 `git diff HEAD`；`--since`/`--commit` 指定范围；末尾跟目录限定审查范围。内置规则 + `.step-code/review/rules/*.md` 项目规则叠加。详细见[命令体系](./commands.md#review-命令) |
 | `/usage [--all]` | 按模型分组展示本会话的 token 用量与缓存命中率；`--all` 汇总本工作目录全部会话（含无快照的崩溃残留会话）。只读，忙碌时也可即时执行 |
 | `/resume [id]`（别名 `/sessions`） | 无参打开交互式会话选择器（只列主会话），带 id 直接恢复 |
 | `/lang [zh\|en]` | 无参显示当前语言，带参切换中英文界面并写回 `config.toml` 的 `language` |
@@ -92,7 +94,7 @@ pi-tui 终端界面：顶部欢迎框，中间是会话流（你的输入、模�
 |------|------|
 | Esc | 见下方「Esc 的分层语义」 |
 | Ctrl+C | 生成中输入框优先：输入框有内容时只清空输入框、**不中断回合**，输入框为空时才中断当前回合（要在有草稿时中断，先按一次清空再按一次）。空闲时第一次按清空输入框并进入「再按一次退出」预备态（5 秒无第二次自动取消），第二次按退出 |
-| Ctrl+B | 将当前全部前台 bash 任务转后台：进程继续运行，工具调用立即返回后台任务 id，终态通知与状态栏 `bg:N` 徽章同步可见。前台任务改为进程启动即登记，用户主动转后台与前台超时自动转后台走同一条释放通道；中断（Esc / Ctrl+C）不再误杀已转后台的进程 |
+| Ctrl+B | 将当前全部前台任务转后台（bash 命令或子 agent）：进程继续运行，工具调用立即返回后台任务 id，终态通知与状态栏 `bg:N` 徽章同步可见。busy 且有前台任务时，输入框下方会显示提示。前台任务改为进程启动即登记，用户主动转后台与前台超时自动转后台走同一条释放通道；中断（Esc / Ctrl+C）不再误杀已转后台的进程 |
 | Ctrl+O | 打开全屏查看器：最近的可展开工具输出与思考内容按轮次分组完整渲染，↑↓ 或 `k`/`j` 滚行、PgUp/PgDn 翻屏、←/→ 切轮、Home/`g` 跳顶、End/`G` 跳底、Esc/`q`/Ctrl+O 关闭（已定稿入历史的输出在会话区恒为折叠摘要） |
 | Alt+V | 从剪贴板粘贴图片：在输入框末尾追加占位符 `[image #1 (宽×高)]`，可像普通文字一样编辑删除，提交时展开为图片。仅空闲时可用。Windows 用系统自带 PowerShell；macOS 用系统自带 osascript；Linux 需装 `xclip`（X11）或 `wl-clipboard`（Wayland），未装时会提示 |
 | ↑ / ↓ | 输入框空时回溯发送历史（bash 式草稿暂存）；菜单可见时归菜单选择；忙碌且输入框为空时 ↑ 优先从发送队列尾部取回一条回填编辑 |
@@ -271,6 +273,10 @@ step export-debug-zip [sessionId]       # 导出调试包
 | `-V, --version` / `-h, --help` | 版本号 / 帮助 |
 
 无头子命令（不进 TUI）：`step sessions list`、`step sessions show <id>`、`step sessions delete <id>`、`step sessions rename <id> <名字>`、`step doctor config [path]`、`step export-debug-zip [sessionId]`。`doctor config` 与 `export-debug-zip` 都在读配置之前执行，配置坏了也能校验、也能导出调试包。
+
+## 自定义命令与 review 规则
+
+斜杠命令不限于内置。你可以在项目或用户目录放 markdown 文件来定义自己的命令，也可以在 `.step-code/review/rules/` 下放规则文件让 `/review` 加载。完整格式与示例见[命令体系](./commands.md)。
 
 ## 非交互模式
 
