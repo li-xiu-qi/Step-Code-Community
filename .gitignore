@@ -11,7 +11,9 @@ dist-branch/
 !.env.example
 
 # 运行时与本地数据
-.step-code/
+.step-code/*
+!.step-code/commands/
+!.step-code/commands/builtin/
 .codegraph/
 mcp-test-server/
 

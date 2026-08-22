@@ -28,6 +28,7 @@ import { BackgroundManager, type BackgroundTask } from '../agent/background/mana
 import { CronScheduler } from '../agent/cron/scheduler.js';
 import { CronJobStore } from '../agent/cron/store.js';
 import { offloadIfNeeded } from '../agent/outputCache.js';
+import { matchCommand, type CommandDefinition, loadCommands } from '../agent/commands/loader.js';
 import { assembleGoalInject, decideGoalTurn } from '../agent/goal/drive.js';
 import { GoalMode, type GoalChangeEvent } from '../agent/goal/mode.js';
 import { initTeam } from '../agent/team/mode.js';
@@ -58,6 +59,7 @@ import { TerminalTitleWriter } from '../chat/terminalTitle.js';
 import { aggregateModelUsage } from '../session/usageReport.js';
 import type { WireEvent } from '../agent/wirelog.js';
 import { renderSkillActivation, skillListing, type SkillRegistry } from '../skill/registry.js';
+import type { ReflectOptions } from '../agent/reflect.js';
 import { REFLECT_EMPTY_HISTORY, REFLECT_NO_FINDINGS, runReflect } from '../agent/reflect.js';
 import { expandPluginCommand, type PluginCommand } from '../plugin/manager.js';
 import { runPluginCommand } from '../chat/pluginCommand.js';
@@ -301,6 +303,8 @@ export class PiChat {
   private queue: string[] = [];
   private controller: AbortController | null = null;
   private streamBuffer: StreamBuffer;
+  /** 自定义命令注册表（.step-code/commands/*.md 加载）。 */
+  private readonly commands: CommandDefinition[] = [];
   /**
    * 压缩摘要的 provider 实例缓存（键为别名）。没有这层缓存时每轮 runTurn 与每次 /compact
    * 都会重解绑定并新建一个 SDK 客户端——迁移时漏了它，pi 版一直在做这份无谓工作。
@@ -535,6 +539,7 @@ export class PiChat {
     });
 
     this.streamBuffer = new StreamBuffer((ev) => this.applyEvent(ev));
+    this.commands.push(...loadCommands());
     // 后台任务管理器绑到当前会话。字段初始化只是给个占位实例（无 tasksDir、无回调），
     // 必须在这里绑一次——此前只有 /new、/fork、/resume 调 rebind，于是**启动会话**用的
     // 一直是那个占位实例：任务落盘目录为空、onSettle 没挂，任务跑完悄无声息（实测：
@@ -1287,7 +1292,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     // 粘贴占位符先还原为原文：pi-tui Editor 把大段粘贴折叠成标记，getText 拿到的是折叠形态，
     // 直接发出去模型只会看到「[pasted 120 lines]」这种标记而不是内容。
     const expanded = this.editor.getExpandedText();
-    const text = (expanded === '' ? raw : expanded).trim();
+    let text = (expanded === '' ? raw : expanded).trim();
     this.editor.setText('');
     if (text === '') return;
     // 浏览子 agent 历史时输入了新内容：先退出浏览恢复主会话视图，再正常发送。
@@ -1304,6 +1309,24 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     if (text.startsWith('/')) {
       await this.handleSlash(text);
       return;
+    }
+    // 自定义命令匹配（不区分自然语言或斜杠前缀）
+    const matchedCmd = matchCommand(text, this.commands);
+    if (matchedCmd !== null) {
+      if (matchedCmd.type === 'pipeline') {
+        this.push({ kind: 'note', text: `▶ ${matchedCmd.name}：${matchedCmd.description}` });
+        await this.runPipelineCommand(matchedCmd, text);
+        return;
+      }
+      if (matchedCmd.type === 'skill') {
+        this.push({ kind: 'note', text: `▶ ${matchedCmd.name}：${matchedCmd.description}` });
+        await this.runSkillCommand(matchedCmd, text);
+        return;
+      }
+      // prompt 类型：注入命令正文作为上下文
+      this.push({ kind: 'note', text: `▶ ${matchedCmd.name}：${matchedCmd.description}` });
+      const contextPrefix = `<command:${matchedCmd.name}>\n${matchedCmd.body}\n</command:${matchedCmd.name}>\n\n`;
+      text = contextPrefix + text;
     }
     if (this.busy) {
       // goal 自主推进期间的普通留言走 steer，不进队列：队列消息会作为独立一轮发出，
@@ -2128,12 +2151,84 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
   }
 
   /**
+   * Skill 命令分发器：激活命令中指定的 skill，注入 body + skill 内容。
+   */
+  private async runSkillCommand(cmd: CommandDefinition, _raw: string): Promise<void> {
+    // 收集要激活的 skill 名称：handler 字段或 skills 列表
+    const skillNames: string[] = [];
+    if (cmd.handler) skillNames.push(cmd.handler);
+    if (cmd.skills) skillNames.push(...cmd.skills);
+
+    if (skillNames.length === 0) {
+      // 无指定 skill，退化为 prompt 注入
+      const contextPrefix = `<command:${cmd.name}>\n${cmd.body}\n</command:${cmd.name}>\n\n`;
+      await this.runTurn(contextPrefix + cmd.description, { silent: true });
+      return;
+    }
+
+    // 依次激活每个 skill，注入 SKILL.md 内容
+    const parts: string[] = [];
+    if (cmd.body) parts.push(`<command:${cmd.name}>\n${cmd.body}\n</command:${cmd.name}>`);
+
+    for (const name of skillNames) {
+      const def = this.deps.skillsRef.current.skills.get(name);
+      if (def !== undefined) {
+        parts.push(renderSkillActivation(def, ''));
+      }
+    }
+
+    const injected = parts.join('\n\n');
+    await this.runTurn(injected, { silent: true });
+  }
+
+  /**
+   * Pipeline 命令分发器：按 handler 名查找处理器，传入命令定义和用户输入。
+   */
+  private async runPipelineCommand(cmd: CommandDefinition, _raw: string): Promise<void> {
+    switch (cmd.handler) {
+      case 'runReflect':
+        await this.runReflectWithCommand(cmd);
+        break;
+      default:
+        this.push({ kind: 'error', text: `未知的 pipeline 处理器: ${cmd.handler ?? '(none)'}` });
+    }
+  }
+
+  /**
+   * 从 pipeline 命令 body 中解析 map/reduce 两段 prompt。
+   * 约定：`## Reduce` 标题之前是 map prompt，之后是 reduce prompt。
+   * 无分隔时整段作为 map prompt，reduce 用默认。
+   */
+  private parsePipelineBody(body: string): { map: string; reduce?: string } {
+    const idx = body.search(/^## [Rr]educe/m);
+    if (idx < 0) return { map: body };
+    return {
+      map: body.slice(0, idx).trim(),
+      reduce: body.slice(idx).replace(/^## [Rr]educe\s*/m, '').trim(),
+    };
+  }
+
+  /**
    * /reflect：对本会话历史提炼方法论清单。
    *
    * 读的是不受压缩触碰的全量日志，旧会话或未落盘时回退内存历史。产出同步注入会话流，
    * 否则用户说「记住第 2 条」时模型上下文里没有这份清单，两段动作就断开了。
    */
   private async runReflectCommand(): Promise<void> {
+    // 查找已加载的 reflect 命令（如有），用其自定义 prompt
+    const reflectCmd = this.commands.find((c) => c.name === 'reflect');
+    if (reflectCmd) {
+      await this.runReflectWithCommand(reflectCmd);
+      return;
+    }
+    // 回退：无命令文件时用默认 prompt
+    await this.runReflectWithCommand(undefined);
+  }
+
+  /**
+   * 核心 reflect 执行逻辑：从命令定义（或默认）取 prompt，跑 map-reduce。
+   */
+  private async runReflectWithCommand(cmd: CommandDefinition | undefined): Promise<void> {
     if (this.busy) return;
     this.busy = true;
     this.activity.setBusy(true);
@@ -2143,7 +2238,20 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     try {
       const full = this.deps.store.loadFull(this.session.cwd, this.session.id);
       const source = full.length > 0 ? full : this.history;
-      const text = await runReflect(this.provider, source, {});
+      // 从命令定义取自定义 prompt 和参数
+      const reflectOpts: ReflectOptions = {};
+      if (cmd) {
+        const { map, reduce } = this.parsePipelineBody(cmd.body);
+        reflectOpts.mapPrompt = map;
+        if (reduce) reflectOpts.reducePrompt = reduce;
+        if (cmd.params?.['maxTokensPerSegment'] !== undefined) {
+          reflectOpts.maxTokensPerSegment = Number(cmd.params['maxTokensPerSegment']);
+        }
+        if (cmd.params?.['maxSegments'] !== undefined) {
+          reflectOpts.maxSegments = Number(cmd.params['maxSegments']);
+        }
+      }
+      const text = await runReflect(this.provider, source, reflectOpts);
       this.push({ kind: 'note', text: `基于 ${source.length} 条消息的回顾：\n\n${text}` });
       if (text !== REFLECT_EMPTY_HISTORY && text !== REFLECT_NO_FINDINGS) {
         this.history.push(

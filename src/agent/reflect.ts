@@ -22,15 +22,15 @@ export const REFLECT_EMPTY_HISTORY = '（没有可回顾的对话历史。）';
 /** 未提炼出经验的占位文案。同上。 */
 export const REFLECT_NO_FINDINGS = '（未从历史中提炼出可复用的方法论经验。）';
 
-/** map 阶段的系统提示词：取向定死为可复用方法论，排除一次性事实。 */
-const MAP_SYSTEM =
+/** map 阶段的默认系统提示词：取向定死为可复用方法论，排除一次性事实。 */
+const DEFAULT_MAP_SYSTEM =
   '你是一个协作复盘器。给你一段 AI 助手与用户的对话历史，请只提炼**可复用的通用方法论经验**，' +
   '维度包括：有效的协作/推进策略、踩过的坑与其信号、被推翻的判断（先怎么想、后来为何改、教训）、' +
   '下次遇到同类任务该怎么做。明确排除：本次任务的具体事实结论、代码细节、一次性的项目信息。' +
   '用简洁的中文条目输出；这一段没有值得沉淀的方法论时，只回复「（本段无）」。';
 
-/** reduce 阶段的系统提示词：合并去重排序。 */
-const REDUCE_SYSTEM =
+/** reduce 阶段的默认系统提示词：合并去重排序。 */
+const DEFAULT_REDUCE_SYSTEM =
   '你是一个经验汇总器。给你若干段从对话中提炼的方法论经验点，请合并语义重复项、' +
   '删掉一次性事实，按重要性/可迁移性从高到低排序，输出一份精炼的可复用方法论经验清单（中文条目）。';
 
@@ -43,6 +43,10 @@ export interface ReflectOptions {
   signal?: AbortSignal;
   /** 模型覆盖，省略用 provider 默认模型。 */
   model?: string;
+  /** 自定义 map 阶段 system prompt（省略用默认）。 */
+  mapPrompt?: string;
+  /** 自定义 reduce 阶段 system prompt（省略用默认）。 */
+  reducePrompt?: string;
 }
 
 const DEFAULT_MAX_TOKENS_PER_SEGMENT = 8000;
@@ -137,6 +141,9 @@ export async function runReflect(
   const segments = truncated ? allSegments.slice(0, maxSegments) : allSegments;
 
   // map：逐段提炼，携带「已发现经验」滚动摘要保持连贯（串行）。
+  const mapSystem = opts.mapPrompt ?? DEFAULT_MAP_SYSTEM;
+  const reduceSystem = opts.reducePrompt ?? DEFAULT_REDUCE_SYSTEM;
+
   const findings: string[] = [];
   for (const segment of segments) {
     const prior =
@@ -144,7 +151,7 @@ export async function runReflect(
         ? `已发现的经验（供参考，避免重复，可补充或修正）：\n${findings.join('\n')}\n\n`
         : '';
     const userContent = `${prior}本段对话历史：\n${serializeSegment(segment)}`;
-    const finding = await collectText(provider, MAP_SYSTEM, userContent, opts);
+    const finding = await collectText(provider, mapSystem, userContent, opts);
     if (!isEmptyFinding(finding)) findings.push(finding);
   }
 
@@ -156,7 +163,7 @@ export async function runReflect(
     result = findings[0]!;
   } else {
     const reduceInput = findings.map((f, i) => `【第 ${i + 1} 段】\n${f}`).join('\n\n');
-    const reduced = await collectText(provider, REDUCE_SYSTEM, reduceInput, opts);
+    const reduced = await collectText(provider, reduceSystem, reduceInput, opts);
     result = reduced === '' ? findings.join('\n\n') : reduced;
   }
 
