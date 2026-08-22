@@ -84,16 +84,48 @@ my-plugin/
 
 ### What a manifest can provide
 
-Beyond `name` / `version` / `description`, `plugin.json` can declare four kinds of capability, all of which repackage mechanisms that already exist:
+Beyond `name` / `version` / `description`, `plugin.json` can declare eight kinds of capability, all of which repackage mechanisms that already exist:
 
 | Field | Content | How it merges |
 |------|------|----------|
 | `skills` | Skill directory | Merged into skill loading at the highest precedence |
+| `agents` | Agent definition directory (`.md` files with YAML frontmatter) | Each file becomes a sub-agent type registered under `<pluginId>:<name>` |
 | `mcpServers` | MCP server config (stdio, same schema as mcp.json) | Merged into MCP loading; runtime names are force-prefixed with `<pluginId>:<server>` for isolation |
 | `hooks` | Hooks config (the same four fields as `[[hooks]]`) | Merged into the hooks engine; the command's working directory is fixed to the plugin root and `STEP_CODE_PLUGIN_ROOT` is injected |
 | `commands` | Markdown prompt templates (frontmatter can override name/description, the body supports `$ARGUMENTS`) | Registered as slash commands under the forced namespace `<pluginId>:<command-name>` |
+| `sessionStart` | Auto-activate a skill when a new session starts | The named skill's SKILL.md is injected into session context on startup |
+| `systemPrompt` | Inline system prompt text (or file path via `systemPromptPath`) | Appended to the system prompt section on every turn |
+| `skillInstructions` | Instructions appended to every skill listing | Gives the model context on how to use the skills provided by this plugin |
 
 Executable fields (tools/apps/bootstrap and similar) are recognized and ignored: a plugin does not create new capability types, it only packages and distributes existing ones. All relative paths are validated to stay inside the plugin root, and an MCP `command` must be either a PATH command or a `./`-relative path; absolute paths are rejected.
+
+### Example manifest
+
+```json
+{
+  "name": "step-code-plan",
+  "version": "1.0.0",
+  "description": "Planning workflow: plan agent + review rules",
+  "agents": ["./agents/"],
+  "sessionStart": { "skill": "step-code-skill-governance" },
+  "systemPrompt": "You are a planning specialist. Break down tasks into executable steps before writing any code.",
+  "commands": ["./commands/audit.md"],
+  "mcpServers": {
+    "datasource": {
+      "command": "node",
+      "args": ["./bin/datasource.mjs"]
+    }
+  }
+}
+```
+
+### When to use a plugin
+
+A plugin is the right unit when you want to ship a **coherent capability bundle** — skills + specialized agents + tools + commands that work together — and you want it installable and toggleable as a single unit.
+
+- You want to distribute a team convention (skills + agents + review rules): build a plugin
+- You want to package a third-party tool with its docs and commands: build a plugin
+- You just need a single skill or command: drop it in `.step-code/skills/` or `.step-code/commands/` directly
 
 ### Installing and managing
 
@@ -132,6 +164,6 @@ MCP tools are named `mcp__<server>__<tool>` and are not part of the initial tool
 
 ## Which one to choose
 
-- You want to reuse a set of prompts or a process: write a skill, it is the simplest option
-- You want to package skills and distribute them to a team: build a plugin
-- You need to reach an external system (a database, a third-party API, an internal service): write or connect an MCP server
+- You want to define a reusable process or role: write a **skill** (simplest) or an **agent** (specialized sub-agent)
+- You want to package a coherent bundle (skills + agents + tools + commands): build a **plugin**
+- You need to reach an external system (a database, a third-party API, an internal service): write or connect an **MCP server**

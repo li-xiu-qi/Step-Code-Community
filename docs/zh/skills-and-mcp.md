@@ -79,16 +79,48 @@ my-plugin/
 
 ### 清单能提供什么
 
-`plugin.json` 在 `name` / `version` / `description` 之外，可声明四类能力，全部是对已有机制的打包复用：
+`plugin.json` 在 `name` / `version` / `description` 之外，可声明八类能力，全部是对已有机制的打包复用：
 
 | 字段 | 内容 | 合流方式 |
 |------|------|----------|
 | `skills` | skill 目录 | 并入 skill 加载，优先级最高 |
+| `agents` | agent 定义目录（`.md` 文件，YAML frontmatter） | 每个文件变成一个子 agent 类型，注册名为 `<插件id>:<名称>` |
 | `mcpServers` | MCP server 配置（stdio，同 mcp.json schema） | 并入 MCP 加载，运行时名强制加 `<插件id>:<server>` 前缀隔离 |
 | `hooks` | hooks 配置（同 `[[hooks]]` 四字段） | 并入 hooks 引擎，command 的工作目录固定为插件根，注入 `STEP_CODE_PLUGIN_ROOT` |
 | `commands` | markdown 提示词模板（frontmatter 可覆盖 name/description，body 支持 `$ARGUMENTS`） | 注册为斜杠命令，强制命名空间 `<插件id>:<命令名>` |
+| `sessionStart` | 新会话启动时自动激活某个 skill | 指定 skill 的 SKILL.md 在会话启动时注入上下文 |
+| `systemPrompt` | 追加到 system prompt 的正文（或通过 `systemPromptPath` 指定文件路径） | 每轮对话的 system prompt 尾部追加此内容 |
+| `skillInstructions` | 追加到每个 skill 描述的通用指引 | 给模型提供使用该插件 skill 的上下文说明 |
 
 执行型字段（tools/apps/bootstrap 等）会被识别并忽略——插件不创造新能力类型，只打包分发已有能力。所有相对路径都做根内校验，MCP 的 command 必须是 PATH 命令或 `./` 相对路径，拒绝绝对路径。
+
+### 清单示例
+
+```json
+{
+  "name": "step-code-plan",
+  "version": "1.0.0",
+  "description": "规划工作流：plan agent + 审查规则",
+  "agents": ["./agents/"],
+  "sessionStart": { "skill": "step-code-skill-governance" },
+  "systemPrompt": "你是一个规划专家。在写任何代码之前，先把任务拆成可执行步骤。",
+  "commands": ["./commands/audit.md"],
+  "mcpServers": {
+    "datasource": {
+      "command": "node",
+      "args": ["./bin/datasource.mjs"]
+    }
+  }
+}
+```
+
+### 什么时候用插件
+
+插件适合打包**一组协同工作的能力**——skills + 专用 agent + 工具 + 命令——作为一个可安装、可开关的单元。
+
+- 要分发一套团队规范（skills + agents + 审查规则）：做成插件
+- 要打包第三方工具连同它的文档和命令：做成插件
+- 只需要一个 skill 或命令：直接放进 `.step-code/skills/` 或 `.step-code/commands/`
 
 ### 安装与管理
 
@@ -127,6 +159,6 @@ MCP 工具命名为 `mcp__<server>__<tool>`，默认不进初始工具列表—�
 
 ## 怎么选
 
-- 一套提示词/流程想复用：写技能，最简单
-- 技能要打包分发给团队：做成插件
-- 要接外部系统（数据库、第三方 API、内部服务）：写或接 MCP server
+- 要定义一个可复用的流程或角色：写 **skill**（最简单）或 **agent**（专用子 agent）
+- 要打包一组协同工作的能力（skills + agents + tools + commands）：做成 **插件**
+- 要接外部系统（数据库、第三方 API、内部服务）：写或接 **MCP server**
