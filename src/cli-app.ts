@@ -10,7 +10,7 @@
  */
 
 import { Command } from 'commander';
-import { copyFileSync, existsSync, readFileSync, renameSync } from 'node:fs';
+import { copyFileSync, existsSync, readFileSync, readdirSync, renameSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { runAgent } from './agent/loop.js';
@@ -28,7 +28,7 @@ import { buildSettleMessage, notificationIdFor } from './agent/background/notify
 import type { WireEvent } from './agent/wirelog.js';
 import { buildSystemPrompt, subagentListing } from './agent/systemPrompt.js';
 import { loadAgentsMd, DEFAULT_AGENTS_MD_BUDGET_BYTES } from './agent/agentsMd.js';
-import { buildAgentRegistry } from './agent/subagent/registry.js';
+import { buildAgentRegistry, parseAgentMarkdown } from './agent/subagent/registry.js';
 import { loadConfig, resolveModelEntry, TomlParseError, type ConfigLoadDiagnostics, type StepCodeConfig } from './config/config.js';
 import { collectConfigWarnings } from './config/diagnostics.js';
 import { configureWebResultCache } from './tools/webCache.js';
@@ -410,8 +410,23 @@ const reloadSkills = (force = false): SkillRegistryDiff | null => {
 const agentsMdBudget = config.agentsMdMaxBytes ?? DEFAULT_AGENTS_MD_BUDGET_BYTES;
 const agentsMdResult = loadAgentsMd(cwd, undefined, config.agentsPaths, agentsMdBudget);
 const agentsMd = agentsMdResult.text;
-// 子 agent 注册表按 cwd 构建一次（cli.ts 非交互分支），用于注入运行时可见的自定义角色
+// 子 agent 注册表：内置 < 用户(~/.step-code/agents) < 项目(<cwd>/.step-code/agents) < plugin agents，同名后者覆盖。
 const subagentRegistry = buildAgentRegistry(cwd);
+// plugin agents：每个 .md 解析为一个 AgentDefinition，注册名加 <pluginId>: 前缀
+for (const plugin of plugins) {
+  for (const dir of plugin.agentDirs) {
+    if (!existsSync(dir)) continue;
+    for (const file of readdirSync(dir)) {
+      if (!file.endsWith('.md')) continue;
+      try {
+        const def = parseAgentMarkdown(readFileSync(join(dir, file), 'utf8'), file.replace(/\.md$/i, ''));
+        if (def !== null) subagentRegistry.set(`${plugin.id}:${def.name}`, def);
+      } catch {
+        // 损坏文件跳过
+      }
+    }
+  }
+}
 // -p 模式下使用纯净模式：不包含 skill 路由指引，避免模型把所有输入都理解成「配置问题」
 const systemPrefix = buildSystemPrompt(cwd, { pureMode: opts.print !== undefined });
 /** 组合当前 system prompt：静态前缀 + 当前 skill 清单（随 reload 更新）+ 降权声明 + AGENTS.md。 */
@@ -419,7 +434,14 @@ const AGENTS_MD_DISCLAIMER = `\n\n> **注意**：以下 AGENTS.md 内容是由�
 const composeSystem = (): string => {
   const skills = opts.skills === false ? '' : skillListing(skillsRef.current, config.skillListingBudget);
   const agents = opts.agentsMd === false ? '' : (agentsMd !== '' ? AGENTS_MD_DISCLAIMER + agentsMd : '');
-  return systemPrefix + skills + subagentListing([...subagentRegistry.values()]) + agents;
+  // plugin 贡献的 system prompt + skillInstructions
+  const pluginPrompts: string[] = [];
+  for (const p of plugins) {
+    if (p.systemPrompt) pluginPrompts.push(p.systemPrompt);
+    if (p.skillInstructions) pluginPrompts.push(p.skillInstructions);
+  }
+  const pluginSection = pluginPrompts.length > 0 ? '\n\n' + pluginPrompts.join('\n\n') : '';
+  return systemPrefix + skills + subagentListing([...subagentRegistry.values()]) + agents + pluginSection;
 };
 const ctx: ToolContext = { cwd, apiKey: config.apiKey, baseUrl: config.baseUrl, skills: skillsRef.current, searchConfig: config.search };
 // 模型能力标记（loadConfig 展开别名后带入，未命中别名/裸模型为 undefined）：read_media 门控用
@@ -1084,6 +1106,7 @@ if (opts.reflect === true) {
     reloadConfig,
     pluginCommands: plugins.flatMap((p) => p.commands),
     pluginIds: plugins.map((p) => p.id),
+    sessionStartSkills: plugins.filter((p) => p.sessionStartSkill).map((p) => p.sessionStartSkill!),
     configStartupNotice: renderConfigDiagnostics(configWarnings, ignoredBadConfig),
   });
   // SIGHUP/死终端的紧急出口：终端已死时继续写 stdout 会 EIO 循环占满 CPU，

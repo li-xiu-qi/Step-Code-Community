@@ -8,8 +8,9 @@ import type { McpServerConfig } from '../mcp/manager.js';
 
 /**
  * step-code plugin：plugin = 目录 + `.step-code-plugin/plugin.json`，纯声明式资源包，
- * 宿主从不执行插件代码。能力面：skills + MCP（mcpServers）+ hooks + markdown 命令（commands），
- * 全部复用各子系统已有机制合流；显式拒绝 tools/apps/inject/configFile/bootstrap 等执行型字段。
+ * 宿主从不执行插件代码。能力面：skills + agents + MCP（mcpServers）+ hooks + markdown 命令（commands）
+ * + sessionStart + systemPrompt + skillInstructions；全部复用各子系统已有机制合流；
+ * 显式拒绝 tools/apps/inject/configFile/bootstrap 等执行型字段。
  * 路径安全：manifest 内相对路径强制 ./ 开头、realpath 后必须仍在 plugin root 内；
  * MCP stdio command 必须是 PATH 命令或 ./ 相对路径，拒绝绝对路径。
  */
@@ -22,12 +23,27 @@ export interface PluginHookManifestEntry {
   timeout?: number;
 }
 
+/** sessionStart：新会话启动时自动激活指定的 skill。 */
+export interface PluginSessionStartManifest {
+  skill: string;
+}
+
 export interface PluginManifest {
   name: string;
   version?: string;
   description?: string;
   /** skill 目录相对路径（./ 开头）。 */
   skills?: string[];
+  /** agent 目录相对路径（./ 开头）。每个 .md 文件解析为一个 AgentDefinition。 */
+  agents?: string[];
+  /** 会话启动时自动激活的 skill 名。 */
+  sessionStart?: PluginSessionStartManifest;
+  /** 注入 system prompt 的正文内容。 */
+  systemPrompt?: string;
+  /** 注入 system prompt 的文件路径（./ 开头，优先级高于 inline systemPrompt）。 */
+  systemPromptPath?: string;
+  /** 附加到所有 skill 说明的通用指引。 */
+  skillInstructions?: string;
   /** MCP server 配置表（复用全局 mcp.json 的 mcpServers 形态，stdio）。 */
   mcpServers?: Record<string, McpServerConfig>;
   /** hooks（复用 [[hooks]] 四字段 event/matcher/command/timeout）。 */
@@ -64,6 +80,14 @@ export interface LoadedPlugin {
   manifest: PluginManifest;
   /** 解析后的 skill 目录绝对路径（已校验在 root 内）。 */
   skillDirs: string[];
+  /** 解析后的 agent 目录绝对路径（已校验在 root 内）。 */
+  agentDirs: string[];
+  /** 会话启动时自动激活的 skill 名。 */
+  sessionStartSkill?: string;
+  /** system prompt 正文（systemPromptPath 已读取；无则为 undefined）。 */
+  systemPrompt?: string;
+  /** 附加到所有 skill 的通用指引。 */
+  skillInstructions?: string;
   /** 解析后的 MCP server 配置（key 已加 <pluginId>:<serverName> 前缀，command 已校验）。 */
   mcpServers: Record<string, McpServerConfig>;
   /** 解析后的 hooks（matcher 已编译；cwd 固定插件根，env 注入 STEP_CODE_PLUGIN_ROOT）。 */
@@ -109,6 +133,24 @@ export function parsePluginManifest(content: string): PluginManifest | null {
   }
   if (Array.isArray(obj['commands'])) {
     manifest.commands = obj['commands'].filter((s): s is string => typeof s === 'string');
+  }
+  if (Array.isArray(obj['agents'])) {
+    manifest.agents = obj['agents'].filter((s): s is string => typeof s === 'string');
+  }
+  if (typeof obj['sessionStart'] === 'object' && obj['sessionStart'] !== null && !Array.isArray(obj['sessionStart'])) {
+    const ss = obj['sessionStart'] as Record<string, unknown>;
+    if (typeof ss['skill'] === 'string' && ss['skill'].trim().length > 0) {
+      manifest.sessionStart = { skill: ss['skill'].trim() };
+    }
+  }
+  if (typeof obj['systemPrompt'] === 'string' && obj['systemPrompt'].trim().length > 0) {
+    manifest.systemPrompt = obj['systemPrompt'].trim();
+  }
+  if (typeof obj['systemPromptPath'] === 'string' && obj['systemPromptPath'].trim().length > 0) {
+    manifest.systemPromptPath = obj['systemPromptPath'].trim();
+  }
+  if (typeof obj['skillInstructions'] === 'string' && obj['skillInstructions'].trim().length > 0) {
+    manifest.skillInstructions = obj['skillInstructions'].trim();
   }
   return manifest;
 }
@@ -244,10 +286,35 @@ export function loadPlugin(root: string): LoadedPlugin | null {
     const abs = resolvePathInRoot(root, rel);
     if (abs !== null) skillDirs.push(abs);
   }
-  // manifest 没写 skills 但根目录有 SKILL.md → 把 plugin 根本身当一个 skill
   if (skillDirs.length === 0 && existsSync(join(root, 'SKILL.md'))) {
     skillDirs.push(realpathSync(root));
   }
+
+  // agents：解析每个 agents 目录路径（注册名在合流时加 <pluginId>: 前缀）
+  const agentDirs: string[] = [];
+  for (const rel of manifest.agents ?? []) {
+    const abs = resolvePathInRoot(root, rel);
+    if (abs !== null) agentDirs.push(abs);
+  }
+
+  // sessionStart：验证 skill 名
+  const sessionStartSkill = manifest.sessionStart?.skill;
+
+  // systemPrompt：inline 优先；systemPromptPath 读取文件覆盖
+  let systemPrompt = manifest.systemPrompt;
+  if (manifest.systemPromptPath) {
+    const spPath = resolvePathInRoot(root, manifest.systemPromptPath);
+    if (spPath) {
+      try {
+        systemPrompt = readFileSync(spPath, 'utf8').trim();
+      } catch {
+        // 文件读取失败，退回到 inline 版
+      }
+    }
+  }
+
+  // skillInstructions：透传
+  const skillInstructions = manifest.skillInstructions;
 
   // MCP：服务名强制 <pluginId>:<serverName> 前缀隔离（杜绝跨插件/全局同名冲突）
   const mcpServers: Record<string, McpServerConfig> = {};
@@ -284,7 +351,7 @@ export function loadPlugin(root: string): LoadedPlugin | null {
     }
   }
 
-  return { id, root, manifest, skillDirs, mcpServers, hooks, commands, ignoredFields };
+  return { id, root, manifest, skillDirs, agentDirs, sessionStartSkill, systemPrompt, skillInstructions, mcpServers, hooks, commands, ignoredFields };
 }
 
 /** 默认 plugin 目录。 */
