@@ -75,6 +75,7 @@ const zh = {
   'input.ctrlS.nothing': '队列与输入框都是空的，没有可插队的内容',
   'input.bangHint': 'bash 模式：命令在本地执行，输出会注入上下文',
   'input.exitPrimed': '  · 再按一次 Ctrl+C 退出',
+  'input.ctrlB.hint': '  · Ctrl+B 把当前任务转到后台（任务继续跑，完成时通知）',
 
   // --- 欢迎框（WelcomeBox）---
   'welcome.title': 'Welcome to Step Code!',
@@ -669,6 +670,7 @@ const zh = {
   'cmd.reflect': '回顾完整对话历史，沉淀可复用的方法论经验（打印到终端）',
   'cmd.export-debug-zip': '导出调试 zip（发给我们排查 bug，请勿公开分享）',
   'cmd.usage': '查看本会话的 token 与缓存命中统计：/usage（加 --all 汇总本目录全部会话）',
+  'cmd.context': '查看当前上下文窗口的 token 分解（system prompt / tools / messages 各占多少）',
   'cmd.sessions': '列出本工作目录下的历史会话',
   'cmd.resume': '切换到指定历史会话：/resume <id>（不带 id 列出可选会话）',
   'cmd.rename': '给当前会话改名：/rename（留空清除自定义名）',
@@ -764,6 +766,8 @@ const zh = {
   'turn.thinkOnlyInjectAnswer': '你的思考已消耗全部输出预算。请停止继续推理，基于已有的分析直接给出当前最优的最终答案，不要再重复验证相同的内容。',
   'turn.thinkOnlyRecover': '思考预算耗尽，正在尝试自动恢复（基于前序分析直接作答）…',
   'turn.thinkOnlyRecoverRetry': '思考恢复重试中（已注入直接回答提示）',
+  'turn.thinkOnlyFinalInject': '【强制】你必须立即输出一段文字回复。不要使用 thinking 块，不要继续推理。基于你之前的分析，直接给出当前最优的最终答案。如果信息不足，给出你能给出的最佳判断。',
+  'turn.thinkOnlyFinalRecover': '思考恢复失败，正在最终强制恢复（关闭思考 + 强制输出）…',
   'turn.subagentRequeue': '子 agent 请求被限流（429），{delay}ms 后重排队尾重试（第 {attempt}/{max} 次）',
   // --- 用户可配置 hooks 的执行可见性（开始/阻断/超时/异常，经 notice 条目显示）---
   'hook.notice.start': '[hook] {event} 执行：{command}',
@@ -870,6 +874,7 @@ const en: Record<keyof typeof zh, string> = {
   'input.ctrlS.nothing': 'Queue and input are both empty; nothing to steer',
   'input.bangHint': 'bash mode: runs locally, output is injected into context',
   'input.exitPrimed': '  · Press Ctrl+C again to exit',
+  'input.ctrlB.hint': '  · Ctrl+B to move the current task to background (keeps running, notifies on completion)',
 
   'welcome.title': 'Welcome to Step Code!',
   'welcome.helpHint': 'Type /help to see commands',
@@ -1423,6 +1428,7 @@ const en: Record<keyof typeof zh, string> = {
   'cmd.reflect': 'Review full conversation history and distill reusable methodology (prints to terminal)',
   'cmd.export-debug-zip': 'Export a debug zip (send to us for troubleshooting; do not share publicly)',
   'cmd.usage': 'Show token and cache-hit stats for this session: /usage (--all aggregates every session in this directory)',
+  'cmd.context': 'Show current context window token breakdown (system prompt / tools / messages)',
   'cmd.sessions': 'List past sessions in this working directory',
   'cmd.resume': 'Switch to a past session: /resume <id> (no id: list sessions)',
   'cmd.rename': 'Rename the current session: /rename (empty to clear custom name)',
@@ -1516,6 +1522,8 @@ const en: Record<keyof typeof zh, string> = {
   'turn.thinkOnlyInjectAnswer': 'Your thinking has consumed the entire output budget. Stop reasoning further and give your current best final answer directly based on the analysis already produced, without re-validating the same content again.',
   'turn.thinkOnlyRecover': 'Thinking budget exhausted; attempting auto-recovery (answer directly from prior analysis)…',
   'turn.thinkOnlyRecoverRetry': 'Retrying think-only recovery (direct-answer prompt injected)',
+  'turn.thinkOnlyFinalInject': '[MANDATORY] You must output a text response immediately. Do NOT use thinking blocks. Do NOT continue reasoning. Based on your prior analysis, give your current best final answer directly. If information is insufficient, give the best judgment you can.',
+  'turn.thinkOnlyFinalRecover': 'Think-only recovery failed; attempting final forced recovery (thinking disabled + mandatory output)…',
   'turn.subagentRequeue': 'Subagent request was rate limited (429); requeued to the tail, retrying in {delay}ms (attempt {attempt}/{max})',
   'hook.notice.start': '[hook] {event} running: {command}',
   'hook.notice.blocked': '[hook] {event} blocked: {reason}',

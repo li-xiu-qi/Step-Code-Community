@@ -99,6 +99,7 @@ import { countHistoryImages, extractImageContent, ImageAttachmentStore } from '.
 import { askLine, modelItems, modelTabs, showPicker, sessionItems, thinkItems, type PickerOverlay } from './pickers.js';
 import { StreamBuffer } from '../chat/streamBuffer.js';
 import { appendText, settleThinking } from '../chat/streamReducer.js';
+import { generateContextReport } from '../chat/contextReport.js';
 import { TableHoldback } from '../chat/tableHoldback.js';
 import { composeSystem } from '../chat/composeSystem.js';
 import { InlineApproval, PlanApproval, QuestionPrompt, type ApprovalOutcome, type PlanOutcome } from './prompts.js';
@@ -461,7 +462,12 @@ export class PiChat {
     this.editor.footerText = () => {
       // bash 模式提示：只要输入以 ! 开头就显示（busy 时也显示——此时按 Enter 是排队）
       if (this.editor.getText().startsWith('!')) return t('input.bangHint');
-      if (this.busy) return '';
+      // busy 态下，若存在前台任务（子 agent 或 bash 前台），提示 Ctrl+B 可转后台。
+      // 不阻塞时（busy 但无前台任务，如 provider 流式输出）不显示——Ctrl+B 没东西可转。
+      if (this.busy) {
+        if (this.background.listForeground().length > 0) return t('input.ctrlB.hint');
+        return '';
+      }
       if (this.backtrackPrimed) return t('input.backtrackPrimed');
       if (this.exitPrimed) return t('input.exitPrimed');
       return '';
@@ -1520,6 +1526,10 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
         this.showUsage(args === '--all');
         return;
 
+      case 'context':
+        this.push({ kind: 'note', text: this.buildContextReport() });
+        return;
+
       case 'tasks':
         // 无参进交互弹层；带参（如 /tasks list）退化为纯文本，脚本化场景仍可用
         if (args.trim() === '') this.openTasksOverlay();
@@ -2369,6 +2379,29 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       }
     } catch (e) {
       this.push({ kind: 'error', text: `读取用量失败：${(e as Error).message}` });
+    }
+  }
+
+  /** `/context` 命令：显示当前上下文窗口的 token 分解。 */
+  private buildContextReport(): string {
+    try {
+      const skills = skillListing(this.deps.skillsRef.current, this.deps.config.skillListingBudget);
+      const subagents = subagentListing([...this.deps.subagentRegistry.values()]);
+      const memory = this.deps.config.memory?.enabled === true
+        ? memorySection(scanMemory(this.deps.ctx.cwd))
+        : '';
+      return generateContextReport({
+        prefix: this.deps.systemPrefix,
+        skills,
+        subagents,
+        agentsMd: this.deps.agentsMd,
+        memory,
+        sessionContext: this.sessionContext,
+        messages: this.history,
+        maxContextSize: this.maxContextSize,
+      });
+    } catch (e) {
+      return `上下文分析失败：${(e as Error).message}`;
     }
   }
 

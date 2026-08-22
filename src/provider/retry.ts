@@ -252,6 +252,7 @@ export interface RetryOptions {
 
 /** 默认退避参数，供流式循环手动重试时复用（保持单一真相）。 */
 export const RETRY_MAX_ATTEMPTS = 3;
+export const RETRY_MAX_429_ATTEMPTS = 5; // 429 限流不是网络故障，多给几次重试机会
 export const RETRY_BASE_MS = 300;
 export const RETRY_MAX_MS = 5000;
 

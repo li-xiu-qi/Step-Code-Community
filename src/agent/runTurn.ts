@@ -12,6 +12,7 @@ import {
   retryAfterMs,
   summarizeError,
   RETRY_MAX_ATTEMPTS,
+  RETRY_MAX_429_ATTEMPTS,
 } from '../provider/retry.js';
 import type { ChatProvider, ThinkingParam } from '../provider/types.js';
 import { createThinkingLoopDetector } from './thinkingLoop.js';
@@ -251,6 +252,8 @@ export async function* runTurn(
   let retriedLoop = false;
   let loopRetryMessages: typeof messages | undefined;
   let loopDetector = createThinkingLoopDetector();
+  // 最终兜底：think-only 恢复（low 档）也失败后，关闭思考（thinking: null）+ 强制输出提示，最后试一次。
+  let retriedFinal = false;
   for (let attempt = 1; attempt <= RETRY_MAX_ATTEMPTS; attempt++) {
     /**
      * 本次尝试是否已流出**正文**（text_delta）。它是重试禁令的唯一判据：
@@ -409,14 +412,15 @@ export async function* runTurn(
                     { kind: 'user' },
                   ),
                 );
-                yield { type: 'thinking_recover', retried: false };
+                // think-only 恢复：用 low 档位（而非原始档位）——「直接回答」提示 + 最低思考预算双管齐下，
+                // 比只用提示但保留高档位思考的恢复率高得多（实测 high 档即使被告知"别想了"仍会想满）。
                 const recoverStream = provider.stream({
                   system,
                   tools,
                   messages: toWire(messages, wireOpts),
                   signal,
                   model,
-                  thinking,
+                  thinking: downgradeThinking,
                 });
                 let recoverThinkingIndex: number | undefined;
                 for await (const event of recoverStream) {
@@ -440,13 +444,45 @@ export async function* runTurn(
                 // 中断：thinking 与注入消息已落盘（中止前轮已落定），正文未成不落盘，直接 aborted。
                 if (signal?.aborted) return { stopReason: 'aborted' };
                 const recoverMsg = await recoverStream.finalMessage();
-                // 注入恢复后仍耗尽：不再重试，退到提示路径。thinking 与注入消息已落盘，
-                // 恢复轮次的空 thinking 不落盘（与正常路径「空响应不落盘」一致）。
-                if (isEmptyResponse(recoverMsg) && recoverMsg.stop_reason === 'max_tokens') {
-                  final = recoverMsg;
-                  skipFinalPush = true; // 恢复轮次无正文，且 thinking/注入已落盘，跳过统一 push
-                  break;
+                // 注入恢复后仍耗尽：最终兜底——关闭思考（thinking: null）+ 强制输出提示，
+                // 这是最后的手段。类似网络断开重连：策略不同就再试一次。
+                if (!retriedFinal) {
+                  retriedFinal = true;
+                  messages.push(
+                    stored(
+                      { role: 'user', content: [{ type: 'text', text: t('turn.thinkOnlyFinalInject') }] },
+                      { kind: 'user' },
+                    ),
+                  );
+                  yield { type: 'thinking_recover', retried: true };
+                  const finalStream = provider.stream({
+                    system,
+                    tools,
+                    messages: toWire(messages, wireOpts),
+                    signal,
+                    model,
+                    thinking: null, // 关闭思考：不发 effort 参数，给正文最大空间
+                  });
+                  for await (const event of finalStream) {
+                    if (signal?.aborted) break;
+                    if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+                      emittedText = true;
+                      yield { type: 'text', text: event.delta.text };
+                    }
+                  }
+                  if (signal?.aborted) return { stopReason: 'aborted' };
+                  const finalMsg = await finalStream.finalMessage();
+                  if (!isEmptyResponse(finalMsg)) {
+                    messages.push(stored({ role: 'assistant', content: finalMsg.content }, { kind: 'assistant' }));
+                    final = finalMsg;
+                    skipFinalPush = true;
+                    break;
+                  }
                 }
+                // 最终兜底也失败：退到提示路径
+                final = recoverMsg;
+                skipFinalPush = true;
+                break;
                 // 注入恢复成功：恢复正文即时落盘为独立 assistant 消息（thinking 已单独落盘，
                 // 二者不合并——保留「前轮只思考、后轮直接作答」的轨迹分界，供 resume 与排查）。
                 messages.push(stored({ role: 'assistant', content: recoverMsg.content }, { kind: 'assistant' }));
@@ -461,7 +497,48 @@ export async function* runTurn(
             final = retryMsg;
             break;
           }
-          // 不可降级（已是 low / off / 已重试过）：直接落 final，走 thinkingExhausted 提示路径
+          // 不可降级（已是 low）：走最终兜底——thinking: null + 强制输出提示。
+          // thinking 为 null（off）时跳过，因为 null 与原始请求相同，重试无意义。
+          if (thinking !== null && thinking !== undefined && !retriedFinal) {
+            retriedFinal = true;
+            const thinkingBlocks = msg.content.filter(
+              (b: Anthropic.ContentBlock): b is Anthropic.ThinkingBlock => b.type === 'thinking',
+            );
+            if (thinkingBlocks.length > 0) {
+              messages.push(stored({ role: 'assistant', content: thinkingBlocks }, { kind: 'assistant' }));
+            }
+            messages.push(
+              stored(
+                { role: 'user', content: [{ type: 'text', text: t('turn.thinkOnlyFinalInject') }] },
+                { kind: 'user' },
+              ),
+            );
+            yield { type: 'thinking_recover', retried: true };
+            const finalStream = provider.stream({
+              system,
+              tools,
+              messages: toWire(messages, wireOpts),
+              signal,
+              model,
+              thinking: null,
+            });
+            for await (const event of finalStream) {
+              if (signal?.aborted) break;
+              if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+                emittedText = true;
+                yield { type: 'text', text: event.delta.text };
+              }
+            }
+            if (signal?.aborted) return { stopReason: 'aborted' };
+            const finalMsg = await finalStream.finalMessage();
+            if (!isEmptyResponse(finalMsg)) {
+              messages.push(stored({ role: 'assistant', content: finalMsg.content }, { kind: 'assistant' }));
+              final = finalMsg;
+              skipFinalPush = true;
+              break;
+            }
+          }
+          // 不可恢复：直接落 final，走 thinkingExhausted 提示路径
           final = msg;
           break;
         }
@@ -485,7 +562,9 @@ export async function* runTurn(
       if (!emittedText && isContextOverflowError(e)) {
         return { stopReason: 'overflow' };
       }
-      if (!isRetryableError(e) || attempt >= RETRY_MAX_ATTEMPTS) {
+      // 429 限流不是网络故障，给更多重试机会（5 次 vs 普通错误的 3 次）
+      const maxRetries = isRateLimitError(e) ? RETRY_MAX_429_ATTEMPTS : RETRY_MAX_ATTEMPTS;
+      if (!isRetryableError(e) || attempt >= maxRetries) {
         yield { type: 'error', message: errorMessageWithAdvice(e), cause: e };
         return { stopReason: 'error' };
       }
@@ -503,8 +582,8 @@ export async function* runTurn(
         // cause 供 wire 落盘定位成因（空响应带诊断上下文，断连带网络 code）；UI 不消费。
         cause: e,
         message: emittedText
-          ? t('turn.retryAfterPartial', { delay: Math.round(delay), attempt, max: RETRY_MAX_ATTEMPTS - 1 })
-          : t('turn.retry', { delay: Math.round(delay), attempt, max: RETRY_MAX_ATTEMPTS - 1 }),
+          ? t('turn.retryAfterPartial', { delay: Math.round(delay), attempt, max: maxRetries - 1 })
+          : t('turn.retry', { delay: Math.round(delay), attempt, max: maxRetries - 1 }),
       };
       try {
         await abortableSleep(delay, signal);
