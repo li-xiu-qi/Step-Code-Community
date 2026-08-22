@@ -2,8 +2,7 @@
  * ACP（Agent Client Protocol）服务端。
  *
  * 让 IDE / 外部工具通过 stdin/stdout JSON-RPC 驱动 step-code。
- * 协议参考：agentclientprotocol.com
- * 实现参考：DeepSeek Harness `packages/acp/acp/src/index.ts`
+ * 协议规范：agentclientprotocol.com
  *
  * 支持的方法：
  * - initialize: 版本协商

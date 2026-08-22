@@ -9,7 +9,6 @@
  *     ← turn/started / item/completed（收集 final_answer）/ turn/completed
  *   turn/interrupt（取消时）
  *
- * 设计参考：DeepSeek Harness `packages/subagent/subagent-codex/src/wire.ts`。
  * 本实现做了精简：只支持一次性 task，无人值守自动应答审批。
  */
 

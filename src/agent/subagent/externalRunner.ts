@@ -1,7 +1,6 @@
 /**
  * 外部 CLI Agent 驱动：spawn Claude Code / Codex 等外部 coding CLI 作为子 agent。
  *
- * 设计参考：DeepSeek Harness 的 Subagent Provider 模式。
  * - Claude Code：spawn CLI + 解析 stream-json 输出（claude-stream-json driver）
  * - Codex：spawn codex app-server + JSON-RPC 2.0 协议对话（codex driver）
  */
