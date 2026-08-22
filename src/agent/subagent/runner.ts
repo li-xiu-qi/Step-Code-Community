@@ -1,6 +1,7 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import { sep } from 'node:path';
 import type { ChatProvider } from '../../provider/types.js';
+import { runExternalAgent, EXTERNAL_AGENTS } from './externalRunner.js';
 import { allToolNames } from '../../tools/index.js';
 import { resolvePath as resolveToolPath } from '../../tools/fsutil.js';
 import { checkBashWrite } from '../../tools/bashWriteGuard.js';
@@ -209,6 +210,16 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): RunSubagentFn {
         summary: `已达子 agent 深度上限（${deps.maxDepth}）。请自己完成该任务，不要再派生子 agent。`,
         isError: true,
       };
+    }
+
+    // 外部 agent 分发（claude-code / codex）：spawn 外部 CLI 进程，不走内部 agent loop
+    const extConfig = EXTERNAL_AGENTS[req.subagentType];
+    if (extConfig !== undefined) {
+      const cwd = req.cwd ?? deps.cwd;
+      deps.onEvent?.(req.id ?? req.subagentType, { kind: 'start', subagentType: req.subagentType, description: req.description ?? req.prompt.slice(0, 60) });
+      const result = await runExternalAgent(extConfig, req.prompt, cwd, req.signal);
+      deps.onEvent?.(req.id ?? req.subagentType, { kind: 'end', isError: result.isError, summary: result.summary, toolUses: 0, durationMs: 0 });
+      return result;
     }
 
     const resumeId = req.resume !== undefined && req.resume !== '' ? req.resume : undefined;

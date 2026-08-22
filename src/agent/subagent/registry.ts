@@ -6,7 +6,7 @@ import type { AgentDefinition } from './types.js';
 
 const MIN_PROMPT_LEN = 20;
 
-/** 内置角色。general = 全能（工具全集，运行时剔除 spawn_agent）；explore = 只读。maxSteps 留空 → 用 config 全局默认。 */
+/** 内置角色。general = 全能（工具全集，运行时剔除 spawn_agent）；explore = 只读；claude-code = 外部 Claude Code CLI。maxSteps 留空 → 用 config 全局默认。 */
 const BUILTIN_AGENTS: AgentDefinition[] = [
   {
     name: 'general',
@@ -37,6 +37,20 @@ const BUILTIN_AGENTS: AgentDefinition[] = [
 - 结论先行，再给支撑证据（路径、行号、关键代码片段）。
 - 查不到就明说：说清查了哪些地方、用了什么关键词，结论是「没找到」。不要编造，也不要用猜测填补空白。
 - 区分「代码里确实这么写」与「我据此推断」，后者要标明是推断。`,
+  },
+  {
+    name: 'claude-code',
+    description: '外部 Claude Code CLI：spawn Claude Code 子进程执行一次性任务。',
+    whenToUse: '需要利用 Claude Code 的独立能力完成任务时——如特定于 Anthropic 生态的操作、需要与 Claude Code 互操作的场景。注意：每次调用启动新进程，有启动开销。',
+    tools: [],
+    systemPrompt: `你是被主 agent 派生的外部 Claude Code 子 agent。\n主 agent 通过 spawn_agent(subagent_type='claude-code') 启动你作为独立进程运行。`,
+  },
+  {
+    name: 'codex',
+    description: '外部 Codex CLI：spawn Codex app-server 子进程执行一次性任务（JSON-RPC stdio 协议）。',
+    whenToUse: '需要利用 Codex 的独立能力完成任务时——如 OpenAI 生态、沙箱隔离任务。注意：每次调用启动新进程，需本地安装 codex CLI。',
+    tools: [],
+    systemPrompt: `你是被主 agent 派生的外部 Codex 子 agent。\n主 agent 通过 spawn_agent(subagent_type='codex') 启动你作为独立进程运行。`,
   },
 ];
 

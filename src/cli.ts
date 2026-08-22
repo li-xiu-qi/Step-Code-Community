@@ -85,6 +85,7 @@ program
   .option('--pi', '用 pi-tui 前端渲染交互界面')
   .option('--no-skills', '禁用 skill 清单注入（调试用：排除 skill 路由对模型的干扰）')
   .option('--no-agents-md', '禁用 AGENTS.md 加载（调试用：排除项目约定对模型的干扰）')
+  .option('--acp', 'ACP 服务端模式：stdin/stdout JSON-RPC，供 IDE 等外部工具驱动')
   .parse();
 
 const opts = program.opts<{
@@ -100,6 +101,7 @@ const opts = program.opts<{
   model?: string;
   provider?: string;
   pi?: boolean;
+  acp?: boolean;
   skills?: boolean;  // commander 的 --no-skills 会转成 skills: false
   agentsMd?: boolean;  // commander 的 --no-agents-md 会转成 agentsMd: false
 }>();
@@ -188,7 +190,7 @@ const configWarnings = configDiagnostics !== undefined ? collectConfigWarnings(c
 const ignoredBadConfig = configDiagnostics?.ignoredBadFile;
 // 非交互模式（-p / --reflect / stream-json）的呈现通道：只写 stderr。stdout 是数据/协议
 // 通道，混入诊断会破坏下游解析。交互模式不在此处输出（交互模式独占终端），改由 App 呈现。
-if (opts.print !== undefined || opts.reflect === true) {
+if (opts.print !== undefined || opts.reflect !== true) {
   const diagText = renderConfigDiagnostics(configWarnings, ignoredBadConfig);
   if (diagText !== undefined) process.stderr.write(`${diagText}\n`);
 }
@@ -412,6 +414,14 @@ async function runBrokenConfigRecovery(
     diagnostics = d;
   });
   return { config, diagnostics };
+}
+
+// ACP 服务端模式：stdin/stdout JSON-RPC，供 IDE 等外部工具驱动 step-code
+if (opts.acp === true) {
+  configureLogger({ mode: 'headless' });
+  const { startAcpServer } = await import('./acp/server.js');
+  await startAcpServer({ config, cwd, provider, model: opts.model, providerName: opts.provider });
+  process.exit(0);
 }
 
 // 压缩摘要绑定（`[compaction] model`）：命中 [models.<别名>] 时按该别名的渠道建独立 provider，
