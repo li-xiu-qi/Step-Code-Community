@@ -245,12 +245,19 @@ export class SessionStore {
     }
   }
 
-  /** 写入索引（原子写）。 */
+  /**
+   * 写入索引（直接写，非原子）。
+   *
+   * 有意不用 writeAtomic：索引是可重建缓存，readIndex 已容错解析失败（返回 null → 触发重建），
+   * 崩溃半写可自愈。而 writeAtomic 的 tmp+rename 会 bump 目录 mtime，导致 isIndexStale 的
+   * O(1) 快速路径永不触发（每次写索引都让目录看起来"被改过"）。直接写在 Windows 上不改目录
+   * mtime，让快速路径在"索引写完、会话文件未变"的常见情形下生效。
+   */
   private writeIndex(cwd: string, index: SessionIndex): void {
     const dir = this.dirFor(cwd);
     mkdirSync(dir, { recursive: true });
     const file = this.indexPathFor(cwd);
-    writeAtomic(file, JSON.stringify(index));
+    writeFileSync(file, JSON.stringify(index), 'utf8');
   }
 
   /** 索引是否过期：true = 需要重建。 */
@@ -260,6 +267,13 @@ export class SessionStore {
     try {
       const rebuiltAt = new Date(index.rebuiltAt).getTime();
       if (Number.isNaN(rebuiltAt)) return true;
+      // 快速路径：目录 mtime 早于索引构建时间 → 目录内无任何增删改（含 writeAtomic 的
+      // tmp+rename 写盘），索引必然新鲜。O(1) 单次 stat 代替逐文件 statSync——
+      // 千文件级桶上这是启动 resume 的主导瓶颈（曾测得 1593 文件桶逐文件 stat 数秒）。
+      const dirMtime = statSync(dir).mtimeMs;
+      if (dirMtime < rebuiltAt) return false;
+      // 目录 mtime >= rebuiltAt：目录内发生过写操作（可能是索引自身刚被写入，
+      // 也可能是会话文件变动），回退逐文件检查确认是否有会话文件晚于索引。
       let latestMtime = 0;
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
         if (!entry.isFile()) continue;

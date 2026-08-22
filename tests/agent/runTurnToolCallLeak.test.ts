@@ -65,7 +65,7 @@ describe('runAgent：泄漏 → 用户可见 notice（消除静默失败）', ()
     ]);
     const messages: StoredMessage[] = [sm('把文件列一下')];
     const events = await collect(
-      runAgent({ provider, system: 'sys', ctx: { cwd: process.cwd() }, messages }),
+      runAgent({ provider, system: 'sys', ctx: { cwd: process.cwd() }, messages, maxAutoContinues: 0 }),
     );
 
     const notices = events.filter((e) => e.type === 'notice');
@@ -84,7 +84,7 @@ describe('runAgent：泄漏 → 用户可见 notice（消除静默失败）', ()
       { textChunks: ['改好了。'], finalContent: [textBlock('改好了。')] },
     ]);
     const events = await collect(
-      runAgent({ provider, system: 'sys', ctx: { cwd: process.cwd() }, messages: [sm('改一下')] }),
+      runAgent({ provider, system: 'sys', ctx: { cwd: process.cwd() }, messages: [sm('改一下')], maxAutoContinues: 0 }),
     );
     expect(events.filter((e) => e.type === 'notice')).toHaveLength(0);
   });
@@ -101,7 +101,7 @@ describe('runAgent：泄漏 → 用户可见 notice（消除静默失败）', ()
       { textChunks: ['好了'], finalContent: [textBlock('好了')] },
     ]);
     const events = await collect(
-      runAgent({ provider, system: 'sys', ctx: { cwd: process.cwd() }, messages: [sm('看看')] }),
+      runAgent({ provider, system: 'sys', ctx: { cwd: process.cwd() }, messages: [sm('看看')], maxAutoContinues: 0 }),
     );
     expect(events.filter((e) => e.type === 'notice')).toHaveLength(0);
     expect(events.at(-1)!.type).toBe('turn_done');
@@ -117,7 +117,7 @@ describe('runAgent：泄漏 → 用户可见 notice（消除静默失败）', ()
       },
     ]);
     const events = await collect(
-      runAgent({ provider, system: 'sys', ctx: { cwd: process.cwd() }, messages: [sm('写长文')] }),
+      runAgent({ provider, system: 'sys', ctx: { cwd: process.cwd() }, messages: [sm('写长文')], maxAutoContinues: 0 }),
     );
     const notices = events.filter((e) => e.type === 'notice');
     expect(notices).toHaveLength(1);

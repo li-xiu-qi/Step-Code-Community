@@ -28,6 +28,15 @@ import { createRoundLoopDetector, fingerprintRound } from './roundLoop.js';
 
 export type { AgentEvent } from './events.js';
 
+/**
+ * 输出截断自动续写的默认次数。与 config 层默认值（同为 3）对齐——config 未配置
+ *
+ * 历史 bug：此处曾为 0，导致未在 config.toml 配置 [continuation] 时续写被静默关闭，
+ * 模型输出打满 max_tokens 即被硬切断（表现为回复中途"……掉"）。设计意图是默认开启 3 次
+ * 自动续写，故 0 只允许由用户显式配置产生，绝不作为未配置时的兜底。
+ */
+const DEFAULT_MAX_AUTO_CONTINUES = 3;
+
 /** 取最后一条 assistant 消息的正文文本（拼接所有 text 块，忽略思考/工具块）。无则空串。 */
 function lastAssistantText(messages: StoredMessage[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -265,8 +274,8 @@ async function maybeCompact(
  * 自身不含回合内逻辑（那些在 runTurn），负责多回合编排、终止事件、循环内压缩与溢出兜底。
  */
 export async function* runAgent(opts: RunAgentOptions): AsyncGenerator<AgentEvent> {
-  const { provider, system, ctx, messages, signal, model, thinking, providerName, compaction, maxAutoContinues = 0 } = opts;
-  const safeMaxAutoContinues = maxAutoContinues ?? 0;
+  const { provider, system, ctx, messages, signal, model, thinking, providerName, compaction, maxAutoContinues = DEFAULT_MAX_AUTO_CONTINUES } = opts;
+  const safeMaxAutoContinues = maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES;
   // 能力门控的工具卸载：模型未声明对应能力（如 image_in）时，门控工具（如 read_media）
   // 不进 tools 数组也不进执行白名单——模型看不到就不会尝试调用；工具内运行时检查保留为兜底。
   // ctx.capabilities 随 /model、/provider 切换刷新，本过滤每 run 生效、逐回合一致。

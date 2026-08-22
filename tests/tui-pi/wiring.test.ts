@@ -25,7 +25,7 @@ import { describe, expect, it } from 'vitest';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const piChat = readFileSync(join(repoRoot, 'src', 'tui-pi', 'PiChat.ts'), 'utf8');
-const cli = readFileSync(join(repoRoot, 'src', 'cli.ts'), 'utf8');
+const cli = readFileSync(join(repoRoot, 'src', 'cli.ts'), 'utf8') + readFileSync(join(repoRoot, 'src', 'cli-app.ts'), 'utf8');
 
 /** 断言辅助：给出人能读懂的失败信息，而不是「expected true to be false」。 */
 function wired(source: string, needle: string, what: string): void {

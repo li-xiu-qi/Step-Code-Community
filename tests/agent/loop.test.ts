@@ -16,7 +16,7 @@ const baseOpts = (
   provider: ReturnType<typeof makeFakeProvider>['provider'],
   messages: StoredMessage[],
   signal?: AbortSignal,
-) => ({ provider, system: 'sys', ctx: { cwd: process.cwd(), signal }, messages, signal });
+) => ({ provider, system: 'sys', ctx: { cwd: process.cwd(), signal }, messages, signal, maxAutoContinues: 0 as number | undefined });
 
 /**
  * 框架固定开销（system + tools schema），与 loop 内 `frameworkTokens` 同算法。
