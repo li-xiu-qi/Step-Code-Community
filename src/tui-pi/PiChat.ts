@@ -128,6 +128,8 @@ export interface PiChatDeps {
   model: string;
   config: StepCodeConfig;
   initialMode: PermissionMode;
+  /** Plugin sessionStart 指定的 skill 名列表（启动时自动激活）。 */
+  sessionStartSkills?: string[];
   /** 当前渠道名（config.provider）：/think 门控与 loop 的思考参数判定要用。 */
   providerName?: string;
   /**
@@ -599,6 +601,19 @@ export class PiChat {
       void engine.run('SessionStart', {}).then((r) => {
         if (r.stdout !== '') this.sessionContext = r.stdout;
       });
+    }
+    // Plugin sessionStart skills：自动激活指定 skill 的 SKILL.md 内容
+    if (this.deps.sessionStartSkills && this.deps.sessionStartSkills.length > 0) {
+      const skillParts: string[] = [];
+      for (const name of this.deps.sessionStartSkills) {
+        const def = this.deps.skillsRef.current.skills.get(name);
+        if (def !== undefined) {
+          skillParts.push(renderSkillActivation(def, ''));
+        }
+      }
+      if (skillParts.length > 0) {
+        this.sessionContext = (this.sessionContext ? this.sessionContext + '\n\n' : '') + skillParts.join('\n\n');
+      }
     }
     // 启动对账：磁盘上 running 但无活进程的判 lost，已终态而通知未送达的补投。
     // 上个进程崩溃或被强杀时，那批任务的 onSettle 从未触发过，只有这里能捞回来。
