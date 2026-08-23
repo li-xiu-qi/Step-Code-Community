@@ -41,8 +41,12 @@ export interface SubagentRetention {
 export interface CompactionConfig {
   /** 触发比例：占用达到 maxContextSize × 此值即压缩。clamp [0.5, 0.99]。 */
   triggerRatio: number;
+  /** 阻塞比例：占用达到此值强制阻塞回合完成压缩后放行。clamp [triggerRatio, 0.99]。 */
+  blockRatio: number;
   /** 预留量：剩余窗口不足此值即压缩（给下一次生成留安全垫）。clamp [0, 500000]。 */
   reservedTokens: number;
+  /** 单轮最大压缩次数。超过后本轮不再自动压缩。Infinity = 不限制。 */
+  maxCompactionPerTurn: number;
   /** 压缩摘要专用模型（大小模型协同）。缺省用主会话模型，行为与之前完全一致。 */
   model?: string;
   /**
@@ -442,6 +446,12 @@ const SUBAGENT_MAX_CONCURRENT_MAX = 16;
 const COMPACTION_TRIGGER_RATIO_DEFAULT = 0.85;
 const COMPACTION_TRIGGER_RATIO_MIN = 0.5;
 const COMPACTION_TRIGGER_RATIO_MAX = 0.99;
+const COMPACTION_BLOCK_RATIO_DEFAULT = 0.93;
+const COMPACTION_BLOCK_RATIO_MIN = 0.5;
+const COMPACTION_BLOCK_RATIO_MAX = 0.99;
+const COMPACTION_MAX_PER_TURN_DEFAULT = Infinity;
+const COMPACTION_MAX_PER_TURN_MIN = 1;
+const COMPACTION_MAX_PER_TURN_MAX = 20;
 const COMPACTION_RESERVED_TOKENS_DEFAULT = 32_000;
 const COMPACTION_RESERVED_TOKENS_MIN = 0;
 const COMPACTION_RESERVED_TOKENS_MAX = 500_000;
@@ -703,19 +713,32 @@ export function resolveSubagentRetention(raw: unknown): SubagentRetention {
  */
 export function resolveCompactionConfig(raw: unknown): CompactionConfig {
   const t = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>;
+  const triggerRatio = clampFloat(
+    t['trigger_ratio'],
+    COMPACTION_TRIGGER_RATIO_MIN,
+    COMPACTION_TRIGGER_RATIO_MAX,
+    COMPACTION_TRIGGER_RATIO_DEFAULT,
+  );
+  const rawBlockRatio = clampFloat(
+    t['block_ratio'],
+    COMPACTION_BLOCK_RATIO_MIN,
+    COMPACTION_BLOCK_RATIO_MAX,
+    COMPACTION_BLOCK_RATIO_DEFAULT,
+  );
+  const rawMaxPerTurn = asNumber(t['max_compaction_per_turn']);
   const cfg: CompactionConfig = {
-    triggerRatio: clampFloat(
-      t['trigger_ratio'],
-      COMPACTION_TRIGGER_RATIO_MIN,
-      COMPACTION_TRIGGER_RATIO_MAX,
-      COMPACTION_TRIGGER_RATIO_DEFAULT,
-    ),
+    triggerRatio,
+    blockRatio: Math.max(triggerRatio, rawBlockRatio),
     reservedTokens: clampInt(
       t['reserved_tokens'],
       COMPACTION_RESERVED_TOKENS_MIN,
       COMPACTION_RESERVED_TOKENS_MAX,
       COMPACTION_RESERVED_TOKENS_DEFAULT,
     ),
+    maxCompactionPerTurn:
+      rawMaxPerTurn !== undefined && Number.isFinite(rawMaxPerTurn)
+        ? Math.min(COMPACTION_MAX_PER_TURN_MAX, Math.max(COMPACTION_MAX_PER_TURN_MIN, Math.round(rawMaxPerTurn)))
+        : COMPACTION_MAX_PER_TURN_DEFAULT,
   };
   // 压缩专用模型：未配置时键不进结果对象（下游 toEqual 精确断言依赖此形态）
   const model = asString(t['model']);

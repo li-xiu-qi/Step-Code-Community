@@ -216,8 +216,12 @@ export interface CompactionThresholds {
   maxContextSize: number;
   /** 触发比例：占用达到 maxContextSize × 此值即压缩。 */
   triggerRatio: number;
+  /** 阻塞比例：占用达到此值强制阻塞回合完成压缩后放行。高于 triggerRatio。 */
+  blockRatio: number;
   /** 预留量：剩余窗口不足此值即压缩（给下一次生成留安全垫）。 */
   reservedTokens: number;
+  /** 单轮最大压缩次数。超过后本轮不再自动压缩。Infinity = 不限制。 */
+  maxCompactionPerTurn: number;
 }
 
 /** 是否该压缩：占用超过比例阈值，或剩余窗口不足预留量（两条件取或）。 */
@@ -225,6 +229,15 @@ export function shouldCompact(usedTokens: number, t: CompactionThresholds): bool
   if (t.maxContextSize <= 0) return false;
   return (
     usedTokens >= t.maxContextSize * t.triggerRatio ||
+    usedTokens + t.reservedTokens >= t.maxContextSize
+  );
+}
+
+/** 是否该阻塞回合强制压缩：占用超过阻塞比例，或剩余窗口不足预留量。 */
+export function shouldBlock(usedTokens: number, t: CompactionThresholds): boolean {
+  if (t.maxContextSize <= 0) return false;
+  return (
+    usedTokens >= t.maxContextSize * t.blockRatio ||
     usedTokens + t.reservedTokens >= t.maxContextSize
   );
 }
