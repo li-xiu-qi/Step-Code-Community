@@ -82,6 +82,15 @@ const TOOL_MAP = new Map<string, ToolDef<any>>(ALL_TOOLS.map((t) => [t.name, t])
 /** 动态注册的工具（如 MCP 懒加载命中的工具），运行期追加。 */
 const DYNAMIC_TOOLS = new Map<string, ToolDef<any>>();
 
+/** 禁用的工具名集合（来自 config disabled_tools）。启动时由组合根注册。 */
+const DISABLED_TOOLS = new Set<string>();
+
+/** 注册禁用的工具名（启动时由组合根调用）。清空旧名单后重新填充（reload 场景）。 */
+export function setDisabledTools(names: readonly string[]): void {
+  DISABLED_TOOLS.clear();
+  for (const n of names) DISABLED_TOOLS.add(n);
+}
+
 /** 动态注册一个工具（如 MCP 工具命中后加载）。同名覆盖。 */
 export function registerDynamicTool(tool: ToolDef<any>): void {
   DYNAMIC_TOOLS.set(tool.name, tool);
@@ -118,15 +127,18 @@ export function toAnthropicTools(names?: readonly string[]): Anthropic.Tool[] {
   // 动态工具并入，但若与静态工具同名（如覆盖注册）则不重复，以静态定义为准
   const dynamic = [...DYNAMIC_TOOLS.values()].filter((t) => !TOOL_MAP.has(t.name));
   const all = [...ALL_TOOLS, ...dynamic];
-  return all.filter((t) => set === undefined || set.has(t.name)).map((tool) => {
-    const jsonSchema = z.toJSONSchema(tool.schema) as Record<string, unknown>;
-    delete jsonSchema['$schema'];
-    return {
-      name: tool.name,
-      description: tool.description,
-      input_schema: jsonSchema as Anthropic.Tool.InputSchema,
-    };
-  });
+  return all
+    .filter((t) => !DISABLED_TOOLS.has(t.name)) // 过滤 config disabled_tools
+    .filter((t) => set === undefined || set.has(t.name))
+    .map((tool) => {
+      const jsonSchema = z.toJSONSchema(tool.schema) as Record<string, unknown>;
+      delete jsonSchema['$schema'];
+      return {
+        name: tool.name,
+        description: tool.description,
+        input_schema: jsonSchema as Anthropic.Tool.InputSchema,
+      };
+    });
 }
 
 /** 全部已注册工具名（含动态注册）。 */

@@ -39,7 +39,7 @@ import { discoverPlugins, defaultPluginsDir } from './plugin/manager.js';
 import { pluginsStatePath, readPluginsState } from './plugin/manage.js';
 import { buildSkillRegistry, diffSkillRegistries, fingerprintSkillRoots, scanSkillRootsOnce, skillListing, type SkillRegistry, type SkillRegistryDiff } from './skill/registry.js';
 import { McpManager, mcpInputSchemaToZod, type McpServerConfig } from './mcp/manager.js';
-import { registerDynamicTool } from './tools/index.js';
+import { registerDynamicTool, setDisabledTools } from './tools/index.js';
 import { createProvider } from './provider/factory.js';
 import { resolveCompactionBinding } from './provider/compaction.js';
 import type { ChatProvider } from './provider/types.js';
@@ -94,6 +94,8 @@ try {
   config = loadConfig(cwd, { provider: opts.provider, model: opts.model }, (d) => {
     configDiagnostics = d;
   });
+  // 注册禁用的工具名（config disabled_tools）
+  if (config.disabledTools) setDisabledTools(config.disabledTools);
 } catch (e) {
   // 坏 TOML + 交互模式：不把「手改文件」的成本甩给用户——给一条现场修复路径。
   // 坏文件先改名备份（不覆盖，用户可能要抢救），再进引导写入新配置。
@@ -450,6 +452,8 @@ ctx.capabilities = config.capabilities;
 ctx.imageMaxEdgePx = config.imageMaxEdgePx;
 ctx.imageBudgetBytes = config.imageBudgetBytes;
 ctx.videoBudgetBytes = config.videoBudgetBytes;
+// git 自动提交配置（[git] auto_commit，默认 false）
+ctx.gitConfig = config.git;
 // bash 前台超时自动转后台开关（[background].bash_auto_background_on_timeout，默认 true）
 ctx.bashAutoBackgroundOnTimeout = config.background?.bashAutoBackgroundOnTimeout ?? true;
 
@@ -683,6 +687,8 @@ const reloadConfig = (): { config: StepCodeConfig } | { error: string } => {
   ctx.imageBudgetBytes = next.imageBudgetBytes;
   ctx.videoBudgetBytes = next.videoBudgetBytes;
   ctx.bashAutoBackgroundOnTimeout = next.background?.bashAutoBackgroundOnTimeout ?? true;
+  ctx.gitConfig = next.git;
+  if (next.disabledTools) setDisabledTools(next.disabledTools);
   const entries = [...(next.hooks ?? []), ...plugins.flatMap((p) => p.hooks)];
   hookEngineRef.current = entries.length > 0 ? new HookEngine(entries, { sessionId: session.id, cwd }) : undefined;
   return { config: next };

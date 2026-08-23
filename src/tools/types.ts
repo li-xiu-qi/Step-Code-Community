@@ -69,6 +69,8 @@ export interface ToolContext {
   imageBudgetBytes?: number;
   /** 当前模型的单视频交付字节预算（来自别名 video_budget_bytes）。缺省由 read_media 回退 32MB。 */
   videoBudgetBytes?: number;
+  /** git 自动提交配置（来自 [git] auto_commit）。缺省视为 undefined（不启用）。 */
+  gitConfig?: { autoCommit?: boolean };
 }
 
 /** 工具结果附带的图片载荷（如 read_media 读图），回灌时内嵌进 tool_result 的 content 块数组。 */
