@@ -12,6 +12,7 @@ import {
   microCompact,
   OVERFLOW_SHRINK_RATIOS,
   shouldCompact,
+  shouldBlock,
   usageTotalTokens,
   type CompactionThresholds,
 } from './compaction/compact.js';
@@ -348,6 +349,7 @@ export async function* runAgent(opts: RunAgentOptions): AsyncGenerator<AgentEven
    * 改为明确告知用户「压不下去了，请 /compact 或 /new」，把决定权交回去。
    */
   let compactionSaturated = false;
+  let compactionCount = 0; // 本 turn 压缩次数，受 maxCompactionPerTurn 限制
   let contState: ReturnType<typeof emptyContinuationState> | undefined;
   /**
    * 跨回合零进展检测器（循环外创建，每次 runAgent 自然归零）。
@@ -439,40 +441,63 @@ export async function* runAgent(opts: RunAgentOptions): AsyncGenerator<AgentEven
         lastUsage !== undefined
           ? lastUsage.total + estimateTokens(messages.slice(lastUsage.measuredLength))
           : estimatedUsedWithFramework();
-      const outcome = await maybeCompact(
-        provider,
-        messages,
-        preflightUsed,
-        compaction,
-        opts.todos,
-        opts.compactionModel,
-        opts.userMessageBudget,
-        opts.onWireEvent,
-        opts.compactionProvider,
-        signal,
-      );
-      if (outcome.acted) {
-        lastUsage = undefined; // 历史已就地重写，旧快照的 measuredLength 不再对应任何下标
-        yield { type: 'notice', message: t('loop.autoCompacted') };
-        // 与循环内压缩同一口径：立刻用字符估算刷新状态栏，不等下一次真实 usage
-        yield { type: 'usage', totalTokens: estimatedUsedWithFramework(), measuredLength: messages.length };
-        // 确实压过了，但仍超阈值 → 剩下的历史压不动，置饱和，本 run 内不再自动压缩。
-        // 用字符估算而非 preflightUsed——后者是压缩前的口径，压缩后已失效。
-        //
-        // 只在「压过了仍超限」时置位。压不动（历史还太短、保留窗口外没内容可摘要）
-        // **不算饱和**：历史继续增长后往往就能压了，此时置位会让本 run 后续再也不压缩。
-        // 这个区别是实测踩出来的。
-        if (shouldCompact(estimatedUsedWithFramework(), compaction)) {
+      
+      // blockRatio 命中：强制阻塞压缩，不计入 maxCompactionPerTurn 限制
+      if (shouldBlock(preflightUsed, compaction)) {
+        const outcome = await maybeCompact(
+          provider,
+          messages,
+          preflightUsed,
+          compaction,
+          opts.todos,
+          opts.compactionModel,
+          opts.userMessageBudget,
+          opts.onWireEvent,
+          opts.compactionProvider,
+          signal,
+        );
+        if (outcome.acted) {
+          compactionCount++;
+          lastUsage = undefined;
+          yield { type: 'notice', message: t('loop.autoCompacted') };
+          yield { type: 'usage', totalTokens: estimatedUsedWithFramework(), measuredLength: messages.length };
+          if (shouldCompact(estimatedUsedWithFramework(), compaction)) {
+            compactionSaturated = true;
+            yield { type: 'notice', message: t('loop.overflow.noCompact') };
+          }
+        } else if (outcome.attemptedButFailed) {
           compactionSaturated = true;
-          yield { type: 'notice', message: t('loop.overflow.noCompact') };
+          yield { type: 'notice', message: t('loop.compactFailed') };
         }
-      } else if (outcome.attemptedButFailed) {
-        // 超了阈值、full 摘要动过手但没产出可用结果（请求失败或质量闸门连续未过）。
-        // 这条路径此前完全静默：不提示、不置饱和，于是每一轮都再烧一次摘要请求，
-        // 用户直到最终 overflow 报错才知道压缩一直在失败。
-        // 现在明确告知并置饱和——同一个 run 内它几乎必然继续失败，重试只是重复花钱。
+      } else if (shouldCompact(preflightUsed, compaction) && compactionCount < (compaction.maxCompactionPerTurn ?? Infinity)) {
+        const outcome = await maybeCompact(
+          provider,
+          messages,
+          preflightUsed,
+          compaction,
+          opts.todos,
+          opts.compactionModel,
+          opts.userMessageBudget,
+          opts.onWireEvent,
+          opts.compactionProvider,
+          signal,
+        );
+        if (outcome.acted) {
+          compactionCount++;
+          lastUsage = undefined;
+          yield { type: 'notice', message: t('loop.autoCompacted') };
+          yield { type: 'usage', totalTokens: estimatedUsedWithFramework(), measuredLength: messages.length };
+          if (shouldCompact(estimatedUsedWithFramework(), compaction)) {
+            compactionSaturated = true;
+            yield { type: 'notice', message: t('loop.overflow.noCompact') };
+          }
+        } else if (outcome.attemptedButFailed) {
+          compactionSaturated = true;
+          yield { type: 'notice', message: t('loop.compactFailed') };
+        }
+      } else if (shouldCompact(preflightUsed, compaction) && compactionCount >= (compaction.maxCompactionPerTurn ?? Infinity)) {
+        // 达到 maxCompactionPerTurn 上限，不再自动压缩，标记饱和
         compactionSaturated = true;
-        yield { type: 'notice', message: t('loop.compactFailed') };
       }
     }
     // 每回合重新组装 tools：tool_search 等动态注册的工具（DYNAMIC_TOOLS）在下一回合
