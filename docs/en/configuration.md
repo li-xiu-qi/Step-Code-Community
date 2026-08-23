@@ -325,7 +325,10 @@ Cleanup for `max_sessions` / `ttl_days` runs once at process startup, and every 
 | Field | Default | Range | Description |
 |------|------|------|------|
 | `trigger_ratio` | 0.85 | 0.5–0.99 | Compaction triggers once usage reaches the context limit times this value |
+| `block_ratio` | 0.93 | trigger_ratio–0.99 | Hard block: the turn waits for compaction to finish before proceeding. Must be >= trigger_ratio |
+| `max_compaction_per_turn` | Infinity | 1–20 | Maximum auto-compactions per turn. After hitting this limit, further compaction requests are declined and the turn proceeds |
 | `reserved_tokens` | 32000 | 0–500000 | Compaction triggers once the remaining window falls below this value |
+| `preserve_thinking` | false | boolean | Retain thinking / redacted_thinking blocks as markers (`[思考]`) instead of stripping them during compaction |
 | `model` | — | — | A dedicated model for compaction summaries; defaults to the main model. Accepts either a model id or an alias from `[models.<alias>]` — with an alias, summaries go through that alias's **channel** (endpoint / key / protocol), so the main conversation and compaction can live on different channels |
 | `user_message_max_tokens` | 20000 | 0–200000 | Verbatim budget for the user's own words: the total volume of original user messages preserved separately alongside the summary during compaction. 0 disables the verbatim block, returning to pure summary behavior |
 | `user_message_head_tokens` | 2000 | 0–the previous field | The share of the verbatim budget allotted to the "earliest messages"; the remainder goes to the most recent ones |
