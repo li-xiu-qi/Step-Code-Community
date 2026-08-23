@@ -68,10 +68,7 @@ export const editFileTool: ToolDef<z.infer<typeof schema>> = {
     const guard = ctx.fileGuard;
     if (guard) {
       const verdict = guard.check(abs);
-      if (verdict.kind === 'not-read') {
-        return fail(verdict.message);
-      }
-      if (verdict.kind === 'stale') {
+      if (verdict.kind === 'not-read' || verdict.kind === 'stale' || verdict.kind === 'protected') {
         return fail(verdict.message);
       }
     }

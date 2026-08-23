@@ -1,4 +1,5 @@
 import { statSync } from 'node:fs';
+import { normalize } from 'node:path';
 
 /**
  * 文件读守护（Stale Guard）
@@ -6,6 +7,7 @@ import { statSync } from 'node:fs';
  * 防止模型幻觉式编辑：
  *   1. edit_file / write_file 前，检查文件是否被读过；
  *   2. 如果读过，检查文件是否在上次读取后被修改（mtime/size 变化）。
+ *   3. 保护配置文件不被意外修改。
  *
  * 设计：
  *   - read_file 成功读取时，调用 {@link FileGuard.track} 记录 mtime + size
@@ -24,7 +26,11 @@ export type GuardVerdict =
   | { kind: 'ok' }
   | { kind: 'not-read'; message: string }
   | { kind: 'stale'; message: string }
+  | { kind: 'protected'; message: string }
   | { kind: 'new-file' };
+
+/** 受保护的文件名（basename 匹配）。 */
+const PROTECTED_BASENAMES = new Set(['config.toml', 'mcp.json']);
 
 export class FileGuard {
   private snapshots = new Map<string, FileSnapshot>();
@@ -46,12 +52,38 @@ export class FileGuard {
   }
 
   /**
+   * 检查文件是否受保护（config.toml / mcp.json 等运行时配置文件）。
+   * 命中则返回 protected，工具应阻止修改。
+   */
+  checkProtected(absPath: string): GuardVerdict {
+    const normalized = normalize(absPath).replace(/\\/g, '/');
+    const parts = normalized.split('/');
+    // 检查路径中是否包含 .step-code/ 下的配置文件
+    const isStepCodeDir = parts.includes('.step-code') || parts.includes('.claude') || parts.includes('.kimi-code') || parts.includes('.codex');
+    const basename = parts[parts.length - 1] ?? '';
+    if (isStepCodeDir && PROTECTED_BASENAMES.has(basename)) {
+      return {
+        kind: 'protected',
+        message:
+          `受保护的文件：${basename} 是运行时配置文件，` +
+          `不应直接修改。请使用 update-config skill 或对应的 CLI 命令来修改配置。`,
+      };
+    }
+    return { kind: 'ok' };
+  }
+
+  /**
    * 检查文件是否可安全写入。
    * @param absPath 文件绝对路径
    * @param opts.requireRead 是否要求必须先读过（默认 true）
    */
   check(absPath: string, opts?: { requireRead?: boolean }): GuardVerdict {
     const requireRead = opts?.requireRead ?? true;
+
+    // 先检查受保护文件
+    const protResult = this.checkProtected(absPath);
+    if (protResult.kind === 'protected') return protResult;
+
     const snap = this.snapshots.get(absPath);
 
     // 从未读过

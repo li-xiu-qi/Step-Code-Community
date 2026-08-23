@@ -25,13 +25,7 @@ export const writeFileTool: ToolDef<z.infer<typeof schema>> = {
       const { existsSync } = await import('node:fs');
       if (existsSync(abs)) {
         const verdict = guard.check(abs);
-        if (verdict.kind === 'not-read') {
-          return fail(
-            `文件已存在但未被读取过。请先使用 read_file 读取此文件，` +
-            `确认内容后再写入。如需创建新文件，请使用不同的路径。`,
-          );
-        }
-        if (verdict.kind === 'stale') {
+        if (verdict.kind === 'not-read' || verdict.kind === 'stale' || verdict.kind === 'protected') {
           return fail(verdict.message);
         }
       }
