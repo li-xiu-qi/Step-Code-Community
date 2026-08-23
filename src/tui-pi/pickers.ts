@@ -59,6 +59,8 @@ export class PickerOverlay implements Component {
   private selIdx = 0;
   /** 当前过滤后的候选数（用于 ↑↓ 钳制判断是否到边界）。 */
   private filteredCount = 0;
+  /** 滚动到底部时加载更多。未设置则不做分页加载。 */
+  private readonly onLoadMore?: (currentCount: number) => SelectItem[] | null;
 
   constructor(opts: {
     title: string;
@@ -74,6 +76,8 @@ export class PickerOverlay implements Component {
     tabs?: PickerTab[];
     itemsForTab?: (tabId: string) => SelectItem[];
     initialTab?: string;
+    /** 滚动到底部时加载更多：返回追加的 SelectItem[]，null 表示无更多。 */
+    onLoadMore?: (currentCount: number) => SelectItem[] | null;
   }) {
     this.title = opts.title;
     this.allItems = [...opts.items];
@@ -94,6 +98,7 @@ export class PickerOverlay implements Component {
     this.filteredCount = opts.items.length;
     this.selIdx = 0;
     this.onKey = opts.onKey;
+    this.onLoadMore = opts.onLoadMore;
   }
 
   /**
@@ -216,7 +221,27 @@ export class PickerOverlay implements Component {
       return;
     }
     this.list.handleInput(data);
+    // 滚动到底部时自动加载更多
+    this.maybeLoadMore();
     this.requestRender();
+  }
+
+  /** 当选中项接近列表底部且有 onLoadMore 时，追加下一页。 */
+  private maybeLoadMore(): void {
+    if (this.onLoadMore === undefined) return;
+    if (this.filter !== '') return; // 有过滤词时不触发加载更多
+    const threshold = Math.max(3, Math.floor(this.filteredCount * 0.1));
+    if (this.selIdx >= this.filteredCount - threshold && this.filteredCount < 200) {
+      const more = this.onLoadMore(this.allItems.length);
+      if (more !== null && more.length > 0) {
+        this.allItems = [...this.allItems, ...more];
+        this.filteredCount = this.allItems.length;
+        // 重建 SelectList 并保持当前位置
+        const currentIdx = this.selIdx;
+        this.list = this.buildList([...this.allItems]);
+        this.list.setSelectedIndex(currentIdx);
+      }
+    }
   }
 
   render(width: number): string[] {
@@ -368,6 +393,8 @@ export function showPicker(
     container?: Container;
     /** 内联模式：选择器关闭时回调，用于恢复输入区（恢复 editor 焦点）。 */
     onRestore?: () => void;
+    /** 滚动到底部时加载更多：返回追加的 SelectItem[]，null 表示无更多。 */
+    onLoadMore?: (currentCount: number) => SelectItem[] | null;
   },
 ): Promise<string | null> {
   const inline = opts.container !== undefined;
@@ -411,6 +438,7 @@ export function showPicker(
       tabs: opts.tabs,
       itemsForTab: opts.itemsForTab,
       initialTab: opts.initialTab,
+      onLoadMore: opts.onLoadMore,
     });
     if (inline) {
       opts.container!.clear();
@@ -430,15 +458,26 @@ export function showPicker(
  * 与 PiChat 里的 `/resume` 是同一套候选构造，区别只在这里要自己起一个 TuiMainScreen：
  * 此时 PiChat 还没创建，没有可复用的主屏。选完即 stop，屏幕让给随后启动的 PiChat。
  */
-export async function pickSessionStandalone(metas: readonly SessionMeta[]): Promise<string | null> {
+export async function pickSessionStandalone(
+  metas: readonly SessionMeta[],
+  onLoadMore?: (currentCount: number) => SessionMeta[] | null,
+): Promise<string | null> {
   const { ProcessTerminal, TuiMainScreen } = await import('@earendil-works/pi-tui');
   const tui = new TuiMainScreen(new ProcessTerminal());
   tui.start();
   try {
+    // 将 SessionMeta[] 的加载器适配为 SelectItem[] 的加载器
+    const adaptedLoadMore = onLoadMore !== undefined
+      ? (count: number) => {
+          const more = onLoadMore(count);
+          return more !== null ? sessionItems(more) : null;
+        }
+      : undefined;
     return await showPicker(tui, {
       title: t('picker.resumeTitle'),
       items: sessionItems(metas),
       hint: t('picker.resumeHint'),
+      onLoadMore: adaptedLoadMore,
     });
   } finally {
     tui.stop();
