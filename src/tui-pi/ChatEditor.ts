@@ -13,7 +13,7 @@ import {
   type TUI,
   visibleWidth,
 } from '@earendil-works/pi-tui';
-import { planAutoPair } from './autoPair.js';
+import { planAutoPair, isPairSurrounding } from './autoPair.js';
 
 /**
  * 输入提示符。用 `›`（U+203A）：比 `>` 窄一格，不与正文引用块（`>`）或 diff 标记混淆。
@@ -26,6 +26,8 @@ const PROMPT_PAD = ' '.repeat(PROMPT_WIDTH);
 /** 左/右方向键序列（CSI），auto-pair 的 type-over 与光标归位用。 */
 const ARROW_LEFT = '\x1b[D';
 const ARROW_RIGHT = '\x1b[C';
+/** 前向删除键（CSI），退格整对删除时先删光标处的闭符。 */
+const KEY_DELETE = '\x1b[3~';
 /**
  * pi-tui 画光标用的反显序列（实测 2026-08-16）。占位文案要插在它之后，
  * 否则会挤在光标前面看着像已输入的内容。
@@ -200,7 +202,19 @@ export class ChatEditor extends Editor {
    */
   private tryAutoPair(data: string): boolean {
     const { line, col } = this.getCursor();
-    const charAtCursor = (this.getLines()[line] ?? '')[col] ?? '';
+    const curLine = this.getLines()[line] ?? '';
+    const charAtCursor = curLine[col] ?? '';
+    // 配对内退格整对删除：`(|)` 按退格 → 空。先删光标处的闭符（前向删除），再让 super 退格删开符；
+    // 否则「删一半」会留下悬空括号卡在中间。非配对形态返回 false 交回正常退格。
+    if (this.isBackspace(data)) {
+      const before = col > 0 ? (curLine[col - 1] ?? '') : '';
+      if (isPairSurrounding(before, charAtCursor)) {
+        super.handleInput(KEY_DELETE);
+        super.handleInput(data);
+        return true;
+      }
+      return false;
+    }
     const action = planAutoPair(data, charAtCursor);
     if (action.kind === 'insert-pair') {
       this.insertTextAtCursor(action.text);
@@ -212,6 +226,11 @@ export class ChatEditor extends Editor {
       return true;
     }
     return false;
+  }
+
+  /** 退格键判定：覆盖 \x7f / \b 与 pi-tui 的 backspace 键名（kitty 与裸键）。 */
+  private isBackspace(data: string): boolean {
+    return data === '\x7f' || data === '\b' || matchesKey(data, 'backspace');
   }
 
   override handleInput(data: string): void {

@@ -33,6 +33,15 @@ export function shouldPair(open: string, charAtCursor: string): boolean {
 }
 
 /**
+ * 光标是否夹在配对中间：前一字符是开符、光标处是其闭符。
+ * 退格命中此形态时应整对删除（`(|)` 按退格 → 空），否则中间那步「只剩一半括号」卡住。
+ * 纯判定，不含开符→闭符查找（复用 AUTO_PAIRS），便于单测。
+ */
+export function isPairSurrounding(charBefore: string, charAtCursor: string): boolean {
+  return charBefore !== '' && AUTO_PAIRS[charBefore] === charAtCursor && charAtCursor !== '';
+}
+
+/**
  * 解码可打印字符：kitty CSI-u 序列与裸字符都能还原成单个字符。
  * 非可打印（控制键、箭头、粘贴等）返回 undefined，调用方据此放行给编辑器默认处理。
  */
