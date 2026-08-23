@@ -50,6 +50,8 @@ export interface ToolContext {
   toolSearch?: import('./toolSearch.js').ToolSearchRegistry;
   /** 引用式附件存储（组合根注入）：发 provider 前把消息里的 stepref 图片还原成 base64。缺失表示不做 rehydrate。 */
   attachments?: import('../session/attachments.js').AttachmentStore;
+  /** 文件读守护（组合根注入，Stale Guard）。缺失则不做读前检查。 */
+  fileGuard?: import('./fileGuard.js').FileGuard;
   /** 向用户提问回调（组合根注入，前台阻塞收集答案）。缺失表示当前上下文不支持提问（如子 agent 无 UI）。 */
   askUser?(req: import('./askUser.js').AskUserRequest): Promise<import('./askUser.js').QuestionAnswers>;
   /** 并行子 agent 与编排原语的并发上限（来自 config.subagent.maxConcurrent）。 */

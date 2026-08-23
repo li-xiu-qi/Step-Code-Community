@@ -71,7 +71,12 @@ export class StepMessagesProvider implements ChatProvider {
   private readonly sendCacheControl: boolean;
 
   constructor(options: StepMessagesProviderOptions) {
-    this.client = new Anthropic({ apiKey: options.apiKey, baseURL: options.baseUrl });
+    // maxRetries: 0 — 同 anthropicMessages.ts，SDK 内部重试阻塞取消，交给自己的重试层
+    this.client = new Anthropic({
+      apiKey: options.apiKey,
+      baseURL: options.baseUrl,
+      maxRetries: 0,
+    });
     this.model = options.model;
     this.maxTokens = options.maxTokens;
     this.sendThinking = options.sendThinking ?? false;

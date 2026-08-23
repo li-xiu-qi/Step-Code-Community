@@ -44,9 +44,12 @@ export class AnthropicMessagesProvider implements ChatProvider {
   private readonly sendCacheControl: boolean;
 
   constructor(options: AnthropicMessagesProviderOptions) {
+    // maxRetries: 0 — SDK 内部重试的 sleep 不感知 AbortSignal，会导致 Ctrl+C / Esc 在重试期间无效。
+    // 改为 0，让所有重试走 step-code 自己的重试层（abortableSleep，支持中断）。
     this.client = new Anthropic({
       apiKey: options.apiKey,
       baseURL: options.baseUrl,
+      maxRetries: 0,
     });
     this.model = options.model;
     this.maxTokens = options.maxTokens;

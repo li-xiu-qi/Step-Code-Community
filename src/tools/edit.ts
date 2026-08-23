@@ -63,6 +63,19 @@ export const editFileTool: ToolDef<z.infer<typeof schema>> = {
   access: (input, ctx) => ({ kind: 'write', path: resolvePath(ctx.cwd, input.path) }),
   async execute(input, ctx) {
     const abs = resolvePath(ctx.cwd, input.path);
+
+    // Stale Guard：检查文件是否被读过、是否在上次读取后被修改
+    const guard = ctx.fileGuard;
+    if (guard) {
+      const verdict = guard.check(abs);
+      if (verdict.kind === 'not-read') {
+        return fail(verdict.message);
+      }
+      if (verdict.kind === 'stale') {
+        return fail(verdict.message);
+      }
+    }
+
     let text: string;
     try {
       text = readFileSync(abs, 'utf8');
