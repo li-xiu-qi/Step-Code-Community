@@ -483,6 +483,29 @@ max_entry_bytes = 2_097_152  # 单条字节上限（估算值），默认 2MB；
 
 长会话或大量子 agent 并行抓网页时，可按内存预算调小 `max_bytes`；抓取大页面为主时调大 `max_entry_bytes`。
 
+### `disabled_tools` 禁用工具
+
+在 config.toml 顶层用数组声明禁用的工具名，这些工具不再发给模型，也不会出现在 `/help` 里。默认不禁用任何工具。
+
+```toml
+disabled_tools = ["bash", "web_search"]  # 禁用 bash 和联网搜索
+```
+
+常用于限制特定场景下的工具暴露面（如子 agent 不应有 bash 权限时）。
+
+### `[git]` git 自动提交
+
+启用后，每次 `edit_file` / `write_file` 成功后，若文件在 git 仓库内且不在 team worktree 环境，则自动执行 `git add + commit`。commit message 从 diff 统计信息自动生成。
+
+```toml
+[git]
+auto_commit = true
+```
+
+| 字段 | 默认 | 说明 |
+|------|------|------|
+| `auto_commit` | `false` | 启用后文件编辑自动 git 提交 |
+
 ## `[[hooks]]` 生命周期钩子
 
 在生命周期事件点执行你的 shell 命令，可观察、可阻断。用 `[[hooks]]` 数组声明，每条四字段：
