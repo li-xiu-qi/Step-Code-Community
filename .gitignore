@@ -15,6 +15,7 @@ dist-branch/
 !.step-code/commands/
 !.step-code/commands/builtin/
 .codegraph/
+.kimi-code/
 mcp-test-server/
 
 # 系统与编辑器
