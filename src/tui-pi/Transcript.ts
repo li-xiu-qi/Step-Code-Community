@@ -36,6 +36,14 @@ export class Transcript implements Component {
   private foldedTurns = 0;
   /** 被折叠的块数累计（turn 内裁剪产生）。 */
   private foldedBlocks = 0;
+  /**
+   * 结构版本号：块数组发生结构性变化（push/reset/折叠/裁剪）时自增；尾块的内容变更不递增。
+   * 与 prefixCache 配套——render 时据此判断「非尾块的冻结前缀是否仍有效」。尾块是流式追加与
+   * 工具状态回填的唯一热变更目标，它的变化不该让前缀缓存每帧失效，否则冻结形同虚设。
+   */
+  private structVer = 0;
+  /** 冻结前缀缓存：head 提示行 + 除尾块外全部块的渲染结果。尾块每帧重渲，前缀仅结构变化时重算。 */
+  private prefixCache: { width: number; ver: number; lines: string[] } | null = null;
 
   constructor(options: TranscriptOptions = {}) {
     this.maxTurns = options.maxTurns ?? DEFAULT_MAX_TURNS;
@@ -57,6 +65,7 @@ export class Transcript implements Component {
 
   push(item: DisplayItem): void {
     this.blocks.push(new ItemBlock(item));
+    this.structVer++;
     this.trim();
   }
 
@@ -65,12 +74,18 @@ export class Transcript implements Component {
     this.blocks = items.map((it) => new ItemBlock(it));
     this.foldedTurns = foldedTurns;
     this.foldedBlocks = 0;
+    this.structVer++;
   }
 
   /** 原地更新第 index 块（负数从尾部数）。越界为空操作。 */
   update(index: number, item: DisplayItem): void {
     const i = index < 0 ? this.blocks.length + index : index;
-    this.blocks[i]?.setItem(item);
+    if (this.blocks[i] !== undefined) {
+      this.blocks[i]!.setItem(item);
+      // 非尾块的内容变更才让冻结前缀失效；尾块是流式热变更目标，它的变化由每帧重渲尾块覆盖，
+      // 若也递增版本号，前缀缓存会在每个 token 失效，冻结即失效。
+      if (i !== this.blocks.length - 1) this.structVer++;
+    }
   }
 
   /** 找到最后一个满足条件的块并更新（工具状态回填用）。返回是否命中。 */
@@ -79,6 +94,7 @@ export class Transcript implements Component {
       const b = this.blocks[i]!;
       if (pred(b.getItem())) {
         b.setItem(next(b.getItem()));
+        if (i !== this.blocks.length - 1) this.structVer++;
         return true;
       }
     }
@@ -139,6 +155,7 @@ export class Transcript implements Component {
     }
     if (pending > 0) kept.push(new ItemBlock({ kind: 'foldSummary', count: pending }));
     this.blocks = [...kept, ...this.blocks.slice(cutAt)];
+    this.structVer++;
     return { folded: totalFolded > 0, count: totalFolded };
   }
 
@@ -158,6 +175,7 @@ export class Transcript implements Component {
       const cutAt = starts[dropTurns]!;
       this.blocks = this.blocks.slice(cutAt);
       this.foldedTurns += dropTurns;
+      this.structVer++;
       return;
     }
     // turn 内裁剪：只看最后一个 turn（长回合的工具调用是块数膨胀的主要来源）
@@ -168,21 +186,38 @@ export class Transcript implements Component {
       // 保留 turn 的首块（user 消息本体），从它之后开始丢
       this.blocks = [...this.blocks.slice(0, lastStart + 1), ...this.blocks.slice(lastStart + 1 + drop)];
       this.foldedBlocks += drop;
+      this.structVer++;
     }
   }
 
   render(width: number): string[] {
-    const out: string[] = [];
+    // head 折叠提示行：每帧重算但仅 2 行，成本可忽略；逐行钳到 width 作为安全网。
+    const head: string[] = [];
     if (this.foldedTurns > 0) {
-      out.push(c.dim(`· 更早的 ${this.foldedTurns} 轮已从屏幕折叠（仍在会话历史与 scrollback 中）`), '');
+      head.push(truncateToWidth(c.dim(`· 更早的 ${this.foldedTurns} 轮已从屏幕折叠（仍在会话历史与 scrollback 中）`), width), '');
     }
     if (this.foldedBlocks > 0) {
-      out.push(c.dim(`· 本轮 ${this.foldedBlocks} 个条目已折叠`), '');
+      head.push(truncateToWidth(c.dim(`· 本轮 ${this.foldedBlocks} 个条目已折叠`), width));
     }
-    for (const b of this.blocks) out.push(...b.render(width));
-    // 出口统一截断：各子块内部已逐行截断，但折叠提示行与任何越界内容在此做最后一道阀。
-    // pi-tui doRender 对 visibleWidth > width 的行直接 throw—— Transcript 是渲染栈里条目最多
-    // 的一环，这里再截一次成本低、能兜住子块遗漏或长折叠文案。
-    return out.map((l) => truncateToWidth(l, width));
+
+    const lastIdx = this.blocks.length - 1;
+    // 冻结前缀 = 除尾块外全部块的渲染结果。判定条件 (width, structVer) 任一变化即重算：
+    // width 变是终端缩放；structVer 变是非尾块/结构性变化（push/reset/折叠/裁剪/非尾块回填）。
+    // 尾块的内容变更（流式正文追加、运行中工具 spinner+计时）不递增 structVer，故前缀在
+    // 整个流式过程中命中缓存——这是把每帧成本从 O(全转录行数) 降到 O(尾块行数) 的关键。
+    let prefix: string[];
+    if (this.prefixCache !== null && this.prefixCache.width === width && this.prefixCache.ver === this.structVer) {
+      prefix = this.prefixCache.lines;
+    } else {
+      prefix = [];
+      for (let i = 0; i < lastIdx; i++) prefix.push(...this.blocks[i]!.render(width));
+      this.prefixCache = { width, ver: this.structVer, lines: prefix };
+    }
+    // 尾块每帧重渲：assistant 正文流式追加 / 运行中工具的 spinner 帧与计时都随时间变化。
+    const tail = lastIdx >= 0 ? this.blocks[lastIdx]!.render(width) : [];
+    // 前缀各行由各块渲染器在冻结时已钳到 width（各 renderItem 分支逐行 truncateToWidth），
+    // 同 width 下必然安全，故前缀不重复截断；尾块是热变更内容，保留一次截断作防回归安全网。
+    const safeTail = tail.map((l) => truncateToWidth(l, width));
+    return [...head, ...prefix, ...safeTail];
   }
 }
