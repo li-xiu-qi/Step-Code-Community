@@ -20,6 +20,12 @@ export const globTool: ToolDef<z.infer<typeof schema>> = {
   access: (input, ctx) => ({ kind: 'read', path: resolvePath(ctx.cwd, input.path ?? '.') }),
   async execute(input, ctx) {
     const root = resolvePath(ctx.cwd, input.path ?? '.');
+    // 搜索隔离：确保搜索范围不超出 cwd
+    const normalizedRoot = root.replace(/\\/g, '/');
+    const normalizedCwd = ctx.cwd.replace(/\\/g, '/');
+    if (!normalizedRoot.startsWith(normalizedCwd)) {
+      return fail(`搜索范围超出了当前工作目录。请指定工作目录内的路径。`);
+    }
     let matches: string[];
     try {
       matches = globSync(input.pattern, { cwd: root, exclude: IGNORE }) as string[];

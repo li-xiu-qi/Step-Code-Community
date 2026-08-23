@@ -583,6 +583,17 @@ export async function* runAgent(opts: RunAgentOptions): AsyncGenerator<AgentEven
         measuredLength: lenBefore,
         stopReason: outcome.stopReason,
       });
+      // Prompt cache 过期提示：input 较大但 cache_read 为 0 → 缓存冷启动
+      if (
+        u.cache_read_input_tokens === 0 &&
+        (u.input_tokens ?? 0) > 5000 &&
+        u.cache_creation_input_tokens !== undefined
+      ) {
+        yield {
+          type: 'notice',
+          message: '提示：本次请求未命中 prompt cache（缓存冷启动）。后续请求将逐步建立缓存。',
+        };
+      }
     }
     // goal token 计量：每回合拿到真实 usage 即按计费口径累计（仅 active 累计，见 GoalMode.addTokens）
     if (outcome.usage !== undefined) ctx.goal?.addTokens(outcome.usage);
