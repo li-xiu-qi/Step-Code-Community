@@ -476,6 +476,29 @@ When `[tools.web]` is not configured, built-in defaults are used; no manual chan
 
 For long sessions or when many sub-agents fetch pages in parallel, reduce `max_bytes` to fit your memory budget; if you mostly fetch large pages, increase `max_entry_bytes`.
 
+### `disabled_tools`
+
+Disable specific tools by listing their names in a top-level array. Disabled tools are not sent to the model and do not appear in `/help`. No tools are disabled by default.
+
+```toml
+disabled_tools = ["bash", "web_search"]  # disable bash and web search
+```
+
+Commonly used to limit tool exposure in specific scenarios (e.g., when a sub-agent should not have bash access).
+
+### `[git]` auto-commit
+
+When enabled, `edit_file` / `write_file` automatically run `git add + commit` on success, if the file is inside a git repository and not in a team worktree. The commit message is auto-generated from diff statistics.
+
+```toml
+[git]
+auto_commit = true
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `auto_commit` | `false` | Auto git commit after file edits |
+
 ## `[[hooks]]`: lifecycle hooks
 
 Run your shell commands at lifecycle event points, for observation or for blocking. Declared as a `[[hooks]]` array, with four fields per entry:
