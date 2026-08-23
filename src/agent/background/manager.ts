@@ -152,6 +152,8 @@ export class BackgroundManager {
   private readonly options: BackgroundManagerOptions;
   /** 已终态、待投递给会话的任务（runAgent 回合边界 drain 注入；抑制通知的任务不入队）。 */
   private readonly pendingSettled: BackgroundTask[] = [];
+  /** 等待任务终态的 resolve 回调（waitFor 用，settle 时唤醒）。 */
+  private readonly waiters = new Map<string, (task: BackgroundTask) => void>();
 
   constructor(private readonly maxRunning: number = 10, options: BackgroundManagerOptions = {}) {
     this.options = options;
@@ -604,6 +606,12 @@ export class BackgroundManager {
     task.onStop = undefined;
     task.proc = undefined;
     task.getPartialOutput = undefined;
+    // 唤醒等待者（waitFor）：无论是否抑制通知，等待方都应收到结果
+    const waiter = this.waiters.get(task.id);
+    if (waiter !== undefined) {
+      this.waiters.delete(task.id);
+      waiter(this.toPublic(task));
+    }
     // 终态事件先走审计通道（含被抑制任务），再走通知通道
     this.options.onSettleEvent?.(this.toPublic(task));
     if (task.suppressNotify === true) return;
@@ -715,6 +723,29 @@ export class BackgroundManager {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * 等待指定后台任务终态（completed / failed / killed）。
+   * 已终态则立即返回；运行中则挂起直到 settle 唤醒。
+   * signal 用于支持用户取消（Esc/Ctrl+C）。
+   */
+  waitFor(id: string, signal?: AbortSignal): Promise<BackgroundTask | null> {
+    const task = this.tasks.get(id);
+    if (task === undefined) return Promise.resolve(null);
+    if (task.status !== 'running') return Promise.resolve(this.toPublic(task));
+    return new Promise<BackgroundTask | null>((resolve) => {
+      const onAbort = (): void => {
+        this.waiters.delete(id);
+        resolve(null);
+      };
+      if (signal?.aborted) return resolve(null);
+      signal?.addEventListener('abort', onAbort, { once: true });
+      this.waiters.set(id, (t) => {
+        signal?.removeEventListener('abort', onAbort);
+        resolve(t);
+      });
+    });
   }
 
   get(id: string): BackgroundTask | undefined {

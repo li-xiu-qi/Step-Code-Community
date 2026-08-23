@@ -18,6 +18,35 @@ export const taskListTool: ToolDef<z.infer<typeof listSchema>> = {
   },
 };
 
+const waitSchema = z.object({
+  task_id: z.string().describe('后台任务 id。'),
+});
+
+/**
+ * 同步等待后台任务终态：阻塞直到任务完成/失败/被取消。
+ * 用于模型启动后台任务后需要其结果继续推理的场景，
+ * 避免依赖回合边界的异步通知投递。
+ */
+export const taskWaitTool: ToolDef<z.infer<typeof waitSchema>> = {
+  name: 'task_wait',
+  description:
+    '同步等待指定后台任务完成（阻塞直到终态）。返回任务状态与输出尾部。适用于启动后台任务后需要其结果继续推理的场景。支持 Esc/Ctrl+C 取消等待。',
+  schema: waitSchema,
+  async execute(input, ctx) {
+    if (ctx.background === undefined) return fail('当前上下文不支持后台任务。');
+    const task = await ctx.background.waitFor(input.task_id, ctx.signal);
+    if (task === null) {
+      if (ctx.signal?.aborted) return fail('等待被用户取消。');
+      return fail(`任务不存在：${input.task_id}`);
+    }
+    const status = task.status === 'completed' ? '✓ 完成' : task.status === 'failed' ? '✗ 失败' : '⊘ 已终止';
+    const lines = [`${status} | ${task.command}`];
+    if (task.exitCode !== undefined) lines.push(`exit: ${task.exitCode}`);
+    if (task.output) lines.push(task.output.slice(-4000));
+    return ok(lines.join('\n'));
+  },
+};
+
 const outputSchema = z.object({
   task_id: z.string().describe('后台任务 id。'),
 });
