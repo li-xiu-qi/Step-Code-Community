@@ -225,6 +225,30 @@ describe('SessionStore.resume 检查点 + 尾段重放', () => {
     expect(store.resume(cwd, s.id)!.session.queue).toEqual(['快照里的排队']);
   });
 
+  it('字节偏移路径：检查点前的大段前缀被跳过，仅尾段重放（性能与正确性双重锁定）', () => {
+    const s = store.create(cwd, 'm');
+    // 检查点前写入大量前缀事件（模拟长历史）
+    const prefix: ReturnType<typeof stored>[] = [];
+    for (let i = 0; i < 500; i++) {
+      prefix.push(stored({ role: i % 2 ? 'assistant' : 'user', content: `前缀-${i}` }, { kind: i % 2 ? 'assistant' : 'user' }));
+    }
+    s.messages.push(...prefix);
+    store.appendFull(cwd, s.id, prefix);
+    store.save(s); // 检查点覆盖全部前缀，wireByteOffset 指向前缀末尾
+    // 前缀里混入一个会改状态的事件，但它在检查点前——快照状态应胜出，不得被重放覆盖
+    // （该事件已随前缀 appendFull 进日志；save 后再追加尾段）
+    const tail = stored({ role: 'assistant', content: '尾段唯一' }, { kind: 'assistant' });
+    store.appendWire(cwd, s.id, [{ type: 'context.append_message', ts: TS, message: tail }]);
+
+    const result = store.resume(cwd, s.id)!;
+    // 尾段只重放 1 条，前缀 500 条来自快照（不被重复重放）
+    expect(result.replayedEvents).toBe(1);
+    expect(result.session.messages).toHaveLength(501);
+    expect(result.session.messages[500].message.content).toBe('尾段唯一');
+    // wireByteOffset 已推进，下次 save 的检查点覆盖全部
+    expect(result.session.wireByteOffset).toBeGreaterThan(0);
+  });
+
   it('无快照且无日志：返回 null', () => {
     expect(store.resume(cwd, 'nope')).toBeNull();
   });

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { mapBlocksDeep, type AnyContentBlock, type StoredMessage } from '../agent/message.js';
@@ -70,6 +70,13 @@ export interface SessionData extends SessionMeta {
    * 从空基底全量重放事件（破坏性语义，不保留旧快照消息）。
    */
   wireSeq?: number;
+  /**
+   * 检查点的字节偏移：本快照覆盖到事件日志（wire.jsonl）的字节位置。
+   * 与 wireSeq 配套——wireSeq 是条数游标（供旧逻辑切片），本字段是字节游标（供增量读取）。
+   * resume 时若本字段有效，直接从该偏移读尾段，跳过前缀的 read+parse，长会话下把
+   * O(全事件数) 降到 O(尾段数)。旧快照缺失时回退全量读取，行为不变。
+   */
+  wireByteOffset?: number;
 }
 
 /** resume 产物：检查点 + 尾段重放后的完整会话态，外加通知幂等集合（供后台任务对账用）。 */
@@ -398,6 +405,16 @@ export class SessionStore {
     }
     const wireCount = this.wireEventCount(session.cwd, session.id);
     if (wireCount !== undefined) session.wireSeq = wireCount;
+    // 字节偏移检查点：save 时刻 wire.jsonl 的文件大小即为「快照覆盖到哪」的字节边界。
+    // resume 时据此只读尾段。取不到（文件不存在/权限）就不写，resume 回退全量读取。
+    const wireFile = this.wireFileFor(session.cwd, session.id);
+    if (existsSync(wireFile)) {
+      try {
+        session.wireByteOffset = statSync(wireFile).size;
+      } catch {
+        // 取不到字节偏移：不写字段，resume 回退全量，行为不变
+      }
+    }
     const toWrite: SessionData = {
       ...session,
       messages: session.messages.map((m) => this.offloadForStorage(session.cwd, m)),
@@ -499,6 +516,39 @@ export class SessionStore {
     return events;
   }
 
+  /**
+   * 从指定字节偏移读事件日志尾段（供 resume 增量恢复）。
+   * 与 loadWire 的区别：只读 offset 之后的部分，跳过前缀的 read+parse——长会话下把
+   * O(全事件数) 降到 O(尾段数)。字节偏移由 save 写入快照的 wireByteOffset 承载：
+   * 它是 save 时刻（appendFull 之后）的 wire.jsonl 文件大小，即「快照覆盖到哪」的字节边界。
+   * offset 越界（文件被截断）或文件缺失返回空数组；损坏行与崩溃截断的尾行跳过（同 loadWire）。
+   */
+  private loadWireFrom(cwd: string, id: string, byteOffset: number): WireEvent[] {
+    const file = this.wireFileFor(cwd, id);
+    let size = 0;
+    try {
+      size = statSync(file).size;
+    } catch {
+      return [];
+    }
+    if (byteOffset >= size) return [];
+    const toRead = size - byteOffset;
+    const buf = Buffer.alloc(toRead);
+    const fd = openSync(file, 'r');
+    try {
+      readSync(fd, buf, 0, toRead, byteOffset);
+    } finally {
+      closeSync(fd);
+    }
+    const events: WireEvent[] = [];
+    for (const line of buf.toString('utf8').split('\n')) {
+      if (line.trim() === '') continue;
+      const event = parseWireLine(line);
+      if (event !== null) events.push(event);
+    }
+    return events;
+  }
+
   /** 事件日志当前条数：优先缓存；无缓存且日志文件存在时现场统计；无日志返回 undefined。 */
   private wireEventCount(cwd: string, id: string): number | undefined {
     const cacheKey = `${workdirKey(cwd)}${id}`;
@@ -559,24 +609,42 @@ export class SessionStore {
    */
   resume(cwd: string, id: string): ResumeResult | null {
     const snapshot = this.load(cwd, id);
-    const events = this.loadWire(cwd, id);
-    if (snapshot === null && events.length === 0) return null;
 
-    // 1. 基底 + 2. 尾段切片：有游标时快照作检查点、只重放游标后尾段；
-    // 无游标（无快照或旧快照）时忽略快照 messages，从空基底全量重放。
+    // 1. 基底 + 2. 读尾段：字节偏移检查点有效时只读尾段（省前缀 read+parse）；
+    //    否则回退全量读取（旧快照/无快照），行为与历史一致。
     const state = emptyWireReplayState();
     let tail: WireEvent[];
-    if (snapshot?.wireSeq !== undefined) {
+    let totalEvents: number;
+    // delivered 回填的事件源：字节路径只遍历尾段（快照之前的由下方 messages 回填兜底），
+    // 回退路径遍历全量（行为不变）。
+    let deliveredSource: WireEvent[];
+    if (snapshot?.wireByteOffset !== undefined) {
       state.messages = [...snapshot.messages];
       state.mode = snapshot.mode;
       state.planMode = snapshot.planMode;
       state.thinkOverride = snapshot.thinkOverride;
       state.goal = snapshot.goal;
-      // 不变量：persist 先写事件后存快照，游标只会落后（崩溃窗口）永不超前于快照
-      // 内容，尾段事件必然是快照之外的新消息。超前 = 历史已被旧版本污染，不兜底。
-      tail = events.slice(snapshot.wireSeq);
+      // 字节游标有效：直接从偏移读尾段，跳过前缀的 read+parse，长会话 O(全事件)→O(尾段)。
+      tail = this.loadWireFrom(cwd, id, snapshot.wireByteOffset);
+      totalEvents = (snapshot.wireSeq ?? 0) + tail.length;
+      deliveredSource = tail;
     } else {
-      tail = events;
+      const events = this.loadWire(cwd, id);
+      if (snapshot === null && events.length === 0) return null;
+      if (snapshot?.wireSeq !== undefined) {
+        state.messages = [...snapshot.messages];
+        state.mode = snapshot.mode;
+        state.planMode = snapshot.planMode;
+        state.thinkOverride = snapshot.thinkOverride;
+        state.goal = snapshot.goal;
+        // 不变量：persist 先写事件后存快照，游标只会落后（崩溃窗口）永不超前于快照
+        // 内容，尾段事件必然是快照之外的新消息。超前 = 历史已被旧版本污染，不兜底。
+        tail = events.slice(snapshot.wireSeq);
+      } else {
+        tail = events;
+      }
+      totalEvents = events.length;
+      deliveredSource = events;
     }
     for (const event of tail) applyWireEvent(state, event);
 
@@ -589,11 +657,12 @@ export class SessionStore {
     if (tail.some((e) => e.type === 'think.set')) session.thinkOverride = state.thinkOverride;
     if (tail.some((e) => e.type === 'goal.update')) session.goal = state.goal;
     if (tail.some((e) => e.type === 'queue.update')) session.queue = state.queue;
-    session.wireSeq = events.length;
+    session.wireSeq = totalEvents;
 
-    // 已送达集合：delivered 事件 add-only，全流回放幂等；另从最终消息历史回填
-    // （通知消息进了历史即视为送达，覆盖「delivered 事件丢失但消息已落盘」的崩溃窗口）
-    for (const event of events) {
+    // 已送达集合：尾段 delivered 事件 + 从最终消息历史回填
+    // （通知消息进了历史即视为送达，覆盖「delivered 事件丢失但消息已落盘」的崩溃窗口；
+    // 字节偏移路径下快照之前的 delivered 不再逐条遍历，由下方 messages 回填统一兜底）
+    for (const event of deliveredSource) {
       if (event.type === 'background.notify_delivered') applyWireEvent(state, event);
     }
     for (const m of state.messages) {
