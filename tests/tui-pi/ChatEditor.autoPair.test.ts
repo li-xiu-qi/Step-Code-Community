@@ -24,6 +24,7 @@ const text = (): string => editor.getText();
 const col = (): number => editor.getCursor().col;
 const left = (): void => editor.handleInput('\x1b[D');
 const right = (): void => editor.handleInput('\x1b[C');
+const bs = (): void => editor.handleInput('\x7f');
 
 describe('ChatEditor 自动配对集成', () => {
   it('键入 ( 插入 () 且光标在中间', () => {
@@ -88,5 +89,30 @@ describe('ChatEditor 自动配对集成', () => {
     type('x'); // 末尾追加
     expect(text()).toBe('()x');
     expect(col()).toBe(3);
+  });
+
+  it('配对内退格整对删除：(|) 按退格 → 空', () => {
+    type('('); // () 光标 1
+    bs();
+    expect(text()).toBe('');
+    expect(col()).toBe(0);
+  });
+
+  it('配对内退格保留外部内容：()x 光标在 ( 后按退格 → 只剩 x', () => {
+    type('('); // ()
+    type(')'); // type-over → 光标 2
+    type('x'); // ()x 光标 3
+    left(); left(); // 回到 ( 与 ) 之间，光标 1
+    bs();
+    expect(text()).toBe('x');
+    expect(col()).toBe(0);
+  });
+
+  it('非配对退格走正常逻辑：ab 末尾退格 → a', () => {
+    type('a');
+    type('b');
+    bs();
+    expect(text()).toBe('a');
+    expect(col()).toBe(1);
   });
 });

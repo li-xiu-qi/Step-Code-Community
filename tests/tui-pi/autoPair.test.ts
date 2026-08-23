@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { AUTO_PAIRS, CLOSE_CHARS, decodePrintable, planAutoPair, shouldPair } from '../../src/tui-pi/autoPair.js';
+import {
+  AUTO_PAIRS,
+  CLOSE_CHARS,
+  decodePrintable,
+  isPairSurrounding,
+  planAutoPair,
+  shouldPair,
+} from '../../src/tui-pi/autoPair.js';
 
 describe('autoPair 纯逻辑', () => {
   describe('AUTO_PAIRS / CLOSE_CHARS', () => {
@@ -80,6 +87,24 @@ describe('autoPair 纯逻辑', () => {
       expect(shouldPair('"', '.')).toBe(true);
       expect(shouldPair('"', 'a')).toBe(false);
       expect(shouldPair("'", '9')).toBe(false);
+    });
+  });
+
+  describe('isPairSurrounding 配对内退格判定', () => {
+    it('光标夹在配对的 () 中间', () => {
+      expect(isPairSurrounding('(', ')')).toBe(true);
+      expect(isPairSurrounding('[', ']')).toBe(true);
+      expect(isPairSurrounding('{', '}')).toBe(true);
+    });
+    it('引号配对的中间（光标处是同字符引号）也命中', () => {
+      expect(isPairSurrounding('"', '"')).toBe(true);
+      expect(isPairSurrounding("'", "'")).toBe(true);
+    });
+    it('非配对形态返回 false', () => {
+      expect(isPairSurrounding('(', ']')).toBe(false); // 括号不匹配
+      expect(isPairSurrounding('a', ')')).toBe(false); // 前一字符不是开符
+      expect(isPairSurrounding('', ')')).toBe(false); // 行首无前一字符
+      expect(isPairSurrounding('(', '')).toBe(false); // 光标处为空（行尾）
     });
   });
 });
