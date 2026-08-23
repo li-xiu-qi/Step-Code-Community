@@ -519,11 +519,16 @@ ctx.attachments = store.attachments;
 
 /** 渲染交互选择器拿到选中 id（null=放弃开新会话）。列表为空则直接返回 null，不弹选择器。 */
 async function pickSession(): Promise<string | null> {
-  const sessions = store.list(cwd);
-  if (sessions.length === 0) return null;
+  const page = store.listPaginated(cwd, 50);
+  if (page.items.length === 0) return null;
   // 选择器自己起一个 pi-tui 主屏并在结束时停掉，屏幕随后让给 PiChat。
-  // 上限 200 条：更早的会话只能按 id 恢复。
-  return await pickSessionStandalone(sessions.slice(0, 200));
+  // 首屏只取 50 条；后续由 onLoadMore 回调按需追加。
+  return await pickSessionStandalone(page.items, (itemCount) => {
+    if (itemCount >= 200) return null; // 上限 200 条
+    const all = store.list(cwd);
+    if (itemCount >= all.length) return null;
+    return all.slice(itemCount, itemCount + 50);
+  });
 }
 
 /**

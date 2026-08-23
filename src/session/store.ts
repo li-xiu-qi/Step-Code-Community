@@ -652,6 +652,27 @@ export class SessionStore {
     return this.rebuildIndex(cwd);
   }
 
+  /**
+   * 分页列出会话元信息（cursor-based）。
+   *
+   * cursor 是上一页最后一条的 updatedAt（ISO 字符串）；返回 updatedAt < cursor 的下一页。
+   * 首次调用不传 cursor，返回最新的一页。
+   *
+   * 返回 { items, nextCursor }；nextCursor 为 null 表示没有更多。
+   */
+  listPaginated(cwd: string, limit = 30, cursor?: string): { items: SessionMeta[]; nextCursor: string | null } {
+    const all = this.list(cwd);
+    let startIdx = 0;
+    if (cursor !== undefined) {
+      // 索引已按 updatedAt 倒序，找第一条 updatedAt < cursor 的位置
+      startIdx = all.findIndex((s) => s.updatedAt < cursor);
+      if (startIdx < 0) startIdx = all.length; // cursor 比所有记录都新 → 无更多
+    }
+    const items = all.slice(startIdx, startIdx + limit);
+    const nextCursor = startIdx + limit < all.length ? items[items.length - 1]!.updatedAt : null;
+    return { items, nextCursor };
+  }
+
   /** 该工作目录下最近更新的会话，供 --continue 使用。 */
   latest(cwd: string): SessionData | null {
     const metas = this.list(cwd);
