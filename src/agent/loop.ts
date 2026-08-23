@@ -213,6 +213,7 @@ async function maybeCompact(
   onWireEvent?: (event: WireEvent) => void,
   compactionProvider?: ChatProvider,
   signal?: AbortSignal,
+  preserveThinking = false,
 ): Promise<CompactOutcome> {
   if (!shouldCompact(usedTokens, thresholds)) return { acted: false, attemptedButFailed: false };
   let acted = false;
@@ -253,6 +254,7 @@ async function maybeCompact(
       compactionModel,
       userMessageBudget,
       signal,
+      preserveThinking,
     );
     if (compacted !== messages) {
       replaceMessages(messages, compacted);
@@ -633,6 +635,7 @@ export async function* runAgent(opts: RunAgentOptions): AsyncGenerator<AgentEven
           opts.compactionModel,
           { maxTokens: userMaxTokens },
           signal,
+          compaction?.preserveThinking ?? false,
         );
         if (compacted !== messages) {
           replaceMessages(messages, compacted);

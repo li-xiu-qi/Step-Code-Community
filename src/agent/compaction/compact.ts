@@ -222,6 +222,8 @@ export interface CompactionThresholds {
   reservedTokens: number;
   /** 单轮最大压缩次数。超过后本轮不再自动压缩。Infinity = 不限制。 */
   maxCompactionPerTurn: number;
+  /** 压缩时保留 thinking 块。false = 丢弃（默认，省空间）；true = 保留为 [思考] 标记。 */
+  preserveThinking: boolean;
 }
 
 /** 是否该压缩：占用超过比例阈值，或剩余窗口不足预留量（两条件取或）。 */
@@ -714,6 +716,7 @@ export async function fullCompact(
   model?: string,
   userBudget?: { maxTokens?: number; headTokens?: number },
   signal?: AbortSignal,
+  preserveThinking = false,
 ): Promise<StoredMessage[]> {
   /**
    * 中断判定统一走这里读实时值。
@@ -762,7 +765,7 @@ export async function fullCompact(
     // 每轮开工前检查：中断可能发生在上一轮请求之后、本轮之前（如收缩历史期间）
     if (aborted()) return messages;
     const historyText = olderForSummary
-      .map((m) => `${m.message.role}: ${serializeContent(m.message.content)}`)
+      .map((m) => `${m.message.role}: ${serializeContent(m.message.content, preserveThinking)}`)
       .join('\n');
     const summaryPrompt =
       `${SUMMARY_INSTRUCTION}${gateHint}\n\n--- 以下是即将被清空的对话历史 ---\n\n` + historyText;
@@ -955,12 +958,14 @@ function truncateHead(text: string, budget: number): string {
  * - tool_result：内嵌文本截断保留（「返回的具体值」是重跑代价最高的信息）。
  * - image：维持 stepref marker（带 hash，可定位原图）。
  */
-export function serializeContent(content: Anthropic.MessageParam['content']): string {
+export function serializeContent(content: Anthropic.MessageParam['content'], preserveThinking = false): string {
   if (typeof content === 'string') return content;
   return content
     .map((b: Anthropic.ContentBlockParam) => {
       if (b.type === 'text') return b.text;
-      if (b.type === 'thinking' || b.type === 'redacted_thinking') return '';
+      if ((b.type === 'thinking' || b.type === 'redacted_thinking') && !preserveThinking) return '';
+      if (b.type === 'thinking' && preserveThinking) return '[思考]';
+      if (b.type === 'redacted_thinking' && preserveThinking) return '[已编辑思考]';
       if (b.type === 'tool_use') {
         let args = '';
         try {

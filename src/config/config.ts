@@ -47,6 +47,8 @@ export interface CompactionConfig {
   reservedTokens: number;
   /** 单轮最大压缩次数。超过后本轮不再自动压缩。Infinity = 不限制。 */
   maxCompactionPerTurn: number;
+  /** 压缩时保留 thinking/redacted_thinking 块（标记为 [思考] 而非丢弃）。默认 false。 */
+  preserveThinking: boolean;
   /** 压缩摘要专用模型（大小模型协同）。缺省用主会话模型，行为与之前完全一致。 */
   model?: string;
   /**
@@ -739,6 +741,7 @@ export function resolveCompactionConfig(raw: unknown): CompactionConfig {
       rawMaxPerTurn !== undefined && Number.isFinite(rawMaxPerTurn)
         ? Math.min(COMPACTION_MAX_PER_TURN_MAX, Math.max(COMPACTION_MAX_PER_TURN_MIN, Math.round(rawMaxPerTurn)))
         : COMPACTION_MAX_PER_TURN_DEFAULT,
+    preserveThinking: t['preserve_thinking'] === true,
   };
   // 压缩专用模型：未配置时键不进结果对象（下游 toEqual 精确断言依赖此形态）
   const model = asString(t['model']);
