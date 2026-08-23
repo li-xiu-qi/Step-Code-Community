@@ -159,6 +159,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: 'usage', describe: 'cmd.usage' },
   { name: 'context', describe: 'cmd.context' },
   { name: 'resume', aliases: ['sessions'], describe: 'cmd.resume' },
+  { name: 'run', describe: 'cmd.run' },
   { name: 'rename', describe: 'cmd.rename' },
   { name: 'agents', describe: 'cmd.agents' },
   {

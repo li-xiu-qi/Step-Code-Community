@@ -1,6 +1,7 @@
 import { mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { backupBeforeWrite } from './checkpoint.js';
+import { maybeAutoCommit } from './autoCommit.js';
 import { z } from 'zod';
 import { resolvePath } from './fsutil.js';
 import { fail, ok, type ToolDef } from './types.js';
@@ -133,6 +134,8 @@ export const editFileTool: ToolDef<z.infer<typeof schema>> = {
       // 文件级 checkpoint：写入前备份原始内容（CRLF 原样、未经归一化），供 /restore 回滚
       backupBeforeWrite(ctx.cwd, abs, 'edit_file');
       writeFileSync(abs, next, 'utf8');
+      // git 自动提交（config [git] auto_commit = true 时生效）
+      maybeAutoCommit(ctx.gitConfig, abs, ctx.cwd);
     } catch (e) {
       return fail(`写入失败：${(e as Error).message}`);
     }

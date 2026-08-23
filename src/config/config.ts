@@ -136,6 +136,12 @@ export interface WebCacheConfig {
   maxEntryBytes?: number;
 }
 
+/** git 集成配置（[git] 段）。 */
+export interface GitConfig {
+  /** 文件编辑后自动 git add + commit（默认 false）。 */
+  autoCommit?: boolean;
+}
+
 /**
  * thinking（推理过程）请求配置（[thinking] 段）。
  *
@@ -338,6 +344,10 @@ export interface StepCodeConfig {
    * 避免「全剥光、模型变瞎」。0 = 旧行为（全换占位）。
    */
   mediaKeepRecentImages?: number;
+  /** git 集成配置（[git] 段）。未配置时 autoCommit 默认 false。 */
+  git?: GitConfig;
+  /** 禁用的工具名列表（config.toml disabled_tools）。合并到 tools 阶段后统一过滤。 */
+  disabledTools?: string[];
   /** [models.<别名>] 模型别名表（渠道与模型分离）。未配置或全部无效时键不进结果对象。 */
   models?: Record<string, ModelEntry>;
   /** [providers.<id>] 渠道表（自定义服务商端点/密钥）。未配置或全部无效时键不进结果对象。 */
@@ -567,11 +577,13 @@ interface TomlConfigShape {
   media_keep_recent?: unknown;
   extra_skill_dirs?: unknown;
   disabled_skills?: unknown;
+  disabled_tools?: unknown;
   skill_listing_budget?: unknown;
   models?: unknown;
   providers?: unknown;
   hooks?: unknown;
   tui?: unknown;
+  git?: unknown;
 }
 
 /**
@@ -873,6 +885,15 @@ export function resolveWebCacheConfig(raw: unknown): WebCacheConfig | undefined 
   const maxEntryBytes = clampInt(t['max_entry_bytes'], 0, 100 * 1024 * 1024, 0);
   if (maxSize === 0 && maxBytes === 0 && maxEntryBytes === 0) return undefined;
   return { maxSize, maxBytes, maxEntryBytes };
+}
+
+/** 解析 [git] 段。auto_commit 默认 false。 */
+export function resolveGitConfig(raw: unknown): GitConfig | undefined {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined;
+  const t = raw as Record<string, unknown>;
+  const autoCommit = t['auto_commit'] === true;
+  if (!autoCommit) return undefined;
+  return { autoCommit: true };
 }
 
 /**
@@ -1315,6 +1336,12 @@ export function loadConfig(
   // 网页结果缓存容量：三个维度全部可选，未配置时使用内置默认值
   const webCache = resolveWebCacheConfig(toml.tools);
   if (webCache !== undefined) cfg.web = webCache;
+  // git 集成：未配置时键不进结果对象（autoCommit 默认 false）
+  const git = resolveGitConfig(toml.git);
+  if (git !== undefined) cfg.git = git;
+  // 禁用的工具名列表：数组格式 ["bash", "web_search"]
+  const disabledTools = resolveStringArray(toml.disabled_tools);
+  if (disabledTools !== undefined) cfg.disabledTools = disabledTools;
   // 自定义加载路径：未配置或非法时键不进结果对象（下游 toEqual 精确断言依赖此形态）
   const agentsPaths = resolveStringArray(toml.agents_paths);
   if (agentsPaths !== undefined) cfg.agentsPaths = agentsPaths;

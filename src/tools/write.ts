@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { backupBeforeWrite } from './checkpoint.js';
+import { maybeAutoCommit } from './autoCommit.js';
 import { dirname } from 'node:path';
 import { z } from 'zod';
 import { resolvePath } from './fsutil.js';
@@ -36,6 +37,8 @@ export const writeFileTool: ToolDef<z.infer<typeof schema>> = {
       // 文件级 checkpoint：覆盖写前备份原始内容（已存在时），供 /restore 回滚
       backupBeforeWrite(ctx.cwd, abs, 'write_file');
       writeFileSync(abs, input.content, 'utf8');
+      // git 自动提交（config [git] auto_commit = true 时生效）
+      maybeAutoCommit(ctx.gitConfig, abs, ctx.cwd);
     } catch (e) {
       return fail(`写入失败：${(e as Error).message}`);
     }

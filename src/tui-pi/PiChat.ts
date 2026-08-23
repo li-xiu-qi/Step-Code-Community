@@ -619,6 +619,9 @@ export class PiChat {
     // 上个进程崩溃或被强杀时，那批任务的 onSettle 从未触发过，只有这里能捞回来。
     this.reconcileBackground(this.deps.resumeDelivered ?? new Set());
     this.tui.start();
+    // 预热模型连接：发送一个最小请求，建立 HTTP 连接池/TLS 握手。
+    // 首条真实消息时复用已建立的连接，减少等待时间。失败静默。
+    void this.warmupProvider();
     // @ 文件补全的索引：后台扫 cwd，不阻塞首帧。扫完前 @ 补全为空（优雅降级），
     // 失败也降级为空索引，不影响命令补全。
     void scanFileIndex(this.deps.ctx.cwd)
@@ -1559,6 +1562,10 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
         this.runRestore(args);
         return;
 
+      case 'run':
+        await this.runShellCommand(args);
+        return;
+
       case 'compact':
         await this.runCompact();
         return;
@@ -2462,6 +2469,56 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     const res = restoreFile(this.deps.ctx.cwd, abs);
     if (res.ok) this.push({ kind: 'note', text: `已回滚：${arg}` });
     else this.push({ kind: 'error', text: `回滚失败：${res.reason}` });
+  }
+
+  /**
+   * /run <命令>：在 cwd 下执行命令，输出展示并注入对话上下文。
+   * AI 下一轮对话时能在 transcript 里看到输出，据此继续分析/修复。
+   * 超时 60s，输出截断到 4KB。
+   */
+  private async runShellCommand(command: string): Promise<void> {
+    if (command === '') {
+      this.push({ kind: 'note', text: '用法：/run <命令>（执行命令，输出回传进对话上下文）' });
+      return;
+    }
+    this.push({ kind: 'note', text: `⚡ /run: ${command}` });
+    const { execSync } = await import('node:child_process');
+    let output: string;
+    try {
+      output = execSync(command, {
+        cwd: this.deps.ctx.cwd,
+        encoding: 'utf8',
+        timeout: 60_000,
+        maxBuffer: 10 * 1024 * 1024,
+        stdio: 'pipe',
+      });
+    } catch (e: unknown) {
+      const err = e as { stdout?: string; stderr?: string; message?: string };
+      output = (err.stdout ?? '') + (err.stderr ?? '') || (err.message ?? String(e));
+    }
+    const len = output.length;
+    const trimmed = len > 4000 ? output.slice(0, 4000) + '\n…（输出过长已截断）' : output;
+    // 注入对话上下文：下一轮 AI 能看到输出
+    const injected = `[用户通过 /run 执行的命令]\n$ ${command}\n${trimmed}`;
+    this.history.push(stored({ role: 'user', content: injected }, { kind: 'user_verbatim' }));
+    this.persist();
+    this.push({ kind: 'note', text: `命令执行完成（${len} 字节输出，已注入对话上下文）` });
+  }
+
+  /** 预热模型连接：发送最小请求建立 HTTP 连接池。失败静默。 */
+  private async warmupProvider(): Promise<void> {
+    try {
+      const stream = this.provider.stream({
+        system: 'Reply "ok".',
+        tools: [],
+        messages: [{ role: 'user', content: 'hi' }],
+      });
+      // 消费几个事件建立连接，不需要等完整响应
+      for await (const _ of stream) break;
+      await stream.finalMessage();
+    } catch {
+      // 预热失败静默：可能是模型不可用，但不影响后续正常对话
+    }
   }
 
   // ---------------------------------------------------------------- 会话生命周期命令
