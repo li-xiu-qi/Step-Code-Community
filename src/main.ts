@@ -41,17 +41,31 @@ const TARGET_HEAP_MB = Number(process.env.STEP_CODE_MAX_HEAP_MB) || 4096;
 
 Promise.all([import('node:v8'), import('node:child_process')]).then(([v8, cp]) => {
   const currentHeapMB = v8.default.getHeapStatistics().heap_size_limit / 1024 / 1024;
-  if (currentHeapMB >= TARGET_HEAP_MB * 0.9 || process.env.STEP_CODE_HEAP_REEXEC) {
-    // 堆够大，或已经是 re-exec 后的进程 → 加载 cli
+  if (currentHeapMB >= TARGET_HEAP_MB * 0.9) {
+    // 堆够大 → 加载 cli
     import('./cli.js').catch((e) => { console.error(e); process.exit(1); });
     return;
   }
-  // 堆不够，re-exec 加 --max-old-space-size
+  if (process.env.STEP_CODE_HEAP_REEXEC) {
+    // 已是 re-exec 进程但仍不够（系统/容器内存限制压低了 --max-old-space-size）：告警一次，
+    // 不静默裸跑、不无限重试。带着现有堆上限继续，让用户在 FATAL ERROR 前有线索。
+    console.error(
+      `[step] 警告：请求堆上限 ${TARGET_HEAP_MB}MB 未生效（实际约 ${Math.round(currentHeapMB)}MB），` +
+        '可能受系统或容器内存限制，长会话存在 OOM 风险。可设 STEP_CODE_MAX_HEAP_MB 调低目标值。',
+    );
+    import('./cli.js').catch((e) => { console.error(e); process.exit(1); });
+    return;
+  }
+  // 堆不够：re-exec 加 --max-old-space-size。
+  // 转发原有 node 标志（--inspect / --enable-source-maps / --import 等），剔除已存在的
+  // --max-old-space-size 避免重复冲突——调试与 source-map 不因 re-exec 静默失效。
+  const forwarded = process.execArgv.filter((a) => !a.startsWith('--max-old-space-size'));
   try {
-    cp.execFileSync(process.execPath, [`--max-old-space-size=${TARGET_HEAP_MB}`, ...process.argv.slice(1)], {
-      stdio: 'inherit',
-      env: { ...process.env, STEP_CODE_HEAP_REEXEC: '1' },
-    });
+    cp.execFileSync(
+      process.execPath,
+      [`--max-old-space-size=${TARGET_HEAP_MB}`, ...forwarded, ...process.argv.slice(1)],
+      { stdio: 'inherit', env: { ...process.env, STEP_CODE_HEAP_REEXEC: '1' } },
+    );
     process.exit(0);
   } catch (e: any) {
     if (e?.status != null) process.exit(e.status);

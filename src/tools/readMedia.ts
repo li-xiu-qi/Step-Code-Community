@@ -2,7 +2,7 @@ import { readFileSync, statSync } from 'node:fs';
 import { z } from 'zod';
 import { resolvePath } from './fsutil.js';
 import { parseImageMeta, type ImageMeta } from './imageMeta.js';
-import { fail, type ToolDef } from './types.js';
+import { fail, type ToolContext, type ToolDef } from './types.js';
 
 /** 读入文件硬上限：超过直接拒绝（不读进内存）。 */
 export const READ_MEDIA_MAX_BYTES = 100 * 1024 * 1024;
@@ -83,6 +83,45 @@ function sniffVideoMediaType(buf: Buffer): string {
 /** jimp 可重新编码的目标格式：jpeg→jpeg，其余（png/gif/bmp/tiff）→png。webp jimp 不支持，调用方已拦。 */
 function encodeMimeFor(meta: ImageMeta): 'image/jpeg' | 'image/png' {
   return meta.mime === 'image/jpeg' ? 'image/jpeg' : 'image/png';
+}
+
+/**
+ * 把工具返回里的媒体 base64 卸载成 stepref 指针（落盘到附件存储），让内存态只持 tiny 指针；
+ * 发 provider 前由 wire.toWire 把 stepref rehydrate 回 base64。小图（<OFFLOAD_THRESHOLD）不落盘、
+ * 原样内联（省得为几百字节开文件）。ctx.attachments 缺失（无附件上下文的调用）时原样返回。
+ *
+ * 为什么值得：read_media 每读一张图就把完整 base64 常驻进内存 history，compaction 不清顶层
+ * 图片块，长会话读几百张图即累积几百 MB~GB base64，是 OOM 的主嫌。入 history 前即转指针，
+ * 内存与「读了多少图」脱钩，base64 只在发请求的瞬间经 rehydrate 短暂存在。
+ */
+function offloadMedia<
+  T extends {
+    images?: { mediaType: string; base64: string }[];
+    videos?: { mediaType: string; base64: string }[];
+  },
+>(result: T, ctx: ToolContext): T {
+  const att = ctx.attachments;
+  if (att === undefined) return result;
+  let out: T = result;
+  if (result.images !== undefined && result.images.length > 0) {
+    out = {
+      ...out,
+      images: result.images.map((img) => ({
+        ...img,
+        base64: att.offload(ctx.cwd, img.base64, img.mediaType),
+      })),
+    };
+  }
+  if (result.videos !== undefined && result.videos.length > 0) {
+    out = {
+      ...out,
+      videos: result.videos.map((v) => ({
+        ...v,
+        base64: att.offload(ctx.cwd, v.base64, v.mediaType),
+      })),
+    };
+  }
+  return out;
 }
 
 /**
@@ -212,11 +251,11 @@ export const readMediaTool: ToolDef<Input> = {
           );
         }
         const mediaType = sniffVideoMediaType(buf);
-        return {
+        return offloadMedia({
           content: `已读取视频 ${input.path}（${mediaType}，${st.size} 字节，原始字节 inline 交付）。`,
           isError: false,
           videos: [{ mediaType, base64: buf.toString('base64') }],
-        };
+        }, ctx);
       }
       if (kind === 'audio') {
         return fail(`这是音频文件，read_media v1 暂不支持读取音频：${input.path}`);
@@ -239,11 +278,11 @@ export const readMediaTool: ToolDef<Input> = {
     // 直通：无裁剪、不超预算 → 原始字节直接交付，不重新编码（webp 也只能走这条，jimp 不支持 webp）
     if (input.region === undefined && (withinBudget || (input.full_resolution === true && buf.length <= byteBudget))) {
       const base64 = buf.toString('base64');
-      return {
+      return offloadMedia({
         content: buildNote(meta, buf.length, '原图未改动交付。'),
         isError: false,
         images: [{ mediaType: meta.mime, base64 }],
-      };
+      }, ctx);
     }
 
     // full_resolution：跳过降采样；超字节预算显式报错并建议 region
@@ -339,11 +378,11 @@ export const readMediaTool: ToolDef<Input> = {
       } else {
         delivery = resized ? `已降采样到 ${dw}×${dh} 交付。` : '原图未改动交付。';
       }
-      return {
+      return offloadMedia({
         content: buildNote(meta, buf.length, delivery),
         isError: false,
         images: [{ mediaType: mime, base64: out.toString('base64') }],
-      };
+      }, ctx);
     }
 
     // full_resolution + region：裁剪后按原格式交付，仍超预算则报错
@@ -353,10 +392,10 @@ export const readMediaTool: ToolDef<Input> = {
         `裁剪后仍有 ${out.length} 字节，超过 ${byteBudget} 预算，full_resolution 下无法交付。请缩小 region。`,
       );
     }
-    return {
+    return offloadMedia({
       content: buildNote(meta, buf.length, delivery),
       isError: false,
       images: [{ mediaType: mime, base64: out.toString('base64') }],
-    };
+    }, ctx);
   },
 };
