@@ -56,6 +56,7 @@ import {
 } from './session/streamJson.js';
 import { pickSessionStandalone, relativeTime } from './tui-pi/pickers.js';
 import type { ToolContext } from './tools/types.js';
+import { FileGuard } from './tools/fileGuard.js';
 import { configureLogger, logError } from './utils/logger.js';
 
 export async function runApp(program: Command): Promise<void> {
@@ -451,6 +452,10 @@ ctx.imageBudgetBytes = config.imageBudgetBytes;
 ctx.videoBudgetBytes = config.videoBudgetBytes;
 // bash 前台超时自动转后台开关（[background].bash_auto_background_on_timeout，默认 true）
 ctx.bashAutoBackgroundOnTimeout = config.background?.bashAutoBackgroundOnTimeout ?? true;
+
+// Stale Guard：防止模型幻觉式编辑
+const fileGuard = new FileGuard();
+ctx.fileGuard = fileGuard;
 
 // MCP 接入：读 ~/.step-code/mcp.json 拿到 server 配置（仅解析，连接不阻塞启动）。
 const mcpManager = new McpManager();

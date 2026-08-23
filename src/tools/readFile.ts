@@ -194,6 +194,8 @@ export const readFileTool: ToolDef<z.infer<typeof schema>> = {
       } catch (e) {
         return fail(`读取失败：${(e as Error).message}`);
       }
+      // 记录文件快照（供 Stale Guard 检查）
+      ctx.fileGuard?.track(abs);
       return ok(renderWindow(win.lines, start, win.totalLines));
     }
 
@@ -203,6 +205,9 @@ export const readFileTool: ToolDef<z.infer<typeof schema>> = {
     } catch (e) {
       return fail(`读取失败：${(e as Error).message}`);
     }
+
+    // 记录文件快照（供 Stale Guard 检查）
+    ctx.fileGuard?.track(abs);
 
     if (text === '') {
       return ok('<system>文件为空（0 字节）。</system>');

@@ -18,6 +18,25 @@ export const writeFileTool: ToolDef<z.infer<typeof schema>> = {
   access: (input, ctx) => ({ kind: 'write', path: resolvePath(ctx.cwd, input.path) }),
   async execute(input, ctx) {
     const abs = resolvePath(ctx.cwd, input.path);
+
+    // Stale Guard：仅对已存在文件做检查（新文件允许直接创建）
+    const guard = ctx.fileGuard;
+    if (guard) {
+      const { existsSync } = await import('node:fs');
+      if (existsSync(abs)) {
+        const verdict = guard.check(abs);
+        if (verdict.kind === 'not-read') {
+          return fail(
+            `文件已存在但未被读取过。请先使用 read_file 读取此文件，` +
+            `确认内容后再写入。如需创建新文件，请使用不同的路径。`,
+          );
+        }
+        if (verdict.kind === 'stale') {
+          return fail(verdict.message);
+        }
+      }
+    }
+
     try {
       mkdirSync(dirname(abs), { recursive: true });
       // 文件级 checkpoint：覆盖写前备份原始内容（已存在时），供 /restore 回滚
