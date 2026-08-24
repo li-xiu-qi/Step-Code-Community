@@ -22,16 +22,24 @@ export const DEFAULT_MAX_TURNS = 2000;
 export const TURN_HYSTERESIS = 50;
 /** 单个 turn 内保留的块数上限（同为安全阀，日常回合远达不到）。 */
 export const DEFAULT_MAX_BLOCKS_PER_TURN = 2000;
+/** 日常滑动窗口：超过此 turn 数时触发温和折叠（foldOldTurns），保留 foldSummary 占位。
+ *  <= dailyWindowSize: 无动作
+ *  dailyWindowSize ~ maxTurns: 折叠旧 turn 为摘要（温和，保留 foldSummary 占位）
+ *  > maxTurns + hysteresis: 硬裁剪（trim 丢弃块，安全阀）
+ */
+export const DEFAULT_DAILY_WINDOW = 100;
 
 export interface TranscriptOptions {
   maxTurns?: number;
   maxBlocksPerTurn?: number;
+  dailyWindowSize?: number;
 }
 
 export class Transcript implements Component {
   private blocks: ItemBlock[] = [];
   private readonly maxTurns: number;
   private readonly maxBlocksPerTurn: number;
+  private readonly dailyWindowSize: number;
   /** 被裁掉的轮数累计（>0 时顶部显示一行折叠提示）。 */
   private foldedTurns = 0;
   /** 被折叠的块数累计（turn 内裁剪产生）。 */
@@ -48,6 +56,7 @@ export class Transcript implements Component {
   constructor(options: TranscriptOptions = {}) {
     this.maxTurns = options.maxTurns ?? DEFAULT_MAX_TURNS;
     this.maxBlocksPerTurn = options.maxBlocksPerTurn ?? DEFAULT_MAX_BLOCKS_PER_TURN;
+    this.dailyWindowSize = options.dailyWindowSize ?? DEFAULT_DAILY_WINDOW;
   }
 
   invalidate(): void {
@@ -160,9 +169,10 @@ export class Transcript implements Component {
   }
 
   /**
-   * 两级裁剪。turn 边界按 user 条目切分：
-   * 1. turn 数超过 MAX_TURNS + HYSTERESIS 时，丢弃最老的若干 turn，只累计计数；
-   * 2. 末尾 turn 内块数超过 MAX_BLOCKS_PER_TURN 时，丢弃该 turn 靠前的块。
+   * 三级内存管理（自底向上）：
+   * 1. 日常滑动窗口（dailyWindowSize）：超过时折叠旧 turn 为摘要（foldOldTurns），温和保留占位；
+   * 2. 安全阀（maxTurns + hysteresis）：超过时硬裁剪丢弃块，仅累计计数；
+   * 3. 单 turn 块数上限（maxBlocksPerTurn）：末尾 turn 超限时丢弃最早的非首块。
    */
   private trim(): void {
     // turn 起始下标
@@ -170,6 +180,21 @@ export class Transcript implements Component {
     for (let i = 0; i < this.blocks.length; i++) {
       if (this.blocks[i]!.getItem().kind === 'user') starts.push(i);
     }
+
+    // Tier 1: 日常滑动窗口 — 温和折叠旧 turn
+    if (starts.length > this.dailyWindowSize) {
+      const keepRecent = Math.floor(this.dailyWindowSize * 0.6);
+      const result = this.foldOldTurns(keepRecent, this.dailyWindowSize);
+      if (result.folded) {
+        // 折叠后重新计算 starts（foldSummary 不是 user 块）
+        starts.length = 0;
+        for (let i = 0; i < this.blocks.length; i++) {
+          if (this.blocks[i]!.getItem().kind === 'user') starts.push(i);
+        }
+      }
+    }
+
+    // Tier 2: 安全阀 — 硬裁剪
     if (starts.length > this.maxTurns + TURN_HYSTERESIS) {
       const dropTurns = starts.length - this.maxTurns;
       const cutAt = starts[dropTurns]!;
@@ -178,12 +203,12 @@ export class Transcript implements Component {
       this.structVer++;
       return;
     }
-    // turn 内裁剪：只看最后一个 turn（长回合的工具调用是块数膨胀的主要来源）
+
+    // Tier 3: 单 turn 块数上限
     const lastStart = starts.length > 0 ? starts[starts.length - 1]! : 0;
     const inTurn = this.blocks.length - lastStart;
     if (inTurn > this.maxBlocksPerTurn) {
       const drop = inTurn - this.maxBlocksPerTurn;
-      // 保留 turn 的首块（user 消息本体），从它之后开始丢
       this.blocks = [...this.blocks.slice(0, lastStart + 1), ...this.blocks.slice(lastStart + 1 + drop)];
       this.foldedBlocks += drop;
       this.structVer++;
