@@ -4,7 +4,7 @@
  * 每个块自带缓存（width 未变则复用上次行数组），render() 是取缓存 + 拼接。
  */
 import type { Component } from '@earendil-works/pi-tui';
-import { Markdown, truncateToWidth, visibleWidth, wrapTextWithAnsi } from '@earendil-works/pi-tui';
+import { Markdown, truncateToWidth, visibleWidth, wrapTextWithAnsi, sliceByColumn } from '@earendil-works/pi-tui';
 import { basename } from 'node:path';
 import type { DisplayItem, WelcomeData } from '../chat/types.js';
 import { offloadIfNeeded as offloadLargeResult, readCachedOutput } from '../agent/outputCache.js';
@@ -88,7 +88,6 @@ export function summarizeInput(input: unknown): string {
   const obj = input as Record<string, unknown>;
   for (const key of [
     'pattern',
-    'path',
     'command',
     'skill',
     'query',
@@ -101,6 +100,12 @@ export function summarizeInput(input: unknown): string {
     const v = obj[key];
     if (typeof v === 'string' && v.length > 0) {
       return v.length > 80 ? `${v.slice(0, 80)}…` : v;
+    }
+  }
+  for (const key of ['path', 'file_path']) {
+    const v = obj[key];
+    if (typeof v === 'string' && v.length > 0) {
+      return truncatePathMiddle(v, 80);
     }
   }
   return '';
@@ -170,6 +175,40 @@ function indent(lines: readonly string[], prefix: string): string[] {
 function hanging(lines: readonly string[], prefix: string, plainWidth: number): string[] {
   const pad = ' '.repeat(plainWidth);
   return lines.map((l, i) => (i === 0 ? prefix : pad) + l);
+}
+
+// ---- 扩展截断策略（参考 Claude Code truncate.ts） ----
+
+function truncateStartToWidth(text: string, maxWidth: number): string {
+  if (text === '') return '';
+  const w = Math.max(1, maxWidth);
+  if (visibleWidth(text) <= w) return text;
+  const totalWidth = visibleWidth(text);
+  const keepW = Math.max(1, w - visibleWidth('…'));
+  return '…' + sliceByColumn(text, totalWidth - keepW, keepW, true);
+}
+
+function truncatePathMiddle(path: string, maxLength: number): string {
+  if (visibleWidth(path) <= maxLength) return path;
+  const lastSep = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+  if (lastSep === -1) return truncateToWidth(path, maxLength);
+  const dir = path.substring(0, lastSep);
+  const sep = path[lastSep]!;
+  const base = path.substring(lastSep + 1);
+  const ellipsisW = visibleWidth('…');
+  const sepW = visibleWidth(sep);
+  const baseW = visibleWidth(base);
+  const avail = Math.max(3, maxLength - ellipsisW - sepW - baseW);
+  const truncatedDir = truncateStartToWidth(dir, avail);
+  return truncatedDir + sep + '…' + base;
+}
+
+export function truncateEndToWidth(text: string, maxWidth: number): string {
+  if (text === '') return '';
+  const w = Math.max(1, maxWidth);
+  if (visibleWidth(text) <= w) return text;
+  const keepW = Math.max(1, w - visibleWidth('…'));
+  return truncateToWidth(text.slice(0, keepW), w) + '…';
 }
 
 /**
