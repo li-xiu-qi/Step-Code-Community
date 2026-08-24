@@ -26,6 +26,7 @@ import type { WireEvent } from './wirelog.js';
 import { runTurn } from './runTurn.js';
 import { emptyContinuationState, advanceContinuation, checkContinuationSafety } from './continuation.js';
 import { createRoundLoopDetector, fingerprintRound } from './roundLoop.js';
+import { EmissionGuard, runAdvisorReview } from './advisor/index.js';
 
 export type { AgentEvent } from './events.js';
 
@@ -162,6 +163,8 @@ export interface RunAgentOptions {
    * background.notify_delivered）经它追加进 wire.jsonl。缺省 = 只走快照与消息日志通道。
    */
   onWireEvent?: (event: WireEvent) => void;
+  /** Advisor 旁路审查配置。缺省 = 不启用 advisor。 */
+  advisor?: import('./advisor/config.js').AdvisorConfig;
 }
 
 /** 就地把 target 的内容替换为 next（保持外部引用不变，压缩结果对调用方可见）。 */
@@ -361,6 +364,10 @@ export async function* runAgent(opts: RunAgentOptions): AsyncGenerator<AgentEven
    * 检测器内部有状态（streak），由本函数持有生命周期。
    */
   const roundLoopDetector = createRoundLoopDetector();
+
+  // advisor 旁路审查：仅在配置启用时创建 guard（有状态，跨轮复用）
+  const advisorEnabled = opts.advisor?.enabled === true;
+  const advisorGuard = advisorEnabled ? new EmissionGuard() : null;
 
   for (let iter = 0; iter < maxIterations; iter++) {
     // step 边界注入：上一回合期间终态的后台任务通知在此 flush 进 messages，
@@ -792,6 +799,22 @@ export async function* runAgent(opts: RunAgentOptions): AsyncGenerator<AgentEven
           yield { type: 'notice', message: t('loop.roundLoop.stop') };
           yield { type: 'turn_done' };
           return;
+        }
+        // ── Advisor 旁路审查 ──
+        // 每轮 tool_use 结束后、下一轮开始前，用一次独立 LLM 调用审查 transcript。
+        // 只在发现具体技术风险时注入建议（作为 injection 消息，模型下一轮可见）。
+        // advisor 调用失败不阻塞主循环（catch 内返回 null）。
+        if (advisorGuard !== null && opts.advisor !== undefined) {
+          const review = await runAdvisorReview(messages, provider, opts.advisor, ctx, signal, advisorGuard);
+          if (review !== null) {
+            messages.push(
+              stored(
+                { role: 'user', content: `[Advisor] ${review.note}` },
+                { kind: 'injection' },
+              ),
+            );
+            yield { type: 'notice', message: `[Advisor] ${review.note}` };
+          }
         }
         // 这里**不再**做压缩：本回合结束等价于下一回合开始，而循环顶部的预检就在那个
         // 位置、用同一口径（`lastUsage.total + 尾部估算`，lastUsage 正是用本回合的
