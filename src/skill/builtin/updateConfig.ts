@@ -48,8 +48,11 @@ const UPDATE_CONFIG_BODY = `# update-config：step-code 自身配置的查询与
 | media_keep_recent | number | 10 | 媒体降级（413/400 图片超限触发）时保留的最近图片张数，更旧的图换占位文本；0 = 全部换占位。全通道生效（stepfun 走 adapter.send，其余走 withMediaDegradation wrapper）；[models.*] 下可按别名覆盖 |
 | extra_skill_dirs | string[] | 无 | 追加的 skill 扫描目录，同名 skill 追加目录胜出 |
 | disabled_skills | string[] | 无 | 按名排除的 skill 清单，任何来源的同名 skill 都不加载 |
+| disabled_tools | string[] | 无 | 按名排除的工具清单（如 ["bash", "web_search"]） |
 | skill_listing_budget | number | 8000 | system prompt 中可用技能清单的字符预算；超预算先压缩描述，再截断尾部技能。技能较多时可调大（如 20000），让更多技能名称和描述常驻；也可始终用 skill_search 工具搜索被截断的技能 |
 | continuation | table | 无 | 输出截断自动续写配置（[continuation] 段） |
+| git | table | 无 | Git 集成配置（[git] 段），未配置时 auto_commit 默认 false |
+| advisor | table | 无 | Advisor 旁路审查配置（[advisor] 段），缺省不启用 |
 | tools | table | 无 | 网页结果缓存配置（[tools.web] 段），未配置时使用内置默认值 |
 
 顶层没有 api_key 键。密钥只能配在 [providers.<id>] 渠道或 [models.<别名>] 上，或由环境变量提供
@@ -79,6 +82,9 @@ STEP_CODE_BASE_URL。
 |---|---|---|---|---|
 | trigger_ratio | number | 0.85 | [0.5, 0.99] | 占用达 max_context_size × 此值即触发压缩 |
 | reserved_tokens | number | 32000 | [0, 500000] | 剩余窗口不足此值即压缩（安全垫） |
+| block_ratio | number | 0.95 | [trigger_ratio, 0.99] | 阻塞比例：占用达此值强制阻塞压缩 |
+| max_compaction_per_turn | number | Infinity（不限制） | [1, 20] | 单轮最大压缩次数；Infinity = 不限制 |
+| preserve_thinking | boolean | false | 压缩时保留 thinking/redacted_thinking 块 |
 | model | string | 无（用主会话模型） | — | 压缩摘要专用模型。模型 id 或 [models.<别名>] 的别名；写别名时摘要走该别名绑定的渠道，可与主会话不同渠道 |
 | user_message_max_tokens | number | 20000 | [0, 200000] | 用户原话保真预算；0 = 关闭保真块 |
 | user_message_head_tokens | number | 2000 | [0, user_message_max_tokens] | 保真预算中划给最早消息的份额 |
@@ -90,6 +96,15 @@ STEP_CODE_BASE_URL。
 | max_auto_continues | number | 3 | [0, 100] | 单回合被 max_tokens 截断后自动续写的次数；0 = 关闭自动续写，回到手动「继续」 |
 
 自动续写只对「正文写到一半被截断」生效；思考吃满预算、正文零输出的情况不走续写（那是预算配置问题，续写改变不了预算）。每轮续写都经过循环守卫，会在零进展 / 完全重复 / 从头重写 / 周期性复读 / 龟速循环时停下。
+
+### [advisor] 旁路审查
+
+| 键 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| enabled | boolean | false | 是否启用 advisor。默认关闭 |
+| model | string | 无（用主会话模型） | advisor 专用模型。模型 id 或 [models.<别名>] 的别名 |
+
+启用后每轮 tool_use 结束后用一次独立 LLM 调用审查 transcript 中的技术风险。只在发现具体问题时注入建议，否则沉默。
 
 ### [background] 后台执行
 
@@ -150,6 +165,12 @@ endpoint 解析优先级：[search.web]/[search.image] → [search] → 主会�
 三个维度任一传 ${'`'}0${'`'} 表示该维度不限制（等价于不配）。
 未配置 ${'`'}[tools.web]${'`'} 时使用内置默认值（100 条目 / 32MB / 2MB）。
 
+
+### [git] Git 集成
+
+| 键 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| auto_commit | boolean | false | 会话结束时是否自动提交变更 |
 ### [tui] 终端界面渲染
 
 | 键 | 类型 | 默认值 | 说明 |

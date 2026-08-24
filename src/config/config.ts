@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parse as parseToml } from 'smol-toml';
 import type { PermissionMode } from '../agent/permission/mode.js';
+import { type AdvisorConfig, resolveAdvisorConfig } from '../agent/advisor/config.js';
 import { CAPABILITY_KEYS } from '../provider/capability-registry.js';
 import { t, type Locale } from '../i18n.js';
 
@@ -301,6 +302,8 @@ export interface StepCodeConfig {
   compaction: CompactionConfig;
   /** 输出截断自动续写配置。 */
   continuation?: ContinuationConfig;
+  /** Advisor 旁路审查配置（[advisor] 段）。缺省不启用（enabled=false）。 */
+  advisor?: AdvisorConfig;
   /** 后台执行配置（[background] 段）。字段全部可选，缺省键不进对象。 */
   background?: BackgroundConfig;
   /** thinking（推理过程）请求配置（[thinking] 段）。loadConfig 恒赋值（默认 { enabled: false }），消费方仍按可选处理。 */
@@ -564,6 +567,7 @@ interface TomlConfigShape {
   subagent?: unknown;
   compaction?: unknown;
   continuation?: unknown;
+  advisor?: unknown;
   background?: unknown;
   thinking?: unknown;
   memory?: unknown;
@@ -1321,6 +1325,7 @@ export function loadConfig(
     subagent: resolveSubagentLimits(toml.subagent),
     compaction: resolveCompactionConfig(toml.compaction),
     continuation: resolveContinuationConfig(toml.continuation),
+    advisor: resolveAdvisorConfig(toml.advisor),
     background: resolveBackgroundConfig(toml.background),
     language: resolveLanguage(toml.language),
   };
