@@ -206,6 +206,14 @@ export class SessionStore {
     return join(this.dirFor(cwd), `${id}.tasks`);
   }
 
+  /**
+   * 跨 session 消息队列目录：<baseDir>/session-queue（全局、不按 workdir 分桶）。
+   * 消息天然跨工作目录流转，故独立于按 cwd 分桶的会话桶之外。
+   */
+  sessionQueueDir(): string {
+    return join(this.baseDir, 'session-queue');
+  }
+
   /** 索引文件路径：<桶目录>/_index.json。 */
   private indexPathFor(cwd: string): string {
     return join(this.dirFor(cwd), INDEX_FILE);

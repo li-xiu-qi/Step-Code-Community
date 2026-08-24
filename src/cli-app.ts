@@ -44,6 +44,7 @@ import { createProvider } from './provider/factory.js';
 import { resolveCompactionBinding } from './provider/compaction.js';
 import type { ChatProvider } from './provider/types.js';
 import { SessionStore, deriveTitle, type SessionData } from './session/store.js';
+import { SessionQueueStore } from './agent/sessionQueue/store.js';
 import { resumeHintMeta, resumeHintText } from './session/resumeHint.js';
 import { aggregateModelUsage, cacheHitRate, totalInput } from './session/usageReport.js';
 import {
@@ -512,6 +513,8 @@ const mcpReady = mcpManager.connectAll(mcpServerConfigs, (serverName) => {
 const store = new SessionStore();
 // 子 agent 会话持久层：与主 store 共享 baseDir 与 attachments，落在独立的 subagents/ 命名空间
 const subagentStore = new SubagentStore(store);
+// 跨 session 消息队列：全局目录（不按 workdir 分桶），与主 store 共享 baseDir
+const sessionQueue = new SessionQueueStore(store.sessionQueueDir());
 // 留存清理（[subagent.retention]）：max_sessions / ttl_days 默认全 0 = 不动任何文件；
 // 启动时执行一次，持活跃锁的子会话一律跳过
 subagentStore.cleanup(cwd, {
@@ -598,6 +601,8 @@ if (opts.resume !== undefined) {
   resolved = resolveResume(null);
 }
 const session = resolved.session;
+// 会话 id 注入工具上下文：供 session_send 在投递时记录发送方，目标会话据此知道消息来自哪个会话。
+ctx.sessionId = session.id;
 // 恢复命中但消息为空：会话是崩溃/中断留下的空壳（消息没落盘进程就死了），
 // 用户大概率以为恢复错了 id。提前在 stderr 提示，避免进 TUI 后才发现历史是空的。
 if (resumeHit && session.messages.length === 0) {
@@ -740,6 +745,14 @@ async function runPrint(prompt: string): Promise<void> {
     if (up.stdout !== '') {
       session.messages.push(stored({ role: 'user', content: up.stdout }, { kind: 'user' }));
     }
+  }
+
+  // 跨 session 队列消费：run 启动第一件事是 drain 本会话待投递消息并注入历史。
+  // 落盘消息先于本次输入进入历史——模型先看到别的会话发来的指令，再处理本条 prompt。
+  // injection 类来源：不计入轮次计数、不进 undo 快照，与静默注入一致。
+  for (const m of sessionQueue.drain(session.id)) {
+    const body = `[跨会话消息 · 来自会话 ${m.from}]\n${m.text}`;
+    session.messages.push(stored({ role: 'user', content: body }, { kind: 'injection' }));
   }
 
   session.messages.push(stored({ role: 'user', content: prompt }, { kind: 'user' }));
@@ -916,6 +929,8 @@ async function runPrint(prompt: string): Promise<void> {
         if (line !== null) process.stderr.write(line);
       },
     }),
+    // 跨 session 队列：供 session_send / session_inbox 工具读写；未注入时工具返回不支持。
+    sessionQueue,
   };
 
   const runOnce = (): ReturnType<typeof runAgent> => runAgent({
@@ -1121,6 +1136,7 @@ if (opts.reflect === true) {
     resumeDelivered,
     store,
     session,
+    sessionQueue,
     maxContextSize: sessionMaxContextSize,
     hookEngineRef,
     subagentStore,
