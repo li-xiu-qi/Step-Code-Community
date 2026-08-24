@@ -54,6 +54,7 @@ import { basename } from 'node:path';
 import { resolveCompactionBinding, type CompactionBinding } from '../provider/compaction.js';
 import { exportDebugBundle } from '../session/debugBundle.js';
 import { deriveTitle, type SessionData, type SessionStore } from '../session/store.js';
+import { SessionQueueStore } from '../agent/sessionQueue/store.js';
 import { canOverwriteTitle, generateSessionTitle } from '../session/title.js';
 import { TerminalTitleWriter } from '../chat/terminalTitle.js';
 import { aggregateModelUsage } from '../session/usageReport.js';
@@ -139,6 +140,8 @@ export interface PiChatDeps {
   resumeDelivered?: ReadonlySet<string>;
   store: SessionStore;
   session: SessionData;
+  /** 跨 session 消息队列（组合根注入）：缺失则跨会话投递/收件箱工具不可用，run 启动也不消费队列。 */
+  sessionQueue?: SessionQueueStore;
   maxContextSize: number;
   hookEngineRef: { current: HookEngine | undefined };
   subagentStore: SubagentStore;
@@ -3382,6 +3385,22 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       prepared?: StoredMessage;
     },
   ): Promise<void> {
+    // 跨 session 队列消费：run 启动的第一件事是 drain 本会话的待投递消息并注入历史。
+    // 落盘消息先于本次输入进入历史——agent 先看到「别的会话发来的」再处理用户本条。
+    // 用 injection 类来源标记：不计入轮次计数、不进 undo 快照，与 goal/cron 静默注入一致。
+    // silent 续跑也 drain：goal 驱动的每轮启动都检查队列，空闲 goal 会话借此自动接力。
+    if (this.deps.sessionQueue !== undefined) {
+      const pending = this.deps.sessionQueue.drain(this.session.id);
+      for (const m of pending) {
+        const body = `[跨会话消息 · 来自会话 ${m.from}]\n${m.text}`;
+        const qMsg = stored({ role: 'user', content: body }, { kind: 'injection' });
+        this.history.push(qMsg);
+        this.appendWire({ type: 'context.append_message', ts: qMsg.ts, message: qMsg });
+        if (opts?.silent !== true) {
+          this.push({ kind: 'user', text: body });
+        }
+      }
+    }
     // 图片占位符 → image content block。没有图片时 content 就是原文本（走旧路径），
     // 转录区显示的是折叠掉占位符的正文，不把 base64 摊到屏幕上。
     const extracted = extractImageContent(text, this.images);
@@ -3493,6 +3512,10 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
           goal: this.goal,
           team: this.team,
           cron: this.cron,
+          // 跨 session 队列：供 session_send/session_inbox 工具读写；未注入时工具返回不支持。
+          sessionQueue: this.deps.sessionQueue,
+          // 当前会话 id：跨会话投递时作为发送方记录。
+          sessionId: this.session.id,
           askUser: (req) => this.askUserQuestion(req),
           // 子 agent 并发上限：不传会退到 runTurn.ts 里的硬编码 4，与 [subagent] max_concurrent 脱节
           subagentMaxConcurrent: this.deps.config.subagent.maxConcurrent,

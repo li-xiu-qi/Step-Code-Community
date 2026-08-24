@@ -46,6 +46,13 @@ export interface ToolContext {
   team?: import('../agent/team/mode.js').TeamMode;
   /** cron 调度器（组合根注入，定时任务）。缺失表示当前上下文不支持定时任务。 */
   cron?: import('../agent/cron/scheduler.js').CronScheduler;
+  /**
+   * 跨 session 消息队列（组合根注入）。缺失表示当前上下文不支持跨会话投递。
+   * 供 session_send / session_inbox 工具读写。
+   */
+  sessionQueue?: import('../agent/sessionQueue/store.js').SessionQueueStore;
+  /** 当前会话 id（组合根注入）：跨会话投递时作为发送方记录；缺失则发送方留空。 */
+  sessionId?: string;
   /** tool_search 外部工具注册表（组合根注入，懒加载）。缺失表示无可搜索外部工具。 */
   toolSearch?: import('./toolSearch.js').ToolSearchRegistry;
   /** 引用式附件存储（组合根注入）：发 provider 前把消息里的 stepref 图片还原成 base64。缺失表示不做 rehydrate。 */
