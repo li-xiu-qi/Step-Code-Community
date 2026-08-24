@@ -1,4 +1,5 @@
 import type Anthropic from '@anthropic-ai/sdk';
+import { randomUUID } from 'node:crypto';
 import { t } from '../../i18n.js';
 import { billedTokens } from '../compaction/compact.js';
 
@@ -6,6 +7,8 @@ import { billedTokens } from '../compaction/compact.js';
 export type GoalStatus = 'active' | 'paused' | 'blocked';
 
 export interface GoalState {
+  /** 唯一标识（创建时生成）。 */
+  id: string;
   objective: string;
   completionCriterion?: string;
   status: GoalStatus;
@@ -19,6 +22,8 @@ export interface GoalState {
   terminalReason?: string;
   /** 创建时间戳（ms），用于状态栏徽标与面板展示墙钟用时。 */
   createdAt: number;
+  /** 最后更新时间戳（ms），乐观锁用：跨 session 并发写时检测冲突。 */
+  updatedAt: number;
 }
 
 /** goal 生命周期事件：created / updated（暂停、恢复、阻塞）/ completed（瞬态完成，携带清除前快照）。 */
@@ -48,7 +53,8 @@ export class GoalMode {
     if (this.goal !== null && !replace) {
       throw new Error('已有进行中的 goal。先 UpdateGoal 结束，或带 replace 覆盖。');
     }
-    this.goal = { objective, completionCriterion, status: 'active', turnsUsed: 0, tokensUsed: 0, createdAt: Date.now() };
+    const now = Date.now();
+    this.goal = { id: randomUUID(), objective, completionCriterion, status: 'active', turnsUsed: 0, tokensUsed: 0, createdAt: now, updatedAt: now };
     this.emit({ type: 'created', goal: { ...this.goal } });
     return this.goal;
   }
@@ -60,6 +66,8 @@ export class GoalMode {
   update(status: 'active' | 'paused' | 'blocked' | 'complete', reason?: string): void {
     if (this.goal === null) throw new Error('当前没有 goal。');
     if (status === 'complete') {
+      // updatedAt 不在此处设置：由 GoalStore.save() 统一设为 Date.now()，
+      // 否则快照的时间戳比磁盘新，乐观锁会误判冲突。
       const snapshot: GoalState = { ...this.goal, terminalReason: reason };
       this.goal = null; // 瞬态：完成即清
       this.emit({ type: 'completed', goal: snapshot });
@@ -78,6 +86,16 @@ export class GoalMode {
   setTokenBudget(n: number): void {
     if (this.goal === null) throw new Error('当前没有 goal。');
     this.goal.tokenBudget = n;
+  }
+
+  /**
+   * 更新落盘时间戳（由持久化层在 save 成功后调用）。
+   *
+   * update() 不触碰 updatedAt，否则乐观锁会在每次 save 后失效。
+   * 只有 GoalStore.save() 写入后才调用此方法，让内存中的 updatedAt 与磁盘同步。
+   */
+  touchUpdatedAt(ts: number): void {
+    if (this.goal !== null) this.goal.updatedAt = ts;
   }
 
   incrementTurn(): void {
@@ -112,16 +130,16 @@ export class GoalMode {
   }
 
   /**
-   * 从会话快照恢复 goal（挂载 /resume 时调用）。
-   * active 一律降级 paused——防进程重启后自动续跑烧钱，用户 /goal resume 显式复活；
-   * paused / blocked 原样保留。静默恢复，不发生命周期事件。
+   * 从持久化存储恢复 goal（挂载 /resume 时调用）。
+   * Goal 已独立持久化,无需通过状态降级防止进程重启后自动续跑;
+   * active / paused / blocked 原样保留。静默恢复,不发生生命周期事件。
    */
   restore(state: GoalState | null | undefined): void {
     if (state === null || state === undefined) {
       this.goal = null;
       return;
     }
-    this.goal = { ...state, status: state.status === 'active' ? 'paused' : state.status };
+    this.goal = { ...state };
   }
 
   /** goal 激活时应续跑的提示（模型自报停机的替身）。 */

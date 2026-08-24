@@ -142,7 +142,7 @@ describe('GoalMode', () => {
     expect(g2.reminder()).toContain('预算将尽');
   });
 
-  it('restore：active 降级 paused，paused / blocked 原样保留', () => {
+  it('restore：active/paused/blocked 原样保留（不降级）', () => {
     const g = new GoalMode();
     g.create('A');
     g.setTokenBudget(100);
@@ -152,7 +152,8 @@ describe('GoalMode', () => {
 
     const restored = new GoalMode();
     restored.restore(snap);
-    expect(restored.get()?.status).toBe('paused'); // active → paused
+    // active 不再降级为 paused：goal 独立持久化，不靠降级防进程重启后自动续跑
+    expect(restored.get()?.status).toBe('active');
     expect(restored.get()?.tokensUsed).toBe(45);
     expect(restored.get()?.tokenBudget).toBe(100);
 

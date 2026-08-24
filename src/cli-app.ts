@@ -45,6 +45,7 @@ import { resolveCompactionBinding } from './provider/compaction.js';
 import type { ChatProvider } from './provider/types.js';
 import { SessionStore, deriveTitle, type SessionData } from './session/store.js';
 import { SessionQueueStore } from './agent/sessionQueue/store.js';
+import { GoalStore } from './agent/goal/store.js';
 import { resumeHintMeta, resumeHintText } from './session/resumeHint.js';
 import { aggregateModelUsage, cacheHitRate, totalInput } from './session/usageReport.js';
 import {
@@ -515,6 +516,8 @@ const store = new SessionStore();
 const subagentStore = new SubagentStore(store);
 // 跨 session 消息队列：全局目录（不按 workdir 分桶），与主 store 共享 baseDir
 const sessionQueue = new SessionQueueStore(store.sessionQueueDir());
+// goal 独立持久化：全局目录（不按 workdir 分桶），goal 不随 session 湮灭
+const goalStore = new GoalStore(store.goalsDir());
 // 留存清理（[subagent.retention]）：max_sessions / ttl_days 默认全 0 = 不动任何文件；
 // 启动时执行一次，持活跃锁的子会话一律跳过
 subagentStore.cleanup(cwd, {
@@ -1137,6 +1140,7 @@ if (opts.reflect === true) {
     store,
     session,
     sessionQueue,
+    goalStore,
     maxContextSize: sessionMaxContextSize,
     hookEngineRef,
     subagentStore,

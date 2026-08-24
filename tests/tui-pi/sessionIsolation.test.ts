@@ -44,6 +44,6 @@ describe('⑦ resumeSession 用目标会话数据替换（不继承源会话）'
   it('steers 重置为空数组（源会话的 steer 不倒灌）', () => expect(body).toContain('this.steers = []'));
   it('todos 用目标会话的替换', () => expect(body).toContain('this.todos.items = [...(data.todos'));
   it('queue 用目标会话的替换', () => expect(body).toContain('this.queue = restoredQueue'));
-  it('goal 用目标会话的恢复', () => expect(body).toContain('this.goal.restore(data.goal)'));
+  it('goal 用目标会话的恢复', () => expect(body).toContain('this.goal.restore(targetGoal ?? null)'));
   it('notifyPrepared 清空', () => expect(body).toContain('this.notifyPrepared.clear()'));
 });
