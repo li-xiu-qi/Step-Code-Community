@@ -191,7 +191,7 @@ export class TasksOverlay implements Component {
     const list = this.visible();
     const total = this.getTasks().length;
     const out: string[] = [
-      c.accent(t('tasksOverlay.title', { filter: getFilterLabel(this.filter), shown: list.length, total })),
+      c.accent(truncateToWidth(t('tasksOverlay.title', { filter: getFilterLabel(this.filter), shown: list.length, total }), width)),
     ];
     if (list.length === 0) {
       out.push(c.dim(this.filter === 'all' ? t('tasksOverlay.emptyAll') : t('tasksOverlay.emptyFiltered', { filter: getFilterLabel(this.filter) })));

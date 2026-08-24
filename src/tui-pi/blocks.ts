@@ -533,5 +533,5 @@ function renderToolExpanded(it: Extract<DisplayItem, { kind: 'tool' }>, width: n
     }
   }
   out.push('');
-  return out;
+  return out.map((l) => truncateToWidth(l, width));
 }
