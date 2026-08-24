@@ -22,6 +22,29 @@ export const MAX_INLINE_CHARS = 4096;
 /** 超过此字符数的结果强制 offload（64KB），即使渲染器类型是 full。 */
 export const MAX_RESULT_CHARS = 65536;
 
+// ─── 终端控制序列净化 ────────────────────────────────────────────────────────
+
+/**
+ * 4 层正则清理 shell 输出中的终端控制序列，返回纯文本。
+ *
+ * 参考 Claude Code strip-ansi 策略（npm strip-ansi package）：
+ * - Layer 1: OSC（超链接、标题）\x1b]...\x07 / \x1b]...\x1b\\
+ * - Layer 2: CSI（颜色、光标、擦除）\x1b[...[A-Za-z]
+ * - Layer 3: C0 控制字符（bell/backspace 等）\x00-\x1f 中除 \n\t 的部分
+ * - Layer 4: 回车残影 \r（单独出现或跟 \n 的 \r\n 已由 split 处理）
+ */
+export function stripTerminalControls(text: string): string {
+  // Layer 1: OSC sequences (OSC 8 hyperlinks, OSC 0/2 window titles)
+  let cleaned = text.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '');
+  // Layer 2: CSI sequences (SGR colors, cursor movement, erase, etc.)
+  cleaned = cleaned.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
+  // Layer 3: C0 control chars (except \n=0x0a, \t=0x09)
+  cleaned = cleaned.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '');
+  // Layer 4: stray \r (standalone carriage returns not covered by \r\n)
+  cleaned = cleaned.replace(/\r/g, '\n');
+  return cleaned;
+}
+
 // ─── 渲染策略类型 ────────────────────────────────────────────────────────
 
 /** 渲染策略：body 渲染方式。 */
@@ -101,12 +124,14 @@ export function shouldForceOffload(toolName: string): boolean {
  */
 export function summarizeResult(toolName: string, result: string): string {
   if (result.length === 0) return '（空结果）';
-  const firstLine = result.split('\n').find((l) => l.trim().length > 0);
+  // 先去掉终端控制序列，再按纯文本做摘要分析
+  const clean = stripTerminalControls(result);
+  const firstLine = clean.split('\n').find((l) => l.trim().length > 0);
   if (!firstLine) return '（空结果）';
 
   // grep / glob：提取前 N 行作为路径/文本采样
   if (SUMMARY_TOOLS.has(toolName)) {
-    const lines = result.split('\n').filter((l) => l.trim().length > 0);
+    const lines = clean.split('\n').filter((l) => l.trim().length > 0);
     const samples = lines.slice(0, 3);
     if (lines.length > 3) {
       return `${samples.join(', ')}, +${lines.length - 3} more`;
@@ -132,8 +157,10 @@ export function summarizeResult(toolName: string, result: string): string {
  * 供折叠 hint 行使用：`↳ N 行 / M 字符（Ctrl+O 查看）`
  */
 export function outputStats(result: string): { lines: number; chars: number } {
-  const lines = result.split('\n');
-  return { lines: lines.length, chars: result.length };
+  // 用纯文本做统计，避免 ANSI 控制序列膨胀字符数
+  const clean = stripTerminalControls(result);
+  const lines = clean.split('\n');
+  return { lines: lines.length, chars: clean.length };
 }
 
 // ─── 命令参数摘要 ────────────────────────────────────────────────────────
