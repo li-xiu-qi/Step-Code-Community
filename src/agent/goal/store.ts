@@ -13,6 +13,29 @@ export interface GoalRecord extends GoalState {
 }
 
 /**
+ * 预算原子检查：goal active 且超预算时，在同一 save 内标记 blocked。
+ *
+ * 防止「预算超支但状态仍为 active」的竞态——turn 结束与 save 之间有时间窗口，
+ * 跨 session 场景下另一 session 可能在窗口内读到 active 状态并继续推进。
+ */
+function enforceBudget(record: GoalRecord): GoalRecord {
+  if (record.status !== 'active' || record.completed) return record;
+  const turnExceeded = record.turnBudget !== undefined && record.turnsUsed >= record.turnBudget;
+  const tokenExceeded = record.tokenBudget !== undefined && record.tokensUsed >= record.tokenBudget;
+  if (!turnExceeded && !tokenExceeded) return record;
+  const reason = turnExceeded ? '轮次预算耗尽' : 'token 预算耗尽';
+  return { ...record, status: 'blocked', terminalReason: reason };
+}
+
+/**
+ * 墙钟用时（秒）：从创建到最后更新的总耗时。
+ * 非活跃时间（paused/blocked）也计入——这是总墙钟，不是活跃工作时间。
+ */
+export function timeUsedSeconds(record: GoalRecord): number {
+  return Math.max(0, Math.floor((record.updatedAt - record.createdAt) / 1000));
+}
+
+/**
  * Goal 持久化存储。
  *
  * 落盘到 `<dir>/<goalId>.json`，每个 goal 一份完整 JSON。
@@ -49,7 +72,8 @@ export class GoalStore {
         return false; // 乐观锁冲突：磁盘上的版本比调用方看到的更新
       }
     }
-    const toWrite = { ...record, updatedAt: Date.now() };
+    // 预算原子检查：active + 超预算 → 同一 save 内标 blocked，防止跨 session 读到过期 active 状态
+    const toWrite = { ...enforceBudget(record), updatedAt: Date.now() };
     writeFileSync(this.fileFor(record.id), JSON.stringify(toWrite, null, 2), 'utf8');
     return true;
   }
