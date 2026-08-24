@@ -11,7 +11,7 @@
 export const RESULT_PREVIEW_LINES = 3;
 
 /** 错误结果预览行数（比普通多 1 行以便看清错误栈首行）。 */
-export const ERROR_PREVIEW_LINES = 3;
+export const ERROR_PREVIEW_LINES = 4;
 
 /** diff 预览行数。200 行触发 OOM 风险，降到 40。 */
 export const DIFF_MAX_LINES = 40;

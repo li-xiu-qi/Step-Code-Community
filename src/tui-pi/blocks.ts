@@ -321,6 +321,11 @@ export class ItemBlock implements Component {
   }
 
   private renderTool(it: Extract<DisplayItem, { kind: 'tool' }>, width: number): string[] {
+    // 出口钳宽：本函数所有 return 都必须过 clamp。summary/shell/offload 等提前 return 的分支
+    // 曾绕过底部统一钳宽——summarizeResult 按固定 80 字符截断，加上 `    ↳ ` 前缀后 84 列，
+    // 在 67 列终端直接触发 pi-tui doRender 宽度断言崩溃（2026-08-24 两次：69>67、84>67，
+    // 崩溃行均为 shell 结果摘要行）。
+    const clamp = (lines: string[]): string[] => lines.map((l) => truncateToWidth(l, width));
     const mark = it.status === 'running' ? c.warn(spinnerFrame()) : it.status === 'ok' ? c.ok('✓') : c.error('✗');
     const elapsed =
       it.status === 'running' && it.startedAt !== undefined
@@ -371,7 +376,7 @@ export class ItemBlock implements Component {
         const fname = basename(it.resultFile);
         out.push(c.dim(`    ↳ 输出已保存至 ${fname}（Ctrl+O 查看）`));
         out.push('');
-        return out;
+        return clamp(out);
       }
       // 超大结果提前 offload（仅在 result 字段存在时检查）
       if (it.result !== undefined && it.result.length > MAX_INLINE_CHARS) {
@@ -380,29 +385,36 @@ export class ItemBlock implements Component {
           const fname = basename(cached);
           out.push(c.dim(`    ↳ 输出 ${formatBytes(it.result.length)} → ${fname}（Ctrl+O 查看）`));
           out.push('');
-          return out;
+          return clamp(out);
         }
       }
 
       const resultText = it.result ?? '';
-      if (resultText === '') { out.push(''); return out; }
+      if (resultText === '') { out.push(''); return clamp(out); }
 
       const renderer = getToolRenderer(it.name);
       const lines = resultText.split('\n');
 
-      // 摘要型工具：body 为空，只显示统计芯片
-      if (renderer.bodyMode === 'summary') {
+      // 错误优先于展示模式：shell/summary 平时藏正文，但失败时用户必须看到报错本体
+      // （bash 失败只剩一行统计曾把错误输出整个吞掉，M1 起的测试钉住错误预览行为）。
+      if (it.status === 'error') {
+        for (const l of lines.slice(0, ERROR_PREVIEW_LINES)) {
+          out.push(...indent(wrap(c.error(l), width - 4), '    '));
+        }
+        if (lines.length > ERROR_PREVIEW_LINES) {
+          out.push(c.dim(`    ↳ 还有 ${lines.length - ERROR_PREVIEW_LINES} 行（Ctrl+O 查看）`));
+        }
+      } else if (renderer.bodyMode === 'summary') {
+        // 摘要型工具：body 为空，只显示统计芯片
         const stats = outputStats(resultText);
         out.push(c.dim(`    ↳ ${stats.lines} 行 / ${formatBytes(stats.chars)}`));
         if (stats.lines > 0) {
           out.push(c.dim(`    ↳ ${summarizeResult(it.name, resultText)}`));
         }
         out.push('');
-        return out;
-      }
-
-      // 命令型工具：显示执行了什么命令 + 输出统计，不展示输出体
-      if (renderer.bodyMode === 'shell') {
+        return clamp(out);
+      } else if (renderer.bodyMode === 'shell') {
+        // 命令型工具：显示执行了什么命令 + 输出统计，不展示输出体
         const cmdPreview = summarizeToolInput(it.name, it.input);
         if (cmdPreview !== '') {
           out.push(c.dim(`    $ ${cmdPreview}`));
@@ -413,16 +425,7 @@ export class ItemBlock implements Component {
           out.push(c.dim(`    ↳ ${summarizeResult(it.name, resultText)}`));
         }
         out.push('');
-        return out;
-      }
-
-      if (it.status === 'error') {
-        for (const l of lines.slice(0, ERROR_PREVIEW_LINES)) {
-          out.push(...indent(wrap(c.error(l), width - 4), '    '));
-        }
-        if (lines.length > ERROR_PREVIEW_LINES) {
-          out.push(c.dim(`    ↳ 还有 ${lines.length - ERROR_PREVIEW_LINES} 行（Ctrl+O 查看）`));
-        }
+        return clamp(out);
       } else if (looksLikeDiff(lines)) {
         let added = 0, removed = 0;
         for (const l of lines) {
@@ -466,7 +469,8 @@ export class ItemBlock implements Component {
     out.push('');
     // 全局兜底：任何遗漏的超宽行（长无空格串、未来新增分支）都被钳到 width，
     // 避免触发 pi-tui doRender 的宽度断言崩溃。与 pickers.render 同款防线。
-    return out.map((l) => truncateToWidth(l, width));
+    // 注意提前 return 的分支不经过这里，必须各自走 clamp（见函数开头注释）。
+    return clamp(out);
   }
 }
 
