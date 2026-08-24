@@ -392,8 +392,19 @@ export class ItemBlock implements Component {
       const resultText = it.result ?? '';
       if (resultText === '') { out.push(''); return clamp(out); }
 
+      // Pre-truncation: for huge outputs, only process enough chars for visible preview lines.
+      // Without this, split('\n') on a 64MB output allocates millions of entries → OOM crash.
+      // Reference: Claude Code terminal.ts (MAX_LINES_TO_SHOW * wrapWidth * 4 pattern).
+      const maxProcessChars = Math.max(ERROR_PREVIEW_LINES, DIFF_MAX_LINES, RESULT_PREVIEW_LINES) * Math.max(width - 4, 10) * 4;
+      const isProcessTruncated = resultText.length > maxProcessChars;
+      const processText = isProcessTruncated ? resultText.slice(0, maxProcessChars) : resultText;
+      // Approximate total lines for hint messages: estimate from byte length / avg line length.
+      const resultTotalLines = isProcessTruncated
+        ? Math.max(1, Math.floor(resultText.length / 20))
+        : resultText.split('\n').length;
+
       const renderer = getToolRenderer(it.name);
-      const lines = resultText.split('\n');
+      const lines = processText.split('\n');
 
       // 错误优先于展示模式：shell/summary 平时藏正文，但失败时用户必须看到报错本体
       // （bash 失败只剩一行统计曾把错误输出整个吞掉，M1 起的测试钉住错误预览行为）。
@@ -401,8 +412,8 @@ export class ItemBlock implements Component {
         for (const l of lines.slice(0, ERROR_PREVIEW_LINES)) {
           out.push(...indent(wrap(c.error(l), width - 4), '    '));
         }
-        if (lines.length > ERROR_PREVIEW_LINES) {
-          out.push(c.dim(`    ↳ 还有 ${lines.length - ERROR_PREVIEW_LINES} 行（Ctrl+O 查看）`));
+        if (resultTotalLines > ERROR_PREVIEW_LINES) {
+          out.push(c.dim(`    ↳ 还有 ${resultTotalLines - ERROR_PREVIEW_LINES} 行（Ctrl+O 查看）`));
         }
       } else if (renderer.bodyMode === 'summary') {
         // 摘要型工具：body 为空，只显示统计芯片
@@ -442,15 +453,15 @@ export class ItemBlock implements Component {
         for (const l of lines.slice(0, DIFF_MAX_LINES)) {
           out.push(...indent(wrap(colorDiffLine(l), width - 4), '    '));
         }
-        if (lines.length > DIFF_MAX_LINES) {
-          out.push(c.dim(`    ↳ 还有 ${lines.length - DIFF_MAX_LINES} 行（Ctrl+O 查看）`));
+        if (resultTotalLines > DIFF_MAX_LINES) {
+          out.push(c.dim(`    ↳ 还有 ${resultTotalLines - DIFF_MAX_LINES} 行（Ctrl+O 查看）`));
         }
       } else {
         // 截断模式：按 previewLines 展示首部或尾部，其余折叠
         const previewLines = renderer.previewLines ?? RESULT_PREVIEW_LINES;
         const useTail = renderer.tail ?? false;
-        if (useTail && lines.length > previewLines) {
-          const hidden = lines.length - previewLines;
+        if (useTail && resultTotalLines > previewLines) {
+          const hidden = resultTotalLines - previewLines;
           out.push(c.dim(`    ↳ …(${hidden} earlier lines)`));
           for (const l of lines.slice(-previewLines)) {
             out.push(...indent(wrap(l, width - 4), '    '));
@@ -459,8 +470,8 @@ export class ItemBlock implements Component {
           for (const l of lines.slice(0, previewLines)) {
             out.push(...indent(wrap(l, width - 4), '    '));
           }
-          if (lines.length > previewLines) {
-            const remaining = lines.length - previewLines;
+          if (resultTotalLines > previewLines) {
+            const remaining = resultTotalLines - previewLines;
             out.push(c.dim(`    ↳ 还有 ${remaining} 行（Ctrl+O 查看）`));
           }
         }
@@ -521,7 +532,14 @@ function renderToolExpanded(it: Extract<DisplayItem, { kind: 'tool' }>, width: n
   const resultText = cachedResult ?? it.result ?? '';
 
   if (resultText !== '') {
-    const lines = resultText.split('\n');
+    // Expanded view: show more but still protect against OOM on massive outputs.
+    // 20x the collapsed limit = enough for practical full-output inspection while
+    // capping absolute memory (e.g. 3 * 63 * 4 * 20 ≈ 15 KB  for narrow terminal).
+    const maxProcessChars = Math.max(ERROR_PREVIEW_LINES, DIFF_MAX_LINES, RESULT_PREVIEW_LINES) * Math.max(width - 4, 10) * 4 * 20;
+    const isProcessTruncated = resultText.length > maxProcessChars;
+    const processText = isProcessTruncated ? resultText.slice(0, maxProcessChars) : resultText;
+    const lines = processText.split('\n');
+
     if (it.status === 'error') {
       for (const l of lines) out.push(...indent(wrap(c.error(l), width - 4), '    '));
     } else if (looksLikeDiff(lines)) {
@@ -530,6 +548,9 @@ function renderToolExpanded(it: Extract<DisplayItem, { kind: 'tool' }>, width: n
       }
     } else {
       for (const l of lines) out.push(...indent(wrap(l, width - 4), '    '));
+    }
+    if (isProcessTruncated) {
+      out.push(c.dim(`    ↳ 输出过长，仅展示前 ${lines.length} 行`));
     }
   }
   out.push('');
