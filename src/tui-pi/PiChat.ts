@@ -31,6 +31,7 @@ import { offloadIfNeeded } from '../agent/outputCache.js';
 import { matchCommand, type CommandDefinition, loadCommands } from '../agent/commands/loader.js';
 import { assembleGoalInject, decideGoalTurn } from '../agent/goal/drive.js';
 import { GoalMode, type GoalChangeEvent } from '../agent/goal/mode.js';
+import { GoalStore } from '../agent/goal/store.js';
 import { initTeam } from '../agent/team/mode.js';
 import { TeamMode } from '../agent/team/mode.js';
 import { estimateTokens, fullCompact } from '../agent/compaction/compact.js';
@@ -142,6 +143,8 @@ export interface PiChatDeps {
   session: SessionData;
   /** 跨 session 消息队列（组合根注入）：缺失则跨会话投递/收件箱工具不可用，run 启动也不消费队列。 */
   sessionQueue?: SessionQueueStore;
+  /** goal 持久化存储（组合根注入）：缺失则 goal 不跨进程持久化，仅在内存存活。 */
+  goalStore?: GoalStore;
   maxContextSize: number;
   hookEngineRef: { current: HookEngine | undefined };
   subagentStore: SubagentStore;
@@ -536,8 +539,12 @@ export class PiChat {
     // session 隔离：只装回本会话的 cron 任务（构造与切会话都走 reloadCron，避免旧任务串台）
     this.reloadCron();
 
-    // goal 快照恢复：active 会被降级为 paused（防重启后无人看着就自动续跑）
-    this.goal.restore(deps.session.goal);
+    // goal 独立持久化恢复：从 GoalStore 加载本会话最近活跃的 goal（已完成的不恢复）
+    const persisted = deps.goalStore
+      ?.listBySession(this.session.id)
+      .filter((r) => r.completed !== true)
+      .sort((a, b) => b.createdAt - a.createdAt)[0];
+    if (persisted) this.goal.restore(persisted);
     this.goal.setOnChange((ev) => this.onGoalChange(ev));
     // team 恢复是异步的（要校验档案目录还在）：档案被删则静默降级为未激活
     void this.team.restore(deps.session.team).then(() => {
@@ -929,8 +936,19 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     this.session.planMode = this.planMode;
     // 空队列写 undefined 而非空数组：与 queue.update 事件的归一口径一致，快照里不留噪音
     this.session.queue = this.queue.length > 0 ? [...this.queue] : undefined;
-    // goal 与 team 快照随会话落盘（无值时清掉旧字段，否则 resume 会复活已结束的目标）
-    this.session.goal = this.goal.snapshot() ?? undefined;
+    // goal 独立持久化：不再写入 session 快照，改存 GoalStore（无 goal 时不写）
+    const goalSnap = this.goal.snapshot();
+    if (goalSnap && this.deps.goalStore) {
+      const ok = this.deps.goalStore.save(
+        { ...goalSnap, lastSessionId: this.session.id },
+        goalSnap.updatedAt, // 乐观锁：若另一 session 在此期间改过 goal，save 拒绝并返回 false
+      );
+      if (ok) {
+        // save() 内部把 updatedAt 设为 Date.now()，同步回内存让下次乐观锁有正确的基线
+        this.goal.touchUpdatedAt(Date.now());
+      }
+      // 冲突时不抛：乐观锁失败 = 另一 session 抢先写入，本 session 快照过期，下次 persist 会重试
+    }
     this.session.team = this.team.snapshot() ?? undefined;
     try {
       // 顺序是不变量：先 appendFull 后 save。save() 把当前 wire 事件数写进快照当
@@ -1704,6 +1722,15 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
           ` · 共 ${g.turnsUsed} 轮 · ${formatDuration(Math.max(0, Date.now() - g.createdAt))}`,
       });
       this.appendWire({ type: 'goal.update', ts: new Date().toISOString(), goal: undefined });
+      // 已完成 goal 不再在内存中（snapshot 返回 null），需独立落盘到 GoalStore 留审计
+      if (this.deps.goalStore) {
+        const ok = this.deps.goalStore.save(
+          { ...g, lastSessionId: this.session.id, completed: true },
+          g.updatedAt, // 乐观锁：同 persist() 路径
+        );
+        // 已完成 goal 已从内存清除，无 touchUpdatedAt 可调；冲突时磁盘上保留更旧但完整的审计记录
+        void ok;
+      }
       this.persist();
       return;
     }
@@ -3015,9 +3042,12 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     const restoredQueue = [...(data.queue ?? [])];
     this.queue = restoredQueue;
     this.notifyPrepared.clear();
-    // goal 与 team 跟着目标会话恢复。active goal 会被 restore 降级为 paused：
-    // 切过来的瞬间不该自动跑起来，要用户确认后 /goal resume。
-    this.goal.restore(data.goal);
+    // goal 跟着目标会话恢复：从 GoalStore 按目标 sessionId 加载最近的活跃 goal（已完成的不恢复）。
+    const targetGoal = this.deps.goalStore
+      ?.listBySession(data.id)
+      .filter((r) => r.completed !== true)
+      .sort((a, b) => b.createdAt - a.createdAt)[0];
+    this.goal.restore(targetGoal ?? null);
     void this.team.restore(data.team).then(() => {
       this.status.setState({ teamActive: this.team.active });
       this.tui.requestRender();
@@ -3514,6 +3544,8 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
           cron: this.cron,
           // 跨 session 队列：供 session_send/session_inbox 工具读写；未注入时工具返回不支持。
           sessionQueue: this.deps.sessionQueue,
+          // 会话持久化存储：供 session_list 工具查询本 cwd 会话列表（query/limit 过滤，防上下文爆炸）。
+          sessionStore: this.deps.store,
           // 当前会话 id：跨会话投递时作为发送方记录。
           sessionId: this.session.id,
           askUser: (req) => this.askUserQuestion(req),

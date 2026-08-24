@@ -3,7 +3,6 @@ import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { mapBlocksDeep, type AnyContentBlock, type StoredMessage } from '../agent/message.js';
-import type { GoalState } from '../agent/goal/mode.js';
 import type { PermissionMode } from '../agent/permission/mode.js';
 import {
   applyWireEvent,
@@ -46,8 +45,6 @@ export interface SessionData extends SessionMeta {
   messages: StoredMessage[];
   /** TODO 任务清单（独立存储，不占对话历史）。 */
   todos?: { title: string; status: 'pending' | 'in_progress' | 'done' }[];
-  /** goal 状态快照（随会话持久化；恢复时 active 降级 paused，fork 不继承）。 */
-  goal?: GoalState;
   /** team 团队模式快照（档案目录与基准仓；恢复时档案目录被删则静默降级未激活）。 */
   team?: import('../agent/team/mode.js').TeamSnapshot;
   /** 权限模式快照（会话级，随会话持久化；恢复时读回，旧快照缺失回退启动默认）。 */
@@ -212,6 +209,14 @@ export class SessionStore {
    */
   sessionQueueDir(): string {
     return join(this.baseDir, 'session-queue');
+  }
+
+  /**
+   * goal 持久化目录：<baseDir>/goals（全局、不按 workdir 分桶）。
+   * goal 天然跨 session 流转，与 session-queue 同属跨 session 基础设施。
+   */
+  goalsDir(): string {
+    return join(this.baseDir, 'goals');
   }
 
   /** 索引文件路径：<桶目录>/_index.json。 */
@@ -631,7 +636,6 @@ export class SessionStore {
       state.mode = snapshot.mode;
       state.planMode = snapshot.planMode;
       state.thinkOverride = snapshot.thinkOverride;
-      state.goal = snapshot.goal;
       // 字节游标有效：直接从偏移读尾段，跳过前缀的 read+parse，长会话 O(全事件)→O(尾段)。
       tail = this.loadWireFrom(cwd, id, snapshot.wireByteOffset);
       totalEvents = (snapshot.wireSeq ?? 0) + tail.length;
@@ -644,7 +648,6 @@ export class SessionStore {
         state.mode = snapshot.mode;
         state.planMode = snapshot.planMode;
         state.thinkOverride = snapshot.thinkOverride;
-        state.goal = snapshot.goal;
         // 不变量：persist 先写事件后存快照，游标只会落后（崩溃窗口）永不超前于快照
         // 内容，尾段事件必然是快照之外的新消息。超前 = 历史已被旧版本污染，不兜底。
         tail = events.slice(snapshot.wireSeq);
@@ -663,7 +666,6 @@ export class SessionStore {
     // 「清除类」事件与「从未设置」的区分：尾段出现该事件才采信重放值（可为 undefined = 清除），
     // 否则保留快照原值
     if (tail.some((e) => e.type === 'think.set')) session.thinkOverride = state.thinkOverride;
-    if (tail.some((e) => e.type === 'goal.update')) session.goal = state.goal;
     if (tail.some((e) => e.type === 'queue.update')) session.queue = state.queue;
     session.wireSeq = totalEvents;
 

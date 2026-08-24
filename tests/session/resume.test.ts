@@ -45,7 +45,7 @@ describe('SessionStore.resume 检查点 + 尾段重放', () => {
     expect(result.session.wireSeq).toBe(3);
   });
 
-  it('尾段非消息事件（权限/plan/think/goal）重放到会话状态', () => {
+  it('尾段非消息事件（权限/plan/think）重放到会话状态', () => {
     const s = store.create(cwd, 'm');
     store.appendFull(cwd, s.id, []);
     store.save(s);
@@ -53,17 +53,16 @@ describe('SessionStore.resume 检查点 + 尾段重放', () => {
       { type: 'permission.set_mode', ts: TS, mode: 'yolo' },
       { type: 'plan_mode.set', ts: TS, enabled: true },
       { type: 'think.set', ts: TS, override: 'off' },
-      {
-        type: 'goal.update',
-        ts: TS,
-        goal: { objective: 'x', status: 'active', turnsUsed: 1, tokensUsed: 10, createdAt: 1 },
-      },
+      // goal.update 事件仍在 wire log 中重放（供实时 UI 消费），
+      // 但不再写入 SessionData.goal——goal 已独立持久化到 GoalStore。
+      { type: 'goal.update', ts: TS, goal: { objective: 'x', status: 'active', turnsUsed: 1, tokensUsed: 10, createdAt: 1, updatedAt: 1, id: 'g1' } },
     ]);
     const result = store.resume(cwd, s.id)!;
     expect(result.session.mode).toBe('yolo');
     expect(result.session.planMode).toBe(true);
     expect(result.session.thinkOverride).toBe('off');
-    expect(result.session.goal?.objective).toBe('x');
+    // goal 不再属于 session 快照：从 GoalStore 恢复，而非从 wire 事件重放
+    expect(result.session.goal).toBeUndefined();
   });
 
   it('末尾悬空 tool_use 在 resume 时合成错误 tool_result 闭合', () => {

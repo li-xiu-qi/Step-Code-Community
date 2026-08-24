@@ -24,7 +24,7 @@ import { listDirTool } from './listDir.js';
 import { readFileTool } from './readFile.js';
 import { readMediaTool } from './readMedia.js';
 import { spawnAgentTool } from './spawnAgent.js';
-import { sessionInboxTool, sessionSendTool } from './sessionSend.js';
+import { sessionInboxTool, sessionListTool, sessionSendTool } from './sessionSend.js';
 import { skillTool } from './skill.js';
 import { skillSearchTool } from './skillSearch.js';
 import { taskListTool, taskOutputTool, taskStopTool, taskWaitTool } from './task.js';
@@ -51,6 +51,7 @@ const ALL_TOOLS: ToolDef<any>[] = [
   imageSearchTool,
   spawnAgentTool,
   sessionSendTool,
+  sessionListTool,
   sessionInboxTool,
   exitPlanModeTool,
   askUserTool,
