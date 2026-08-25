@@ -3,6 +3,7 @@ import type {
   QuickJSContext,
   QuickJSHandle,
   QuickJSRuntime,
+  VmCallResult,
 } from 'quickjs-emscripten';
 
 /**
@@ -131,7 +132,7 @@ export class DynamicWorkflowSandbox {
    *  语法错误/引用错误等非中断错误：抛 DynamicWorkflowError 让 runner 捕获；
    *  中断（取消/超时/预算耗尽）：抛 SandboxInterrupt。
    *  成功：返回包含 .value 的 VmCallResult。 */
-  async eval(code: string, filename = 'dwf-script.js') {
+  async eval(code: string, filename = 'dwf-script.js'): Promise<VmCallResult<QuickJSHandle>> {
     const result = this.context.evalCode(code, filename);
     if (result.error !== undefined) {
       const errHandle = result.error;
