@@ -227,4 +227,64 @@ describe('runAdvisorReview', () => {
     expect(messagesJson).not.toContain('旧消息 1');
     expect(messagesJson).not.toContain('旧消息 3');
   });
+
+  // ── 严重度分级 ──
+
+  it('[nit] 前缀 → severity 为 nit，note 剥离标签', async () => {
+    const raw = '[nit]\n第 42 行的变量命名可以更清晰，但不影响正确性';
+    const { provider } = makeFakeProvider([{ textChunks: [raw], finalContent: [textBlock(raw)] }]);
+    const guard = new EmissionGuard();
+    const messages = [longMsg('assistant', LONG_TRANSCRIPT)];
+    const result = await runAdvisorReview(messages, provider, { enabled: true }, makeCtx(), undefined, guard);
+    expect(result).not.toBeNull();
+    expect(result!.severity).toBe('nit');
+    expect(result!.note).toBe('第 42 行的变量命名可以更清晰，但不影响正确性');
+    expect(result!.note).not.toContain('[nit]');
+  });
+
+  it('[concern] 前缀 → severity 为 concern，note 剥离标签', async () => {
+    const raw = '[concern]\nrefresh endpoint 没有轮换 JWT token，存在重放攻击风险';
+    const { provider } = makeFakeProvider([{ textChunks: [raw], finalContent: [textBlock(raw)] }]);
+    const guard = new EmissionGuard();
+    const messages = [longMsg('assistant', LONG_TRANSCRIPT)];
+    const result = await runAdvisorReview(messages, provider, { enabled: true }, makeCtx(), undefined, guard);
+    expect(result).not.toBeNull();
+    expect(result!.severity).toBe('concern');
+    expect(result!.note).not.toContain('[concern]');
+  });
+
+  it('[blocker] 前缀 → severity 为 blocker', async () => {
+    const raw = '[blocker]\n正在执行 rm -rf 删除整个项目目录，这是不可逆操作';
+    const { provider } = makeFakeProvider([{ textChunks: [raw], finalContent: [textBlock(raw)] }]);
+    const guard = new EmissionGuard();
+    const messages = [longMsg('assistant', LONG_TRANSCRIPT)];
+    const result = await runAdvisorReview(messages, provider, { enabled: true }, makeCtx(), undefined, guard);
+    expect(result).not.toBeNull();
+    expect(result!.severity).toBe('blocker');
+    expect(result!.note).not.toContain('[blocker]');
+  });
+
+  it('无标签 → 默认 severity 为 concern（保守策略）', async () => {
+    const raw = '发现一个潜在的空指针风险，需要加 null check';
+    const { provider } = makeFakeProvider([{ textChunks: [raw], finalContent: [textBlock(raw)] }]);
+    const guard = new EmissionGuard();
+    const messages = [longMsg('assistant', LONG_TRANSCRIPT)];
+    const result = await runAdvisorReview(messages, provider, { enabled: true }, makeCtx(), undefined, guard);
+    expect(result).not.toBeNull();
+    expect(result!.severity).toBe('concern');
+    expect(result!.note).toBe(raw);
+  });
+
+  it('多行输出：note 只包含标签行之后的内容', async () => {
+    const raw = '[concern]\n第 1 行：token 没有过期时间\n第 2 行：缺少 refresh 机制';
+    const { provider } = makeFakeProvider([{ textChunks: [raw], finalContent: [textBlock(raw)] }]);
+    const guard = new EmissionGuard();
+    const messages = [longMsg('assistant', LONG_TRANSCRIPT)];
+    const result = await runAdvisorReview(messages, provider, { enabled: true }, makeCtx(), undefined, guard);
+    expect(result).not.toBeNull();
+    expect(result!.severity).toBe('concern');
+    expect(result!.note).toContain('第 1 行');
+    expect(result!.note).toContain('第 2 行');
+    expect(result!.note).not.toContain('[concern]');
+  });
 });
