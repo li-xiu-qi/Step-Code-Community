@@ -3249,11 +3249,10 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     this.syncTerminalTitle();
     this.tui.invalidate();
     this.tui.renderNow(true);
-    // resume 后如果 goal 不活跃且 queue 非空，自动开始 drain 第一条排队消息——
-    // 不需要用户先发消息才能触发，避免用户看到 queue:28 却不知道怎么办。
-    // goal 活跃时不 drain：goal 有自己的推进节奏，drain 会干扰自动回合。
-    const goalActive = resumedGoal !== null && resumedGoal.status === 'active';
-    if (!goalActive && restoredQueue.length > 0) {
+    // resume 后如果 queue 非空，自动开始 drain 排队消息。
+    // 不区分 goal 状态：planTurnEnd 已保证"队列优先于续接"，
+    // drain 不会干扰 goal，反而会让 queue 里的消息（含后台任务补投通知）在回合间隙被消费。
+    if (restoredQueue.length > 0) {
       void this.finishTurn();
     }
   }
