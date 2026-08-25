@@ -63,6 +63,8 @@ import type { WireEvent } from '../agent/wirelog.js';
 import { renderSkillActivation, skillListing, type SkillRegistry } from '../skill/registry.js';
 import type { ReflectOptions } from '../agent/reflect.js';
 import { REFLECT_EMPTY_HISTORY, REFLECT_NO_FINDINGS, runReflect } from '../agent/reflect.js';
+import type { DreamOptions } from '../agent/dream.js';
+import { runDream } from '../agent/dream.js';
 import { expandPluginCommand, type PluginCommand } from '../plugin/manager.js';
 import { runPluginCommand } from '../chat/pluginCommand.js';
 import { clearDynamicTools } from '../tools/index.js';
@@ -249,6 +251,9 @@ export class PiChat {
    * 待办与 plan 模式停在回退后的现状，界面与历史不自洽。
    */
   private readonly undoStack: UndoSnapshot[] = [];
+
+  /** 自动睡眠巩固：用户对话轮次计数器（每轮 +1，达到 interval 时触发 dream）。 */
+  private dreamTurnCount = 0;
 
   private readonly history: StoredMessage[] = [];
   private session: SessionData;
@@ -1615,6 +1620,10 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
         await this.runReflectCommand();
         return;
 
+      case 'dream':
+        await this.runDreamCommand(args);
+        return;
+
       case 'plugin':
         // 管理命令的子命令分发在 pluginCommand.ts，这里只展示它返回的文本
         this.push({ kind: 'note', text: runPluginCommand(args) });
@@ -2342,6 +2351,135 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     }
   }
 
+  /**
+   * /dream：被动触发的睡眠巩固。
+   *
+   * 与 /reflect 的区别：reflect 产出文本清单给人看，dream 直接落地到 memory/skill store。
+   *
+   * 用法：
+   *   /dream              — 巩固当前 session，直接写入
+   *   /dream --dry-run    — 只预览，不写入
+   *   /dream --global     — 跨 session 巩固（读取当前 cwd 下所有 session）
+   */
+  private async runDreamCommand(args: string): Promise<void> {
+    if (this.busy) return;
+    this.busy = true;
+    this.activity.setBusy(true);
+    this.activity.setTip('睡眠巩固');
+    this.syncStatus();
+
+    const dryRun = args.includes('--dry-run');
+    const global = args.includes('--global');
+
+    this.push({ kind: 'note', text: dryRun ? '正在预览巩固结果（dry-run）…' : '正在睡眠巩固…' });
+    try {
+      // 收集消息源
+      let source: StoredMessage[];
+      if (global) {
+        // 跨 session：读取当前 cwd 下所有 session 的全量历史
+        const allFiles = this.deps.store.list(this.session.cwd);
+        source = allFiles.flatMap((s: { id: string }) => this.deps.store.loadFull(this.session.cwd, s.id));
+      } else {
+        const full = this.deps.store.loadFull(this.session.cwd, this.session.id);
+        source = full.length > 0 ? full : this.history;
+      }
+
+      if (source.length === 0) {
+        this.push({ kind: 'note', text: '（没有可巩固的对话历史。）' });
+        return;
+      }
+
+      // 构建 dream 选项
+      const dreamOpts: DreamOptions = {
+        dryRun,
+        memoryDir: join(this.session.cwd, '.step-code', 'memory'),
+        skillDir: join(this.session.cwd, '.step-code', 'skills'),
+        globalMemoryDir: join(homedir(), '.step-code', 'memory'),
+      };
+
+      // 从 config 读取 dream 设置（如模型覆盖）
+      const dreamCfg = this.deps.config?.dream;
+      if (dreamCfg?.model) dreamOpts.model = dreamCfg.model;
+      if (dreamCfg?.maxTokensPerSegment) dreamOpts.maxTokensPerSegment = dreamCfg.maxTokensPerSegment;
+      if (dreamCfg?.maxSegments) dreamOpts.maxSegments = dreamCfg.maxSegments;
+
+      const { message, written } = await runDream(this.provider, source, dreamOpts);
+
+      this.push({ kind: 'note', text: message });
+
+      // 如果不是 dry-run 且有写入，注入一条简短的 system note 到历史
+      if (!dryRun && written.length > 0) {
+        this.history.push(
+          stored(
+            {
+              role: 'user',
+              content:
+                '[系统] 睡眠巩固已完成，以下文件已自动更新：\n' +
+                written.map((p) => `- ${p}`).join('\n') +
+                '\n无需用户介入，这是后台巩固的自动产出。',
+            },
+            { kind: 'injection' },
+          ),
+        );
+        this.persist();
+      }
+    } catch (e) {
+      this.push({ kind: 'error', text: `巩固失败：${(e as Error).message}` });
+    } finally {
+      this.busy = false;
+      this.activity.setBusy(false);
+      this.activity.setTip('');
+      this.syncStatus();
+      this.tui.requestRender();
+    }
+  }
+
+  /**
+   * 自动睡眠巩固：idle 时检查是否需要后台触发 dream。
+   *
+   * 触发条件：
+   * 1. config.dream.enabled === true（用户 opt-in）
+   * 2. dreamTurnCount >= config.dream.interval（默认 5 轮）
+   *
+   * 触发后重置计数器，后台异步执行，不阻塞前台。
+   */
+  private async maybeAutoDream(): Promise<void> {
+    const dreamCfg = this.deps.config?.dream;
+    if (!dreamCfg?.enabled) return;
+
+    this.dreamTurnCount++;
+    const interval = dreamCfg.interval ?? 5;
+    if (interval > 0 && this.dreamTurnCount < interval) return;
+    this.dreamTurnCount = 0;
+
+    // 后台异步执行，不阻塞前台
+    const source = this.deps.store.loadFull(this.session.cwd, this.session.id);
+    if (source.length === 0) return;
+
+    const dreamOpts: DreamOptions = {
+      memoryDir: join(this.session.cwd, '.step-code', 'memory'),
+      skillDir: join(this.session.cwd, '.step-code', 'skills'),
+      globalMemoryDir: join(homedir(), '.step-code', 'memory'),
+    };
+    if (dreamCfg.model) dreamOpts.model = dreamCfg.model;
+    if (dreamCfg.maxTokensPerSegment) dreamOpts.maxTokensPerSegment = dreamCfg.maxTokensPerSegment;
+    if (dreamCfg.maxSegments) dreamOpts.maxSegments = dreamCfg.maxSegments;
+
+    // 后台执行：fire-and-forget
+    void (async () => {
+      try {
+        const { written } = await runDream(this.provider, source, dreamOpts);
+        if (written.length > 0) {
+          this.push({ kind: 'note', text: `💤 后台巩固：${written.length} 个文件已更新。` });
+          this.tui.requestRender();
+        }
+      } catch (e) {
+        this.push({ kind: 'error', text: `后台巩固失败：${(e as Error).message}` });
+        this.tui.requestRender();
+      }
+    })();
+  }
+
   // ---------------------------------------------------------------- 状态类命令
 
   /** 权限模式切换：内存态 + 状态栏 + 落盘，并落一条 wire 事件（重放时要能还原当时的模式）。 */
@@ -2778,10 +2916,23 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       for (const settled of this.background.drainSettled()) {
         const msg = buildSettleMessage(settled, { startsPromptTurn: true });
         const body = typeof msg.message.content === 'string' ? msg.message.content : '';
-        // silent：通知正文是给模型看的 XML 信封，不能显示成用户气泡——那等于系统冒充用户
+        // silent：通知正文是给模型看的 XML 信封，不能显示成用户气泡，那等于系统冒充用户
         // 说了一段话。用户侧可见性由上面那条 note 承担（人读格式）。
         void this.runTurn(body, { silent: true, prepared: msg });
       }
+    } else {
+      // busy：本轮还在跑，settled 通知不能此刻直投，会与当前回合交错。
+      // 注入待发队列，由 finishTurn 在回合边界逐条补发，兑现「回合边界 flush」。
+      // 此前此分支为空，通知滞留 pendingSettled，只能等下次 resume 的 reconcile 批量补投，
+      // 表现为待发队列突然暴涨（debug 实测：settle 时间跨 3 天的任务一次性补投 155 条）。
+      const bodies: string[] = [];
+      for (const settled of this.background.drainSettled()) {
+        const msg = buildSettleMessage(settled, { startsPromptTurn: true });
+        const body = typeof msg.message.content === 'string' ? msg.message.content : '';
+        this.notifyPrepared.set(body, msg);
+        bodies.push(body);
+      }
+      if (bodies.length > 0) this.updateQueue([...this.queue, ...bodies]);
     }
   }
 
@@ -2914,7 +3065,11 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       hasPendingPrompt: this.promptActive,
     });
     this.updateQueue(plan.queueRemainder);
-    if (plan.action === 'idle') return;
+    if (plan.action === 'idle') {
+      // 自动睡眠巩固：idle 时检查是否需要后台触发 dream
+      void this.maybeAutoDream();
+      return;
+    }
     if (plan.action === 'submit-queue') {
       const text = plan.text ?? '';
       // 队列里可能混着排队的斜杠命令（busyRoute 判为 queue 的那些）
@@ -3138,25 +3293,37 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       this.push({ kind: 'note', text: '本目录还没有历史会话' });
       return;
     }
-    const buildItems = (): SelectItem[] => {
-      const metas = this.deps.store.list(this.deps.ctx.cwd);
-      const m = metas.filter((x) => x.parentId === undefined);
-      const sub = metas.filter((x) => x.parentId !== undefined);
-      const items = sessionItems(m, Date.now(), this.session.id).map((it) => ({
+    // 分页：初始只展示前 PAGE_SIZE 条主会话，避免千级会话下 picker 构建卡顿。
+    // 子会话区一次性全展示（通常很少）。
+    const PAGE_SIZE = 30;
+    let shownMains = Math.min(PAGE_SIZE, mains.length);
+    const buildItems = (mainCount: number): SelectItem[] => {
+      const items = sessionItems(mains.slice(0, mainCount), Date.now(), this.session.id).map((it) => ({
         ...it,
         label: it.label,
       }));
-      if (sub.length > 0) {
+      if (subs.length > 0) {
         items.push({ value: '__sub_header__', label: '── 子 agent 会话（只读）──', description: '' });
-        for (const it of sessionItems(sub)) items.push({ ...it, value: `sub:${it.value}`, label: `  ${it.label}` });
+        for (const it of sessionItems(subs)) items.push({ ...it, value: `sub:${it.value}`, label: `  ${it.label}` });
       }
       return items;
     };
+    const rebuild = (): SelectItem[] => buildItems(mains.length);
 
     const picked = await this.showInlinePicker({
       title: '恢复会话',
-      items: buildItems(),
+      items: buildItems(shownMains),
       hint: '↑↓ 选择 · Enter 恢复 · Delete 删除 · r 重命名 · 输入过滤 · Esc 取消',
+      onLoadMore: (_currentCount: number) => {
+        if (shownMains >= mains.length) return null;
+        const next = Math.min(shownMains + PAGE_SIZE, mains.length);
+        const newItems = sessionItems(mains.slice(shownMains, next), Date.now(), this.session.id).map((it) => ({
+          ...it,
+          label: it.label,
+        }));
+        shownMains = next;
+        return newItems;
+      },
       onKey: (data, selected, overlay) => {
         if (selected === null) return false;
         const id = selected.value;
@@ -3171,12 +3338,12 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
             this.push({ kind: 'note', text: '不能删除当前会话（先 /new 或切到别的会话）' });
             return true;
           }
-          void this.confirmDeleteSession(id, overlay, buildItems);
+          void this.confirmDeleteSession(id, overlay, rebuild);
           return true;
         }
         // 重命名仅在过滤为空时触发（r 还给搜索框）
         if (data === 'r' && filterEmpty) {
-          void this.renameSessionInline(id, overlay, buildItems);
+          void this.renameSessionInline(id, overlay, rebuild);
           return true;
         }
         return false;
