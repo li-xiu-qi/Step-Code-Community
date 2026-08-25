@@ -127,12 +127,30 @@ export class DynamicWorkflowSandbox {
     return new DynamicWorkflowSandbox(runtime, context, opts);
   }
 
-  /** eval 一段代码；返回 VmCallResult（error 分支由调用方处理）。 */
+  /** eval 一段代码；返回 VmCallResult。
+   *  语法错误/引用错误等非中断错误：抛 DynamicWorkflowError 让 runner 捕获；
+   *  中断（取消/超时/预算耗尽）：抛 SandboxInterrupt。
+   *  成功：返回包含 .value 的 VmCallResult。 */
   async eval(code: string, filename = 'dwf-script.js') {
     const result = this.context.evalCode(code, filename);
-    if (result.error !== undefined && this.interruptReason !== null) {
-      result.error.dispose();
-      throw new SandboxInterrupt(this.interruptReason);
+    if (result.error !== undefined) {
+      const errHandle = result.error;
+      if (this.interruptReason !== null) {
+        errHandle.dispose();
+        throw new SandboxInterrupt(this.interruptReason);
+      }
+      // 非中断错误：序列化错误信息后抛出让 runner 处理
+      try {
+        const dumped = this.context.dump(errHandle);
+        errHandle.dispose();
+        const msg = typeof dumped === 'object' && dumped !== null
+          ? `${(dumped as { name?: string; message?: string }).name ?? 'Error'}: ${(dumped as { message?: string }).message ?? String(dumped)}`
+          : String(dumped);
+        throw new Error(msg);
+      } catch (e) {
+        errHandle.dispose();
+        throw new Error(`QuickJS eval error in ${filename}: ${(e as Error).message}`);
+      }
     }
     return result;
   }
