@@ -166,6 +166,9 @@ export async function runDynamicWorkflow(opts: RunDynamicWorkflowOptions): Promi
       throw new Error(`已达 dynamic_workflow agent 总数上限（${agentLimit}）。可减小编排规模，或调大 max_agents 入参。`);
     }
     const n = ++agentsUsed;
+    if (n % 10 === 0) {
+      journal.recordProgress(`agent:${n} type=${subagentType}`).catch(() => {});
+    }
     await acquire();
     const req: SpawnSubagentRequest = {
       subagentType,
@@ -286,6 +289,7 @@ export async function runDynamicWorkflow(opts: RunDynamicWorkflowOptions): Promi
     maxInstructions: opts.maxInstructions,
   });
   try {
+    await journal.recordProgress(`workflow:start agentsLimit=${agentLimit}`);
     await injectPrimitives(sandbox, { spawn, logs, onPhase, onBudget });
 
     // 确定性 prelude + args 注入。
@@ -342,6 +346,7 @@ export async function runDynamicWorkflow(opts: RunDynamicWorkflowOptions): Promi
       }
       const value: unknown = sandbox.context.dump(state.value);
       state.value.dispose();
+      await journal.recordProgress(`workflow:done agentsUsed=${agentsUsed} journalHits=${journalHits}`);
       return {
         report: stringifyReport(value),
         agentsUsed,
@@ -355,6 +360,7 @@ export async function runDynamicWorkflow(opts: RunDynamicWorkflowOptions): Promi
       promiseHandle.dispose();
     }
   } catch (e) {
+    await journal.recordProgress(`workflow:error at=${agentsUsed} agents`).catch(() => {});
     if (e instanceof DynamicWorkflowError) throw e;
     if (e instanceof SandboxInterrupt) {
       throw new DynamicWorkflowError(`dynamic_workflow 被中断：${e.reason}`, {
