@@ -86,6 +86,21 @@ export class Transcript implements Component {
     this.structVer++;
   }
 
+  /**
+   * 撤回从 index 起的全部块（含）：PreOutput 拦截时移除本次尝试已上屏的残文。
+   *
+   * 必须递增 structVer：差分渲染靠它判定冻结前缀是否失效，若不递增，前缀缓存沿用旧值，
+   * 表现为「块已删、屏幕上还在」（2026-08-25 真机：拦截提示排在违规正文之后即此因）。
+   * 被删块 dispose 释放 markdown 渲染缓存；越界或空区间为空操作。
+   */
+  retractFrom(index: number): void {
+    if (index < 0) return; // 负下标无意义（撤回起点不能早于表头），空操作；勿钳到 0，否则 splice 会清空全表
+    if (index >= this.blocks.length) return; // 越界：空操作
+    const removed = this.blocks.splice(index);
+    for (const b of removed) b.dispose();
+    this.structVer++;
+  }
+
   /** 原地更新第 index 块（负数从尾部数）。越界为空操作。 */
   update(index: number, item: DisplayItem): void {
     const i = index < 0 ? this.blocks.length + index : index;

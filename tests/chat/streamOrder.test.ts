@@ -32,6 +32,7 @@ function makeApply(t: Transcript): {
   pendingThinking: () => string;
 } {
   let accum = '';
+  let attemptStart = 0;
   return {
     apply(ev: AgentEvent): void {
       if (ev.type === 'thinking_start') return;
@@ -40,6 +41,18 @@ function makeApply(t: Transcript): {
         return;
       }
       if (ev.type === 'usage') return; // 状态数字，不终结思考段
+      // PreOutput 拦截撤回：attempt_start 记本次尝试起点，output_blocked 撤回其残文。
+      // 与 PiChat.applyEvent 的 switch 同款逻辑（PiChat 本体构造摸真实 tty，测试实例化不了，
+      // 故在此镜像；改 PiChat 那段时此处要同步）。
+      if (ev.type === 'attempt_start') {
+        attemptStart = t.size();
+        return;
+      }
+      if (ev.type === 'output_blocked') {
+        t.retractFrom(attemptStart);
+        t.push({ kind: 'note', text: ev.message, boundary: true });
+        return;
+      }
       if (settleThinking(t, accum)) accum = '';
       if (ev.type === 'thinking_end') return;
       if (ev.type === 'text') appendText(t, ev.text);
@@ -205,5 +218,40 @@ describe('回合边界：思考不得跨回合滞留', () => {
     a.finishTurn();
     a.finishTurn(); // 幂等
     expect(seq(t)).toEqual(['thinking:想', 'assistant:答']);
+  });
+});
+
+describe('PreOutput 拦截撤回（attempt_start / output_blocked）', () => {
+  it('拦截撤回本次尝试全部产出（thinking + 正文），保留之前内容', () => {
+    vi.useFakeTimers();
+    const t = new Transcript();
+    const buf = new StreamBuffer(makeApply(t).apply);
+    // 之前的内容：上一轮回答 + 新一轮提问
+    buf.ingest({ type: 'text', text: '上一轮的回答' });
+    vi.advanceTimersByTime(50);
+    buf.drain();
+    t.push({ kind: 'user', text: '新一轮提问' });
+    // 新一轮尝试：attempt_start → thinking → 带破折号正文 → output_blocked
+    buf.ingest({ type: 'attempt_start' });
+    buf.ingest({ type: 'thinking_delta', text: '想一下' });
+    vi.advanceTimersByTime(50);
+    buf.ingest({ type: 'text', text: '带破折号的违规正文' });
+    vi.advanceTimersByTime(50);
+    buf.ingest({ type: 'output_blocked', message: '输出被拦截，正在纠正...' });
+    buf.drain();
+    // 本轮 thinking + 正文被撤，只留上一轮回答 + 新一轮提问 + 拦截提示
+    expect(seq(t)).toEqual(['assistant:上一轮的回答', 'user', 'note']);
+  });
+
+  it('attempt_start 本身不产生可见块', () => {
+    vi.useFakeTimers();
+    const t = new Transcript();
+    const buf = new StreamBuffer(makeApply(t).apply);
+    buf.ingest({ type: 'attempt_start' });
+    buf.ingest({ type: 'text', text: '正文' });
+    vi.advanceTimersByTime(50);
+    buf.drain();
+    expect(t.items()).toHaveLength(1);
+    expect(t.items()[0]!.kind).toBe('assistant');
   });
 });

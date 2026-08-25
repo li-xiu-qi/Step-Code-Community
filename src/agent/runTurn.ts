@@ -21,14 +21,14 @@ import { executeTool, toolAccessOf } from '../tools/index.js';
 import type { ToolAccess } from '../tools/access.js';
 import type { ToolContext, ToolResult } from '../tools/types.js';
 import type { AgentEvent } from './events.js';
-import { type LoopHooks, resolveAuthorization, resolveFinalizeResult } from './hooks.js';
+import { type LoopHooks, resolveAuthorization, resolveFinalizeResult, resolvePreOutput } from './hooks.js';
 import { stored, type StoredMessage } from './message.js';
 import { capToolResult } from './toolResultLimit.js';
 import { ToolScheduler } from './toolScheduler.js';
 import { toWire } from './wire.js';
 
 /** 单回合结束原因。overflow = 上下文溢出，交外层循环压缩后重试。max_tokens = 输出达上限被截断。 */
-export type StopReason = 'end_turn' | 'tool_use' | 'aborted' | 'error' | 'overflow' | 'max_tokens';
+export type StopReason = 'end_turn' | 'tool_use' | 'aborted' | 'error' | 'overflow' | 'max_tokens' | 'pre_output_blocked';
 
 /** 单回合执行结果。 */
 export interface TurnOutcome {
@@ -598,7 +598,24 @@ export async function* runTurn(
   }
   const usage = final.usage;
 
+  // PreOutput 拦截：正文产出后、落盘前检查文本，拦截本轮并注入约束让模型重出。
   if (!skipFinalPush) {
+    const textBlocks = final.content.filter(
+      (b: Anthropic.ContentBlock): b is Anthropic.TextBlock => b.type === 'text',
+    );
+    const outputText = textBlocks.map(b => b.text).join('');
+    const preOutputResult = outputText ? await resolvePreOutput(hooks, outputText) : { decision: 'allow' as const };
+    if (preOutputResult.decision === 'block') {
+      // 不落盘违法内容；注入纠正消息，让模型下一轮重出。
+      messages.push(
+        stored(
+          { role: 'user', content: preOutputResult.reason },
+          { kind: 'injection' },
+        ),
+      );
+      yield { type: 'notice', message: preOutputResult.reason };
+      return { stopReason: 'pre_output_blocked', usage };
+    }
     messages.push(stored({ role: 'assistant', content: final.content }, { kind: 'assistant' }));
   }
 

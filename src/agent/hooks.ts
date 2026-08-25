@@ -29,8 +29,24 @@ export interface LoopHooks {
     req: ToolCallRequest,
     result: ToolResult,
   ): Promise<ToolResult> | ToolResult;
+  /** 模型产出正文后的拦截（检查文本，允许/拒绝）。默认放行。 */
+  preOutput?(text: string): Promise<PreOutputResult> | PreOutputResult;
   /** 模型以非工具原因停止后，返回续接描述（inject 为下一轮注入文本）；null = 结束。默认 null。 */
   shouldContinueAfterStop?(): Promise<StopContinuation | null> | StopContinuation | null;
+}
+
+/** PreOutput 结果：放行或拒绝并附原因（原因会注入为下一轮用户消息）。 */
+export type PreOutputResult =
+  | { decision: 'allow' }
+  | { decision: 'block'; reason: string };
+
+/** 解析 PreOutput：无钩子时默认放行。 */
+export async function resolvePreOutput(
+  hooks: LoopHooks,
+  text: string,
+): Promise<PreOutputResult> {
+  if (hooks.preOutput === undefined) return { decision: 'allow' };
+  return hooks.preOutput(text);
 }
 
 /** 解析授权：无钩子时默认放行。 */

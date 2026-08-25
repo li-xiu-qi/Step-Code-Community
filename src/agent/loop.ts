@@ -513,6 +513,9 @@ export async function* runAgent(opts: RunAgentOptions): AsyncGenerator<AgentEven
     // 就要带完整 schema 进请求，不能在循环外取一次快照复用
     const tools = toAnthropicTools(allowedTools);
     const lenBefore = messages.length;
+    // 本次模型响应的起点：标记「本次尝试」边界，供 PreOutput 拦截时精确撤回本次尝试已上屏的残文
+    // （thinking + 正文）。StreamBuffer 视作结构事件立即下发，边界记录在正文落块之前。
+    yield { type: 'attempt_start' };
     const turn = runTurn({ provider, system, tools, ctx, messages, hooks, signal, allowedTools: allowedSet, model, thinking, providerName });
     let step = await turn.next();
     while (!step.done) {
@@ -693,6 +696,13 @@ export async function* runAgent(opts: RunAgentOptions): AsyncGenerator<AgentEven
         // 早已这么做并写了注释说明理由，两条压缩路径的显示口径必须一致。
         yield { type: 'usage', totalTokens: estimatedUsedWithFramework(), measuredLength: messages.length };
         iter--; // 抵消本轮自增，重试当前回合
+        continue;
+      }
+      case 'pre_output_blocked': {
+        // PreOutput hook 拦截：正文违规（如破折号），已注入纠正消息。
+        // 不结束，继续下一轮让模型重出合规文本。发 output_blocked 而非普通 notice：
+        // UI 据此撤回本次尝试已上屏的残文（否则违规正文留在屏幕上、提示排在它之后）。
+        yield { type: 'output_blocked', message: '输出被拦截，正在纠正...' };
         continue;
       }
       case 'max_tokens': {
