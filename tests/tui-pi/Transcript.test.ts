@@ -111,3 +111,47 @@ describe('Transcript 冻结前缀', () => {
     expect(lines).toContain('正文');
   });
 });
+
+describe('Transcript retractFrom（PreOutput 拦截撤回残文）', () => {
+  it('撤回从 index 起的块，保留之前的内容', () => {
+    const t = new Transcript();
+    t.push({ kind: 'user', text: '提问' });
+    t.push({ kind: 'thinking', text: '思考' });
+    t.push({ kind: 'assistant', text: '带破折号的正文' });
+    t.retractFrom(1);
+    expect(t.items().map((it) => it.kind)).toEqual(['user']);
+  });
+
+  it('撤回后渲染不再含被撤内容（structVer 让冻结前缀缓存失效）', () => {
+    const t = new Transcript();
+    t.push({ kind: 'user', text: '提问' });
+    t.push({ kind: 'assistant', text: '违规正文' });
+    t.render(W); // 冷帧，建前缀缓存
+    t.retractFrom(1);
+    const lines = t.render(W).join('\n');
+    expect(lines).toContain('提问');
+    expect(lines).not.toContain('违规正文');
+  });
+
+  it('越界与负下标为空操作，不抛错', () => {
+    const t = new Transcript();
+    t.push(note('a'));
+    t.retractFrom(99);
+    t.retractFrom(-5);
+    expect(t.items()).toHaveLength(1);
+  });
+
+  it('被撤块被 dispose（释放渲染缓存）', () => {
+    const t = new Transcript();
+    t.push(note('a'));
+    t.push(note('b'));
+    const disposes: number[] = [];
+    const orig = ItemBlock.prototype.dispose;
+    vi.spyOn(ItemBlock.prototype, 'dispose').mockImplementation(function (this: ItemBlock) {
+      disposes.push(1);
+      orig.call(this);
+    });
+    t.retractFrom(1);
+    expect(disposes).toHaveLength(1);
+  });
+});

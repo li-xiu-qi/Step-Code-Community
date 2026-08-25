@@ -53,6 +53,18 @@ export type AgentEvent =
   | { type: 'turn_done' }
   | { type: 'notice'; message: string }
   /**
+   * 一次模型响应的起点（runTurn 一次迭代）。UI 据此记录转录区块数作为「本次尝试」边界，
+   * 供 PreOutput 拦截时精确撤回本次尝试的全部产出（thinking + 正文，而非仅正文）。
+   * 内部标记，不渲染可见内容。StreamBuffer 视作结构事件立即下发，保证边界记录在正文落块之前。
+   */
+  | { type: 'attempt_start' }
+  /**
+   * PreOutput hook 拦截：本次响应正文违规（如含禁用破折号），已注入纠正消息、将继续重出合规文本。
+   * UI 据此撤回本次尝试已上屏的全部产出，再提示重出——否则违规正文留在屏幕上、
+   * 拦截提示反而排在正文之后，pre-display 语义落空。
+   */
+  | { type: 'output_blocked'; message: string }
+  /**
    * 上下文用量。totalTokens 为该事件覆盖范围的 token 总量。
    * measuredLength：此 totalTokens 已测量/覆盖的 messages 前缀长度——真实 usage 覆盖当轮完整 messages
    * （= messages.length），供 UI 对「此后新 append、尚未经历 API 往返」的尾部消息做字符估算叠加，

@@ -843,6 +843,12 @@ async function runPrint(prompt: string): Promise<void> {
         break;
       case 'turn_done':
         break;
+      case 'attempt_start':
+        break; // 内部边界标记，非交互模式无需处理
+      case 'output_blocked':
+        // PreOutput 拦截：-p 模式无 TUI 可撤回，仅把重出提示打到 stderr（stdout 仍输出最终合规正文）
+        process.stderr.write(`\n[notice] ${ev.message}\n`);
+        break;
     }
   };
 

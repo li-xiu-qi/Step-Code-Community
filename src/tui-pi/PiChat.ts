@@ -355,6 +355,8 @@ export class PiChat {
    */
   private readonly notifyPrepared = new Map<string, StoredMessage>();
   private thinkingAccum = '';
+  /** 本次模型尝试的转录区起点下标：attempt_start 时记录，output_blocked 时据此撤回本次尝试的残文。 */
+  private attemptStartIndex = 0;
   /** thinking 预览尾部留的行数。比 StatusLine.PREVIEW_LINES(3) 多取几行，折行后仍够预览用。 */
   private static readonly PREVIEW_TAIL_LINES = 5;
   /** preview 只传 accum 尾部若干行，避免 Text 组件每 chunk 重折全量串。 */
@@ -3838,6 +3840,18 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       if (rest !== '') appendText(this.transcript, rest);
     }
     switch (ev.type) {
+      case 'attempt_start':
+        // 本次模型响应的起点：记录转录区块数作为边界。内部标记，无可见内容、不重绘。
+        this.attemptStartIndex = this.transcript.size();
+        break;
+      case 'output_blocked': {
+        // PreOutput 拦截：撤回本次尝试已上屏的全部产出（thinking + 正文），
+        // 否则违规正文留在屏幕上、拦截提示反而排在它之后。再提示重出。
+        this.transcript.retractFrom(this.attemptStartIndex);
+        this.transcript.push({ kind: 'note', text: ev.message, boundary: true });
+        this.tui.requestRender();
+        break;
+      }
       case 'text': {
         this.activity.addOutputChars(ev.text.length);
         // 经表格扣留层：疑似 pipe-table 起点之后的内容扣到表格结束再落地，

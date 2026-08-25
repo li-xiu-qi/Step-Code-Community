@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import type { HookConfigEntry, HookEventName } from '../../config/config.js';
 import { t } from '../../i18n.js';
 import type { ToolResult } from '../../tools/types.js';
-import type { Authorization, LoopHooks, StopContinuation, ToolCallRequest } from '../hooks.js';
+import { type Authorization, type LoopHooks, type PreOutputResult, type StopContinuation, type ToolCallRequest } from '../hooks.js';
 
 /** PostToolUse 传入 hook 的 tool_output 截断长度（字符）。 */
 export const POST_TOOL_OUTPUT_MAX = 2000;
@@ -166,7 +166,6 @@ export class HookEngine {
           cwd: this.opts.cwd,
           ...fields,
         };
-        this.onNotice(t('hook.notice.start', { event, command: hook.command }));
         const r = await execHook(hook.command, JSON.stringify(payload), hook.timeout, {
           cwd: hook.cwd,
           env: hook.env,
@@ -215,6 +214,8 @@ export interface ComposedLoopHooks extends LoopHooks {
  * - PreToolUse：授权链首，deny-only——exit 2 直接拒（reason 回灌模型），放行则继续走既有审批。
  *   hook 只能否决不能批准，不替代人工审批。
  * - PostToolUse：fire-and-forget，不改写结果（tool_output 截断 {@link POST_TOOL_OUTPUT_MAX} 字符传入）。
+ * - PreOutput：模型产出正文后执行，exit 2 阻断本轮并对文本做去污染处理（仅一次），0 放行。
+ *   payload 含 `last_text`（正文拼接，不含 thinking/工具块）。
  * - Stop：exit 2 时返回续接描述（reason 为注入文本），只给一次续行机会（防死循环标志）。
  *   续接与 goal 统一走 continuation 事件，由 App/headless 层注入下一轮，引擎不直写 history。
  * @param engine 用户 hooks 引擎。
@@ -244,6 +245,14 @@ export function composeLoopHooks(
       );
       if (base.finalizeToolResult === undefined) return result;
       return base.finalizeToolResult(req, result);
+    },
+    preOutput: async (text: string): Promise<PreOutputResult> => {
+      const r = await engine.run('PreOutput', { last_text: text });
+      if (r.blocked) {
+        return { decision: 'block', reason: r.reason ?? t('hook.blocked.noReason') };
+      }
+      if (base.preOutput === undefined) return { decision: 'allow' };
+      return base.preOutput(text);
     },
     shouldContinueAfterStop: async (): Promise<StopContinuation | null> => {
       // 先走 base 的续接裁决（goal 预算/计轮、缺省结束）。
