@@ -802,18 +802,24 @@ export async function* runAgent(opts: RunAgentOptions): AsyncGenerator<AgentEven
         }
         // ── Advisor 旁路审查 ──
         // 每轮 tool_use 结束后、下一轮开始前，用一次独立 LLM 调用审查 transcript。
-        // 只在发现具体技术风险时注入建议（作为 injection 消息，模型下一轮可见）。
+        // 按严重度分级处理：
+        //   nit → 只显示 notice，不注入对话（不打断主 agent）
+        //   concern/blocker → 注入对话上下文，模型下一轮可见
         // advisor 调用失败不阻塞主循环（catch 内返回 null）。
         if (advisorGuard !== null && opts.advisor !== undefined) {
           const review = await runAdvisorReview(messages, provider, opts.advisor, ctx, signal, advisorGuard);
           if (review !== null) {
-            messages.push(
-              stored(
-                { role: 'user', content: `[Advisor] ${review.note}` },
-                { kind: 'injection' },
-              ),
-            );
-            yield { type: 'notice', message: `[Advisor] ${review.note}` };
+            const prefix = review.severity === 'blocker' ? '[Advisor ⚠]' : '[Advisor]';
+            if (review.severity !== 'nit') {
+              // concern 和 blocker 注入对话上下文
+              messages.push(
+                stored(
+                  { role: 'user', content: `${prefix} ${review.note}` },
+                  { kind: 'injection' },
+                ),
+              );
+            }
+            yield { type: 'notice', message: `${prefix} ${review.note}` };
           }
         }
         // 这里**不再**做压缩：本回合结束等价于下一回合开始，而循环顶部的预检就在那个
