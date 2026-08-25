@@ -102,4 +102,13 @@ export class Journal {
       // journal 是缓存优化，写失败不致命
     }
   }
+
+  /** 追加一条进度快照（killed/timeout 后可用于诊断跑了多远）。 */
+  async recordProgress(label: string): Promise<void> {
+    try {
+      await appendFile(this.filePath, `${JSON.stringify({ type: 'progress', label, ts: Date.now() })}\n`, 'utf-8');
+    } catch {
+      // 进度快照是诊断辅助，写失败不阻断
+    }
+  }
 }
