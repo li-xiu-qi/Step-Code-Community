@@ -3296,7 +3296,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     }
     // 分页：初始只展示前 PAGE_SIZE 条主会话，避免千级会话下 picker 构建卡顿。
     // 子会话区一次性全展示（通常很少）。
-    const PAGE_SIZE = 30;
+    const PAGE_SIZE = 50;
     let shownMains = Math.min(PAGE_SIZE, mains.length);
     const buildItems = (mainCount: number): SelectItem[] => {
       const items = sessionItems(mains.slice(0, mainCount), Date.now(), this.session.id).map((it) => ({
@@ -3314,7 +3314,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     const picked = await this.showInlinePicker({
       title: '恢复会话',
       items: buildItems(shownMains),
-      hint: '↑↓ 选择 · Enter 恢复 · Delete 删除 · r 重命名 · 输入过滤 · Esc 取消',
+      hint: '↑↓ 选择 · Enter 恢复 · Delete 删除 · r 重命名 · 输入过滤 · Esc 取消 (滚动加载更多)',
       onLoadMore: (_currentCount: number) => {
         if (shownMains >= mains.length) return null;
         const next = Math.min(shownMains + PAGE_SIZE, mains.length);
