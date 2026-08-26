@@ -9,25 +9,45 @@
  * - 括号（() [] {}）恒配对，即便跟在字母后（`foo(` → `foo(|)` 是标准预期）。
  * - 引号（" ' `）仅当光标下一字符非字母数字时才配对，避开 `don't` 一类撇号被劈成 `don''t`。
  * - 闭符 type-over：`(|)` 再按 `)` 应右移越过而非再插一个。
+ * - 中文括号 / 引号一并纳入，行为与对应英文符一致（）
+ *   （中文开闭符是不同的码点，解码逐字符放行，配对逻辑无需区分全角 / 半角）。
  */
 import { decodeKittyPrintable } from '@earendil-works/pi-tui';
 
-/** 可配对的开符 → 闭符。 */
+/**
+ * 可配对的开符 → 闭符。
+ * 括号类键入即配对、光标放中间；引号类按 shouldPair 判定（光标下非字母数字才配对）。
+ * 中文括号 / 引号一并纳入，行为与对应英文符一致。
+ */
 export const AUTO_PAIRS: Readonly<Record<string, string>> = {
+  // 括号类（恒配对）
   '(': ')',
   '[': ']',
   '{': '}',
+  '（': '）',
+  '【': '】',
+  '《': '》',
+  '〈': '〉',
+  '〔': '〕',
+  '〖': '〗',
+  // 引号类（按 shouldPair 的字母数字规则判定）
   '"': '"',
   "'": "'",
   '`': '`',
+  '“': '”',
+  '‘': '’',
+  '「': '」',
+  '『': '』',
 };
 
 /** 闭符集合（type-over 判定用）。 */
 export const CLOSE_CHARS: ReadonlySet<string> = new Set(Object.values(AUTO_PAIRS));
 
-/** 是否应在当前上下文对开符配对。括号恒配对；引号仅当下一字符非字母数字。 */
+/** 是否应在当前上下文对开符配对。括号恒配对；引号仅当光标下一字符非字母数字。 */
 export function shouldPair(open: string, charAtCursor: string): boolean {
-  const isQuote = open === '"' || open === "'" || open === '`';
+  const isQuote =
+    open === '"' || open === "'" || open === '`' ||
+    open === '“' || open === '‘' || open === '「' || open === '『';
   if (isQuote) return charAtCursor === '' || !/[A-Za-z0-9]/.test(charAtCursor);
   return true;
 }
