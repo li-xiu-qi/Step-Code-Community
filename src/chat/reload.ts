@@ -220,6 +220,7 @@ function providerSlice(cfg: StepCodeConfig): string {
     apiKey: cfg.apiKey,
     baseUrl: cfg.baseUrl,
     model: cfg.model,
+    max_context_size: cfg.max_context_size,
     maxTokens: cfg.maxTokens,
     thinking: cfg.thinking,
   });
