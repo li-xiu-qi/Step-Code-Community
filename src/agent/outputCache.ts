@@ -71,7 +71,7 @@ export function offloadIfNeeded(toolName: string, result: string): string | unde
 /** 检查是否需要 offload（即使结果在 MAX_INLINE_CHARS 以内）。 */
 function requiresOffload(toolName: string, result: string): boolean {
   // 某些工具始终 offload
-  const alwaysOffload = new Set(['web_fetch']);
+  const alwaysOffload = new Set(['web_extract']);
   if (alwaysOffload.has(toolName)) return result.length > 0;
   return false;
 }

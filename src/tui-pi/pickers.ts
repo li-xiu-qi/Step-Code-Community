@@ -462,8 +462,10 @@ export async function pickSessionStandalone(
   metas: readonly SessionMeta[],
   onLoadMore?: (currentCount: number) => SessionMeta[] | null,
 ): Promise<string | null> {
-  const { ProcessTerminal, TuiMainScreen } = await import('@earendil-works/pi-tui');
-  const tui = new TuiMainScreen(new ProcessTerminal());
+  const { ProcessTerminal, TuiAltScreen } = await import('@earendil-works/pi-tui');
+  const tui = new TuiAltScreen(new ProcessTerminal(), undefined, undefined, {
+    mouse: true,
+  });
   tui.start();
   try {
     // 将 SessionMeta[] 的加载器适配为 SelectItem[] 的加载器

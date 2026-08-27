@@ -279,7 +279,9 @@ describe('PiChat 接线：会话切换的清理与恢复', () => {
     wired(piChat, "type: 'queue.update'", '队列 wire 事件');
     wired(piChat, 'this.session.queue =', 'persist 写入队列快照');
     // 两条恢复路径：构造器（启动 / --continue）与 resumeSession（应用内 /resume）
-    const restores = piChat.match(/this\.queue = (?:\[\.\.\.\((?:deps\.session|data)\.queue \?\? \[\]\)\]|restoredQueue)/g) ?? [];
+    // 构造器：this.queue = [...filtered] (filterUserMessages 过滤旧通知)
+    // resumeSession：this.queue = PiChat.filterUserMessages(restoredQueue)
+    const restores = piChat.match(/this\.queue = (?:\[\.\.\.filtered\]|PiChat\.filterUserMessages)/g) ?? [];
     expect(restores.length, '队列恢复点应有 2 处（构造器 + resumeSession）').toBe(2);
   });
 

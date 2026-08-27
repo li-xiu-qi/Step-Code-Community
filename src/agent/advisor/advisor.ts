@@ -18,32 +18,42 @@ import { stored, type StoredMessage } from '../message.js';
 import type { AdvisorConfig } from './config.js';
 import { EmissionGuard } from './guard.js';
 
-const ADVISOR_SYSTEM = `你是一个旁路审查顾问。你观察主 agent 的对话记录，只在发现具体风险时给出建议。
+const ADVISOR_SYSTEM = `你是一个旁路影子审查顾问。你观察主 agent 的对话记录，仅在发现具体技术风险时给出建议。
 
-规则：
-- 主 agent 方向正确时保持沉默，只标记 transcript 中可见的具体风险。
-- 不要重复主 agent 已有的信息。
-- 不要重复之前的建议。
-- 不要质疑用户的意图或范围。
+核心原则：沉默优先。
+- 主 agent 方向正确、推进正常时，输出 SILENT。SILENT 是正常状态，不是失败。
+- 只在 transcript 中可见的具体风险上发言。泛化的不确定性、模糊的不安、笼统的"可以更好"→ SILENT。
+- 不要因为"觉得可以说点什么"就输出——必须有具体的、可指出的风险。
 
-审查范围（不只是代码）：
-- 代码风险：空指针、竞态、SQL 注入、未处理的错误
-- 文件操作风险：删除不可逆操作、路径错误、覆盖未保存内容
-- 命令安全风险：rm -rf、git reset --hard 等破坏性操作
-- 逻辑风险：前提错误、论证跳跃、遗漏关键维度
+不重复：
+- NEVER restate information the agent already has, including errors it has already seen.
+- NEVER repeat prior advice or send identical advice twice.
+- NEVER restate the user's ask or question its clarity.
+- NEVER police scope or ambition—large diffs, rewrites, and ambitious plans are not problems.
+
+审查范围（按优先级排序）：
+1. 破坏性操作：rm -rf、git reset --hard、git clean -fd、未确认的删除
+2. 文件操作风险：路径错误、覆盖未保存内容、删错目录
+3. 逻辑风险：前提错误、论证跳跃、遗漏关键维度、概念混淆
+4. 代码风险：空指针、竞态、SQL 注入、未处理的错误、安全漏洞
+5. 流程风险：跳过验证就声称完成、用错误方法复查
+
+严重度分级：
+- [blocker] 必须停下来。不可逆的破坏性操作正在执行、或结论基于错误前提。
+- [concern] 需要关注。可能走错方向、遗漏了重要维度、或有更好的做法。
+- [nit] 小建议。不紧急，不打断。代码风格、命名建议、可选优化。
 
 输出格式：
 - 无建议时，输出：SILENT
-- 有建议时，第一行输出严重度标签，第二行起输出建议内容：
-  [nit] 小建议，不紧急，不打断
-  [concern] 可能走错方向，需要关注
-  [blocker] 必须停下来，有严重问题
+- 有建议时，第一行输出严重度标签，第二行起输出建议内容。
+  建议内容必须具体——指出哪一步、什么问题、为什么是风险。
+  不要解释推理过程。不要用"建议""可能""或许"等软化词。
 
-用中文输出建议。只输出建议本身，不要解释推理过程。`;
+用中文输出。`;
 
 /** 从 messages 尾部提取最近一轮的 assistant 文本 + tool 结果文本，拼成 advisor 可读的 transcript。 */
-function extractRecentTranscript(messages: StoredMessage[], maxChars = 4000): string {
-  // 取最后 4 条消息（通常 = 最后 1-2 轮 assistant + tool_result）
+function extractRecentTranscript(messages: StoredMessage[], maxChars = 6000): string {
+  // 取最后 4 条消息（覆盖最近 1-2 轮），保持上下文精简
   const recent = messages.slice(-4);
   const parts: string[] = [];
   let total = 0;
@@ -58,6 +68,16 @@ function extractRecentTranscript(messages: StoredMessage[], maxChars = 4000): st
         .filter((b): b is Anthropic.TextBlock => b.type === 'text')
         .map((b) => b.text)
         .join('\n');
+      // tool_use 块：提取工具名和关键输入参数
+      const toolUses = content
+        .filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use')
+        .map((b) => {
+          const inputStr = JSON.stringify(b.input);
+          const truncated = inputStr.length > 200 ? inputStr.slice(0, 200) + '...' : inputStr;
+          return `[工具:${b.name}] ${truncated}`;
+        })
+        .join('\n');
+      if (toolUses) text += (text ? '\n' : '') + toolUses;
       // tool_result 块也提取
       const toolTexts = content
         .filter((b): b is Anthropic.ToolResultBlockParam => b.type === 'tool_result')
@@ -116,7 +136,7 @@ export async function runAdvisorReview(
   const transcript = extractRecentTranscript(messages);
   if (!transcript || transcript.length < 50) return null;
 
-  const userContent = `审查以下对话记录，如果发现具体风险请给出建议：\n\n${transcript}`;
+  const userContent = `审查以下对话记录。关注：破坏性操作、路径/文件错误、逻辑跳跃、遗漏的关键维度、跳过验证就声称完成。\n如果没有具体风险，输出 SILENT。\n\n${transcript}`;
   const advisorMessages: StoredMessage[] = [
     stored({ role: 'user', content: userContent }, { kind: 'injection' }),
   ];

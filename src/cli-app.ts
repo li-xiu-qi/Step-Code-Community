@@ -127,7 +127,7 @@ process.env.NODE_USE_ENV_PROXY ??= '1';
 // commander 帮助定义在模块顶层、早于本行，v1 固定中文（已知限制）。
 setLocale(config.language ?? 'zh');
 
-// 网页结果缓存容量：[tools.web] 段即时生效（后续 web_search / web_fetch 走新配额）。
+// 网页结果缓存容量：[tools.web] 段即时生效（后续 web_search / web_extract 走新配额）。
 configureWebResultCache(config);
 
 // 配置启动自检：把 loadConfig 静默跳过/降级的项摆到用户面前（正常配置下零输出）。

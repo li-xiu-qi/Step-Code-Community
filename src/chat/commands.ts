@@ -155,6 +155,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   },
   { name: 'restore', describe: 'cmd.restore' },
   { name: 'reflect', describe: 'cmd.reflect' },
+  { name: 'dream', describe: 'cmd.dream' },
   { name: 'export-debug-zip', describe: 'cmd.export-debug-zip' },
   { name: 'usage', describe: 'cmd.usage' },
   { name: 'context', describe: 'cmd.context' },

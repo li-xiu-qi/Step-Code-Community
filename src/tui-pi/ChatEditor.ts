@@ -13,7 +13,6 @@ import {
   type TUI,
   visibleWidth,
 } from '@earendil-works/pi-tui';
-import { planAutoPair, isPairSurrounding } from './autoPair.js';
 
 /**
  * 输入提示符。用 `›`（U+203A）：比 `>` 窄一格，不与正文引用块（`>`）或 diff 标记混淆。
@@ -23,11 +22,7 @@ export const PROMPT_SYMBOL = '› ';
 export const PROMPT_WIDTH = 2;
 /** paddingX 产生的行首空白，render 里用它定位要覆盖的那几列。 */
 const PROMPT_PAD = ' '.repeat(PROMPT_WIDTH);
-/** 左/右方向键序列（CSI），auto-pair 的 type-over 与光标归位用。 */
-const ARROW_LEFT = '\x1b[D';
-const ARROW_RIGHT = '\x1b[C';
-/** 前向删除键（CSI），退格整对删除时先删光标处的闭符。 */
-const KEY_DELETE = '\x1b[3~';
+
 /**
  * pi-tui 画光标用的反显序列（实测 2026-08-16）。占位文案要插在它之后，
  * 否则会挤在光标前面看着像已输入的内容。
@@ -190,52 +185,8 @@ export class ChatEditor extends Editor {
   /** 爆发窗口长度：覆盖粘贴尾块与最后一个 \r 分开到达的间隔。 */
   private static readonly BURST_WINDOW_MS = 150;
 
-  /**
-   * 自动配对拦截：开符插「开+闭」并把光标放中间；光标处已是闭符则右移越过。
-   *
-   * 返回 true 表示已消费（插入配对 / 越过闭符），调用方不再下传给父类；
-   * false 表示本次输入不适用配对，走编辑器默认处理。
-   *
-   * 插入走 insertTextAtCursor（原子，单次 undo 还原整对），光标归位与 type-over 的
-   * 右移经 super.handleInput 发 CSI 方向键——避开私有 setCursorCol。开符的解码交给
-   * planAutoPair（kitty CSI-u 与裸字符都认），这里只负责把决策落到编辑器状态上。
-   */
-  private tryAutoPair(data: string): boolean {
-    const { line, col } = this.getCursor();
-    const curLine = this.getLines()[line] ?? '';
-    const charAtCursor = curLine[col] ?? '';
-    // 配对内退格整对删除：`(|)` 按退格 → 空。先删光标处的闭符（前向删除），再让 super 退格删开符；
-    // 否则「删一半」会留下悬空括号卡在中间。非配对形态返回 false 交回正常退格。
-    if (this.isBackspace(data)) {
-      const before = col > 0 ? (curLine[col - 1] ?? '') : '';
-      if (isPairSurrounding(before, charAtCursor)) {
-        super.handleInput(KEY_DELETE);
-        super.handleInput(data);
-        return true;
-      }
-      return false;
-    }
-    const action = planAutoPair(data, charAtCursor);
-    if (action.kind === 'insert-pair') {
-      this.insertTextAtCursor(action.text);
-      super.handleInput(ARROW_LEFT);
-      return true;
-    }
-    if (action.kind === 'skip-close') {
-      super.handleInput(ARROW_RIGHT);
-      return true;
-    }
-    return false;
-  }
-
-  /** 退格键判定：覆盖 \x7f / \b 与 pi-tui 的 backspace 键名（kitty 与裸键）。 */
-  private isBackspace(data: string): boolean {
-    return data === '\x7f' || data === '\b' || matchesKey(data, 'backspace');
-  }
-
   override handleInput(data: string): void {
     // PasteBurst 兜底一：含换行的散装文本块（无转义序列）必是粘贴——键盘输入的
-    // Enter 永远单独到达，不会夹在文本块里。按行拆开逐段喂给父类，换行符换成 '\n'
     // 走父类的换行分支（直接插原块会把 \r 原样塞进缓冲区）。
     if (
       data.length >= ChatEditor.BURST_MIN_CHUNK &&
@@ -293,7 +244,6 @@ export class ChatEditor extends Editor {
     if (matchesKey(data, 'up')) {
       if (this.onUpArrow?.() === true) return;
     }
-    if (this.tryAutoPair(data)) return;
     super.handleInput(data);
   }
 }

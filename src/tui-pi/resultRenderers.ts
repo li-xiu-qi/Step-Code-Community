@@ -81,7 +81,7 @@ const SHELL_TOOLS = new Set<string>([
 
 /** 总是 offload 的工具（输出体积不可控）。 */
 const ALWAYS_OFFLOAD = new Set<string>([
-  'web_fetch', // 抓到的网页正文可能非常大
+  'web_extract', // 提取到的网页正文可能非常大
 ]);
 
 // ─── 注册表 ─────────────────────────────────────────────────────────────────

@@ -323,11 +323,11 @@ function extractMainContent(html: string, url?: string): string {
 // ── Tool 定义 ─────────────────────────────────────────────────────────
 
 export const webFetchTool: ToolDef<z.infer<typeof schema>> = {
-  name: 'web_fetch',
+  name: 'web_extract',
   description:
-    '抓取指定 URL 的网页正文内容。适用于用户直接给出的链接、代码中出现的文档页、搜索结果里想深入阅读的那条。' +
+    '提取指定 URL 的网页正文文字内容。适用于用户直接给出的链接、代码中出现的文档页、搜索结果里想深入阅读的那条。' +
     '会优先读取 web_search 写入的本地内存缓存（命中则不发网络请求）；未命中时本地抓取并提取正文，抓取结果也会写回缓存。' +
-    '返回的文本会标明内容来源（缓存 / 页面提取 / 原样透传）。',
+    '本工具只返回正文文字，不保存页面截图或图片。返回的文本会标明内容来源（缓存 / 页面提取 / 原样透传）。',
   schema,
   access: () => ({ kind: 'none' }),
   async execute(input, _ctx) {

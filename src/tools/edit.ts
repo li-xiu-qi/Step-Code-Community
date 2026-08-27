@@ -46,8 +46,7 @@ function saveFullDiff(cwd: string, content: string): string | null {
   }
 }
 
-const schema = z.object({
-  path: z.string().describe('要编辑的文件路径。'),
+const singleEditSchema = z.object({
   old_string: z.string().describe('要被替换的原文，必须与文件中的内容逐字符匹配。'),
   new_string: z.string().describe('替换后的新内容。'),
   replace_all: z
@@ -56,10 +55,33 @@ const schema = z.object({
     .describe('是否替换全部匹配。默认 false，此时 old_string 必须唯一。'),
 });
 
+const schema = z
+  .object({
+    path: z.string().describe('要编辑的文件路径。'),
+    /** 单条编辑（与 edits 二选一）。 */
+    old_string: z.string().optional().describe('要被替换的原文，必须与文件中的内容逐字符匹配。'),
+    /** 单条编辑（与 edits 二选一）。 */
+    new_string: z.string().optional().describe('替换后的新内容。'),
+    replace_all: z
+      .boolean()
+      .optional()
+      .describe('是否替换全部匹配。默认 false，此时 old_string 必须唯一。'),
+    /** 批量编辑（与 old_string/new_string 二选一）。一次调用应用多处修改，减少调用轮次。 */
+    edits: z.array(singleEditSchema).optional().describe(
+      '批量编辑列表。与 old_string/new_string 二选一。每个元素包含 old_string/new_string/replace_all。',
+    ),
+  })
+  .refine(
+    (d) => (d.old_string !== undefined) !== (d.edits !== undefined),
+    '必须提供 old_string/new_string 或 edits 其中之一，不可同时提供。',
+  );
+
 export const editFileTool: ToolDef<z.infer<typeof schema>> = {
   name: 'edit_file',
   description:
-    '对已有文件做精确字符串替换。old_string 必须与文件内容逐字符匹配。默认要求唯一匹配，replace_all=true 时替换所有匹配。',
+    '对已有文件做精确字符串替换。支持单条编辑（old_string/new_string）或批量编辑（edits 数组）。'
+    + ' old_string 必须与文件内容逐字符匹配。默认要求唯一匹配，replace_all=true 时替换所有匹配。'
+    + ' 批量编辑时按顺序应用，前一次编辑的输出作为后一次的输入。',
   schema,
   access: (input, ctx) => ({ kind: 'write', path: resolvePath(ctx.cwd, input.path) }),
   async execute(input, ctx) {
@@ -81,59 +103,78 @@ export const editFileTool: ToolDef<z.infer<typeof schema>> = {
       return fail(`文件不存在或无法读取：${input.path}`);
     }
 
-    if (input.old_string === input.new_string) {
+    // 归一化入参：统一成 edits 数组处理
+    type EditEntry = { old_string: string; new_string: string; replace_all?: boolean };
+    const entries: EditEntry[] = input.edits
+      ? input.edits
+      : [{ old_string: input.old_string!, new_string: input.new_string!, replace_all: input.replace_all }];
+
+    // 单条编辑时做同值检查
+    if (!input.edits && input.old_string === input.new_string) {
       return fail('old_string 与 new_string 相同，无需编辑。');
     }
 
-    // 换行符处理：模型生成的 old_string 通常是 LF，而 Windows 文件多为 CRLF，
-    // 逐字符精确匹配会因 \r 失配而报「未找到」。策略：
-    // 1. 先按原样精确匹配（不破坏任何已能工作的场景）；
-    // 2. 精确匹配失败时，把三方都归一化为 LF 再匹配（容忍换行符差异）；
-    // 3. 写回时按文件原有换行风格恢复（CRLF 文件不被污染成 LF）。
+    // 换行符处理工具
     const toLF = (s: string): string => s.replace(/\r\n/g, '\n');
+    const isCRLF = /\r\n/.test(text);
 
+    // 顺序应用所有 edits
     let searchText = text;
-    let oldStr = input.old_string;
-    let newStr = input.new_string;
+    let normalized = false;
+    let totalReplacements = 0;
 
-    let occurrences = searchText.split(oldStr).length - 1;
-    if (occurrences === 0) {
-      // fallback：归一化换行符后重试匹配
-      const normText = toLF(text);
-      const normOld = toLF(input.old_string);
-      const normCount = normText.split(normOld).length - 1;
-      if (normCount > 0) {
-        searchText = normText;
-        oldStr = normOld;
-        newStr = toLF(input.new_string);
-        occurrences = normCount;
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i]!;
+      let oldStr = entry.old_string;
+      let newStr = entry.new_string;
+
+      let occurrences = searchText.split(oldStr).length - 1;
+      if (occurrences === 0 && !normalized) {
+        // fallback：归一化换行符后重试匹配
+        const normText = toLF(searchText);
+        const normOld = toLF(oldStr);
+        const normCount = normText.split(normOld).length - 1;
+        if (normCount > 0) {
+          searchText = normText;
+          oldStr = normOld;
+          newStr = toLF(newStr);
+          occurrences = normCount;
+          normalized = true;
+        }
       }
+
+      const label = entries.length > 1 ? ` edits[${i}]` : '';
+      if (occurrences === 0) {
+        return fail(
+          `未找到 old_string${label}。请先 read_file 确认原文（含缩进与换行）后再试。`,
+        );
+      }
+      if (occurrences > 1 && entry.replace_all !== true) {
+        return fail(
+          `old_string${label} 在文件中出现 ${occurrences} 次，不唯一。请补充上下文使其唯一，或设 replace_all=true。`,
+        );
+      }
+
+      const next =
+        entry.replace_all === true
+          ? searchText.split(oldStr).join(newStr)
+          : searchText.replace(oldStr, newStr);
+      totalReplacements += entry.replace_all === true ? occurrences : 1;
+      searchText = next;
     }
 
-    if (occurrences === 0) {
-      return fail('未找到 old_string。请先 read_file 确认原文（含缩进与换行）后再试。');
-    }
-    if (occurrences > 1 && input.replace_all !== true) {
-      return fail(
-        `old_string 在文件中出现 ${occurrences} 次，不唯一。请补充上下文使其唯一，或设 replace_all=true。`,
-      );
-    }
-
-    let next =
-      input.replace_all === true
-        ? searchText.split(oldStr).join(newStr)
-        : searchText.replace(oldStr, newStr);
-
-    // 若匹配走了归一化路径（searchText 已是 LF），按文件原有换行风格写回。
-    // 判定「文件原本是否为 CRLF」：只要出现过 \r\n 就视为 CRLF 文件，统一转回 CRLF。
-    if (searchText !== text && /\r\n/.test(text)) {
-      next = next.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n');
+    // 若走了归一化路径，按文件原有 CRLF 风格写回
+    let finalText = searchText;
+    if (normalized && isCRLF) {
+      finalText = finalText.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n');
     }
 
     try {
       // 文件级 checkpoint：写入前备份原始内容（CRLF 原样、未经归一化），供 /restore 回滚
       backupBeforeWrite(ctx.cwd, abs, 'edit_file');
-      writeFileSync(abs, next, 'utf8');
+      writeFileSync(abs, finalText, 'utf8');
+      // 写入后刷新快照，避免后续编辑命中自己造成的 stale
+      if (guard) guard.track(abs);
       // git 自动提交（config [git] auto_commit = true 时生效）
       maybeAutoCommit(ctx.gitConfig, abs, ctx.cwd);
     } catch (e) {
@@ -142,21 +183,24 @@ export const editFileTool: ToolDef<z.infer<typeof schema>> = {
 
     // 生成改动预览：用归一化 LF 文本算 diff（避免 CRLF 的 \r 干扰行分割）。
     const diffMeta = { truncated: false, hidden: 0 };
-    const diffBody = renderDiffClustered(toLF(text), toLF(next), input.path, {
+    const diffBody = renderDiffClustered(toLF(text), toLF(finalText), input.path, {
       maxLines: EDIT_DIFF_MAX_LINES,
       result: diffMeta,
     });
     if (diffMeta.truncated && diffMeta.hidden > 0) {
       // 截断提示原本让按 Ctrl+O 展开，但被截内容从未进 content，是假承诺。
       // 改为把完整 diff 落盘（不占上下文），提示行换成真实可用的路径。
-      const fullDiff = renderDiffClustered(toLF(text), toLF(next), input.path, {});
+      const fullDiff = renderDiffClustered(toLF(text), toLF(finalText), input.path, {});
       const saved = saveFullDiff(ctx.cwd, fullDiff.join('\n'));
       if (saved) {
         diffBody[diffBody.length - 1] =
           `     … ${diffMeta.hidden} more change${diffMeta.hidden > 1 ? 's' : ''} hidden · 完整 diff 已存 ${saved}`;
       }
     }
-    const summary = `已编辑 ${input.path}（替换 ${occurrences} 处）。`;
+    const editCount = entries.length;
+    const summary = editCount > 1
+      ? `已编辑 ${input.path}（${editCount} 处编辑，共替换 ${totalReplacements} 处）。`
+      : `已编辑 ${input.path}（替换 ${totalReplacements} 处）。`;
     return ok(diffBody.length > 1 ? `${summary}\n${diffBody.join('\n')}` : summary);
   },
 };
