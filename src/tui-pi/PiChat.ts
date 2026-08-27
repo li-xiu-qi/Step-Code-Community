@@ -671,8 +671,8 @@ export class PiChat {
     // 是滚动与点击卡顿的根因；保留 1000h（按键）+ 1002h（拖拽）+ 1006h（SGR 坐标）
     // 即可覆盖 hyperlink 点击与滚动条拖拽，且大幅降低事件量。
     try {
-      const alt = this.tui as Record<string, unknown>;
-      const sv = alt.implicitScrollView as { setScrollbar(mode: string): void } | undefined;
+      const alt = this.tui as unknown as { implicitScrollView?: { setScrollbar(mode: string): void } };
+      const sv = alt.implicitScrollView;
       if (sv !== undefined) sv.setScrollbar('auto');
     } catch {
       // pi-tui 内部结构变化时静默跳过，不影响功能
