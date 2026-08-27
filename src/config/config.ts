@@ -143,6 +143,22 @@ export interface GitConfig {
   autoCommit?: boolean;
 }
 
+/** 睡眠巩固配置（[dream] 段）。未配置时所有字段走默认值。 */
+export interface DreamConfig {
+  /** 是否启用自动后台巩固（默认 false，需用户 opt-in）。 */
+  enabled?: boolean;
+  /** 每 N 轮用户对话后自动触发一次巩固（默认 5）。0 = 关闭自动触发。 */
+  interval?: number;
+  /** 巩固用的模型覆盖（默认空 = 主模型）。可填廉价模型别名省成本。 */
+  model?: string;
+  /** 每段 token 预算（默认 8000）。 */
+  maxTokensPerSegment?: number;
+  /** 段数上限（默认 12）。 */
+  maxSegments?: number;
+  /** 最小评分阈值：低于此分的 finding 不写入（默认 5，满分 9）。 */
+  minScore?: number;
+}
+
 /**
  * thinking（推理过程）请求配置（[thinking] 段）。
  *
@@ -219,7 +235,7 @@ export interface ModelEntry {
 }
 
 /** 用户可配置 hooks 的合法事件名集合（其余事件名视为非法，整条跳过）。 */
-export const HOOK_EVENTS = ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'SessionStart'] as const;
+export const HOOK_EVENTS = ['PreToolUse', 'PostToolUse', 'PreOutput', 'Stop', 'UserPromptSubmit', 'SessionStart'] as const;
 
 /** hook 事件名（合法集见 {@link HOOK_EVENTS}）。 */
 export type HookEventName = (typeof HOOK_EVENTS)[number];
@@ -349,6 +365,8 @@ export interface StepCodeConfig {
   mediaKeepRecentImages?: number;
   /** git 集成配置（[git] 段）。未配置时 autoCommit 默认 false。 */
   git?: GitConfig;
+  /** 睡眠巩固配置（[dream] 段）。未配置时 enabled 默认 false。 */
+  dream?: DreamConfig;
   /** 禁用的工具名列表（config.toml disabled_tools）。合并到 tools 阶段后统一过滤。 */
   disabledTools?: string[];
   /** [models.<别名>] 模型别名表（渠道与模型分离）。未配置或全部无效时键不进结果对象。 */
@@ -588,6 +606,7 @@ interface TomlConfigShape {
   hooks?: unknown;
   tui?: unknown;
   git?: unknown;
+  dream?: unknown;
 }
 
 /**
@@ -898,6 +917,24 @@ export function resolveGitConfig(raw: unknown): GitConfig | undefined {
   const autoCommit = t['auto_commit'] === true;
   if (!autoCommit) return undefined;
   return { autoCommit: true };
+}
+
+/** 解析 [dream] 段。enabled 默认 false；interval 默认 5；min_score 默认 5。 */
+export function resolveDreamConfig(raw: unknown): DreamConfig | undefined {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined;
+  const t = raw as Record<string, unknown>;
+  const enabled = t['enabled'] === true;
+  if (!enabled) return undefined; // 只有显式 enabled=true 才激活
+  const interval = typeof t['interval'] === 'number' && t['interval'] >= 0
+    ? Math.floor(t['interval']) : 5;
+  const model = typeof t['model'] === 'string' ? t['model'] : undefined;
+  const maxTokensPerSegment = typeof t['max_tokens_per_segment'] === 'number' && t['max_tokens_per_segment'] > 0
+    ? Math.floor(t['max_tokens_per_segment']) : undefined;
+  const maxSegments = typeof t['max_segments'] === 'number' && t['max_segments'] > 0
+    ? Math.floor(t['max_segments']) : undefined;
+  const minScore = typeof t['min_score'] === 'number' && t['min_score'] >= 0
+    ? Math.min(9, Math.max(0, Math.floor(t['min_score']))) : undefined;
+  return { enabled: true, interval, model, maxTokensPerSegment, maxSegments, minScore };
 }
 
 /**
@@ -1344,6 +1381,9 @@ export function loadConfig(
   // git 集成：未配置时键不进结果对象（autoCommit 默认 false）
   const git = resolveGitConfig(toml.git);
   if (git !== undefined) cfg.git = git;
+  // 睡眠巩固：未配置时键不进结果对象（enabled 默认 false）
+  const dream = resolveDreamConfig(toml.dream);
+  if (dream !== undefined) cfg.dream = dream;
   // 禁用的工具名列表：数组格式 ["bash", "web_search"]
   const disabledTools = resolveStringArray(toml.disabled_tools);
   if (disabledTools !== undefined) cfg.disabledTools = disabledTools;
