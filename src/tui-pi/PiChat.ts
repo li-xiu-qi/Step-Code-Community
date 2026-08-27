@@ -2880,9 +2880,9 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       })();
     }
     const redelivered: string[] = [];
-    // 去重：persisted 队列里已有的正文不再补投（结束应用时后台任务通知已在队列中，
-    // 恢复后又由 reconcileBackground 重复入队 = 同一条通知在队列中出现两次）。
-    const existingKeys = new Set(this.queue);
+    // 去重：队列里已有的通知正文不再补投。persist() 过滤器会把通知从 queue 中移走，
+    // 所以 existingKeys 同时要覆盖 notifyPrepared 中已存在但未落盘的运行时通知。
+    const existingKeys = new Set([...this.queue, ...this.notifyPrepared.keys()]);
     for (const task of result.redeliver) {
       this.push({
         kind: 'note',

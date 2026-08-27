@@ -88,6 +88,7 @@ export function historyToDisplayItems(
   const items: DisplayItem[] = [];
   // tool_use_id → 对应的 tool DisplayItem，供后续 tool_result 回填。
   const toolById = new Map<string, ToolItem>();
+  let turnNum = 0; // 用户消息轮次计数（仅非系统自撰 user 计一轮）
 
   for (const stored of sliced.messages) {
     const { message, origin } = stored;
@@ -127,8 +128,8 @@ export function historyToDisplayItems(
       if (role === 'user') {
         items.push(
           origin.kind === 'user_verbatim'
-            ? { kind: 'user', text: content, verbatim: true }
-            : { kind: 'user', text: content },
+            ? { kind: 'user', text: content, verbatim: true, turnNum: ++turnNum }
+            : { kind: 'user', text: content, turnNum: ++turnNum },
         );
       } else {
         items.push({ kind: 'assistant', text: content });
@@ -191,16 +192,16 @@ export function historyToDisplayItems(
         if (!systemAuthored && block.text.trim() !== '') {
           items.push(
             origin.kind === 'user_verbatim'
-              ? { kind: 'user', text: block.text, verbatim: true }
-              : { kind: 'user', text: block.text },
+              ? { kind: 'user', text: block.text, verbatim: true, turnNum: ++turnNum }
+              : { kind: 'user', text: block.text, turnNum: ++turnNum },
           );
         }
       } else if (block.type === 'image') {
         if (!systemAuthored) {
           items.push(
             origin.kind === 'user_verbatim'
-              ? { kind: 'user', text: '[图片]', verbatim: true }
-              : { kind: 'user', text: '[图片]' },
+              ? { kind: 'user', text: '[图片]', verbatim: true, turnNum: ++turnNum }
+              : { kind: 'user', text: '[图片]', turnNum: ++turnNum },
           );
         }
       }

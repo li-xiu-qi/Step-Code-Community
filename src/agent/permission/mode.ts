@@ -18,7 +18,7 @@ export function resolveStartupMode(opts: {
   return opts.flag ?? opts.config ?? opts.session ?? 'manual';
 }
 
-/** 只读 / 非破坏性工具：任何模式下都直接放行，不打扰用户。web_search/web_fetch/web_image_search 为联网读取；spawn_agent 委派本身无害（子 agent 的写/执行各自过权限）；ask_user 只是向用户提问收集偏好，无副作用，plan 模式下也用于澄清需求。 */
+/** 只读 / 非破坏性工具：任何模式下都直接放行，不打扰用户。web_search/web_extract/web_image_search 为联网读取；spawn_agent 委派本身无害（子 agent 的写/执行各自过权限）；ask_user 只是向用户提问收集偏好，无副作用，plan 模式下也用于澄清需求。 */
 const READ_ONLY_TOOLS = new Set([
   'read_file',
   'read_media',
@@ -26,7 +26,7 @@ const READ_ONLY_TOOLS = new Set([
   'glob',
   'grep',
   'web_search',
-  'web_fetch',
+  'web_extract',
   'web_image_search',
   'spawn_agent',
   'exit_plan_mode',

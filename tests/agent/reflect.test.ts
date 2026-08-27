@@ -172,7 +172,7 @@ describe('reflect prompts（默认值护栏）', () => {
     expect(mapSystem).toContain('[偏好]');
   });
 
-  it('reduce prompt 包含分类标注和 Skill 优先级', async () => {
+  it('reduce prompt 包含分类标注和 Skill 目标优先级', async () => {
     const { provider, calls } = capturingProvider(['经验1', '经验2', '汇总']);
     const msgs = [msg('user', 'x'.repeat(30)), msg('assistant', 'y'.repeat(30))];
     await runReflect(provider, msgs, { maxTokensPerSegment: 10 });
@@ -181,7 +181,7 @@ describe('reflect prompts（默认值护栏）', () => {
     expect(reduceSystem).toContain('[memory]');
     expect(reduceSystem).toContain('[skill:');
     expect(reduceSystem).toContain('[observation]');
-    expect(reduceSystem).toContain('Skill 优先级');
+    expect(reduceSystem).toContain('Skill 目标优先级');
     expect(reduceSystem).toContain('措辞纪律');
     expect(reduceSystem).toContain('祈使句');
   });

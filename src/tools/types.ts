@@ -72,9 +72,9 @@ export interface ToolContext {
    * 裸模型 / 未命中别名时为 undefined。供 read_media 等多模态工具做能力门控。
    */
   capabilities?: readonly string[];
-  /** 当前模型的图片输入长边上限（像素，来自别名 image_max_edge_px）。缺省由 read_media 回退全局保守值 1568。 */
+  /** 当前模型的图片输入长边上限（像素，来自别名 image_max_edge_px）。缺省由 read_media 回退全局保守值 2048。 */
   imageMaxEdgePx?: number;
-  /** 当前模型的单图交付字节预算（来自别名 image_budget_bytes）。缺省由 read_media 回退 256KB。 */
+  /** 当前模型的单图交付字节预算（来自别名 image_budget_bytes）。缺省由 read_media 回退 512KB。 */
   imageBudgetBytes?: number;
   /** 当前模型的单视频交付字节预算（来自别名 video_budget_bytes）。缺省由 read_media 回退 32MB。 */
   videoBudgetBytes?: number;

@@ -20,7 +20,7 @@ describe('historyToDisplayItems', () => {
     ];
     const { items } = historyToDisplayItems(messages);
     expect(items).toEqual([
-      { kind: 'user', text: '你好' },
+      { kind: 'user', text: '你好', turnNum: 1 },
       { kind: 'assistant', text: '你好，有什么可以帮你' },
     ]);
   });
@@ -49,7 +49,7 @@ describe('historyToDisplayItems', () => {
       ),
     ];
     const { items } = historyToDisplayItems(messages);
-    expect(items[0]).toEqual({ kind: 'user', text: '读一下 a.txt' });
+    expect(items[0]).toEqual({ kind: 'user', text: '读一下 a.txt', turnNum: 1 });
     // 文字先于 tool（原始顺序）
     expect(items[1]).toEqual({ kind: 'assistant', text: '我来读取' });
     expect(items[2]).toMatchObject({
@@ -112,7 +112,7 @@ describe('historyToDisplayItems', () => {
       m({ role: 'user', content: '<system-reminder>内部注入</system-reminder>' }, 'injection', 'inj1'),
     ];
     const { items } = historyToDisplayItems(messages);
-    expect(items).toEqual([{ kind: 'user', text: '真实输入' }]);
+    expect(items).toEqual([{ kind: 'user', text: '真实输入', turnNum: 1 }]);
   });
 
   // 系统自撰的 user 角色消息（协议要求挂在 user 下，但不是真人输入）不得渲染成用户气泡：
@@ -142,7 +142,7 @@ describe('historyToDisplayItems', () => {
       // 展示真实摘要正文，而非泛泛提示
       expect(items[0]?.text).toContain('宽度崩溃');
       expect(items[0]?.text).toContain('定时任务跨会话串台');
-      expect(items[1]).toEqual({ kind: 'user', text: '继续' });
+      expect(items[1]).toEqual({ kind: 'user', text: '继续', turnNum: 1 });
     });
 
     it('压缩摘要为空时回退通用提示 note', () => {
@@ -178,7 +178,7 @@ describe('historyToDisplayItems', () => {
       ];
       const { items } = historyToDisplayItems(messages);
       // 保留为用户条目，但带 verbatim 标记——渲染层据此去掉黄底、改 dim，与真人输入区分
-      expect(items).toEqual([{ kind: 'user', text: '这是我当初说的话', verbatim: true }]);
+      expect(items).toEqual([{ kind: 'user', text: '这是我当初说的话', verbatim: true, turnNum: 1 }]);
     });
 
     it('真人输入不带 verbatim 标记，保持高亮', () => {
@@ -186,7 +186,7 @@ describe('historyToDisplayItems', () => {
         m({ role: 'user', content: '我现在说的话' }, 'user', 'u1'),
       ];
       const { items } = historyToDisplayItems(messages);
-      expect(items).toEqual([{ kind: 'user', text: '我现在说的话' }]);
+      expect(items).toEqual([{ kind: 'user', text: '我现在说的话', turnNum: 1 }]);
     });
 
     it('工具结果回灌（tool origin）不渲染成用户气泡', () => {
@@ -220,8 +220,8 @@ describe('historyToDisplayItems', () => {
       ),
     ];
     const { items } = historyToDisplayItems(messages);
-    expect(items).toContainEqual({ kind: 'user', text: '看这张图' });
-    expect(items).toContainEqual({ kind: 'user', text: '[图片]' });
+    expect(items).toContainEqual({ kind: 'user', text: '看这张图', turnNum: 1 });
+    expect(items).toContainEqual({ kind: 'user', text: '[图片]', turnNum: 2 });
   });
 
   it('超出 keepTurns 时折叠更早轮次', () => {

@@ -40,7 +40,7 @@ export const webSearchTool: ToolDef<z.infer<typeof schema>> = {
   name: 'web_search',
   description:
     '联网搜索互联网公开信息（阶跃官方网页搜索）。用于获取最新的 API 文档、库版本、CVE、实时资讯等模型训练后才有的信息。返回标题、链接与摘要。' +
-    '搜索结果会自动写入本地内存缓存（TTL 30 分钟），后续 web_fetch 可直接读取缓存中的正文内容，无需重复网络请求。',
+    '搜索结果会自动写入本地内存缓存（TTL 30 分钟），后续 web_extract 可直接读取缓存中的正文内容，无需重复网络请求。',
   schema,
   access: () => ({ kind: 'none' }), // 纯网络调用，无本地副作用
   async execute(input, ctx) {
@@ -94,7 +94,7 @@ export const webSearchTool: ToolDef<z.infer<typeof schema>> = {
       return ok('[无搜索结果，可调整关键词后重试]');
     }
 
-    // 将搜索结果写入缓存（仅 content 字段），供后续 web_fetch 复用
+    // 将搜索结果写入缓存（仅 content 字段），供后续 web_extract 复用
     for (const r of results) {
       const content = (r.content ?? '').trim();
       if (content.length > 0) {
@@ -119,7 +119,7 @@ export const webSearchTool: ToolDef<z.infer<typeof schema>> = {
     if (cachedCount > 0) {
       return ok(
         formatted +
-          `\n\n---\n[Cached ${cachedCount} URLs with full content for web_fetch (memory cache, TTL 30 min)]`,
+          `\n\n---\n[Cached ${cachedCount} URLs with full content for web_extract (memory cache, TTL 30 min)]`,
       );
     }
     return ok(formatted);

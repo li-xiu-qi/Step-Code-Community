@@ -10,10 +10,10 @@
  *   第二步不能省：顶层 model 是别名，别名必须指向 [models.*] 段，否则会出现
  *   「配了 A 渠道但默认模型走 B 渠道」。
  *
- * 全程只开一个 TuiMainScreen，步骤之间换内容而不是换屏：主屏接管 stdin 与光标，
+ * 全程只开一个 TuiAltScreen，步骤之间换内容而不是换屏：alt 屏接管 stdin 与光标，
  * 多个屏并存会争输入。
  */
-import { ProcessTerminal, TuiMainScreen } from '@earendil-works/pi-tui';
+import { ProcessTerminal, TuiAltScreen } from '@earendil-works/pi-tui';
 import type { TUI } from '@earendil-works/pi-tui';
 import { saveDefaultModel, saveModelAlias, saveProviderKey } from '../config/config.js';
 import { t } from '../i18n.js';
@@ -76,7 +76,9 @@ const DEFAULT_MAX_CONTEXT = 262144;
  * 递归实现会让回退变成栈增长。
  */
 export async function runFirstRunPi(): Promise<FirstRunResult> {
-  const tui = new TuiMainScreen(new ProcessTerminal());
+  const tui = new TuiAltScreen(new ProcessTerminal(), undefined, undefined, {
+    mouse: true,
+  });
   const banner = new Banner();
   banner.setLines([c.accent(t('firstRun.title')), '']);
   tui.addChild(banner);

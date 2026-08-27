@@ -47,6 +47,7 @@ export const CONFIG_TOP_LEVEL_KEYS = [
   'hooks',
   'tui',
   'git',
+  'dream',
 ] as const;
 
 /**

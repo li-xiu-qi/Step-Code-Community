@@ -10,7 +10,7 @@ import type { ToolResult } from '../tools/types.js';
  * `result` 全文，且不受模型侧压缩管辖）、模型侧 `history`。任何一个工具返回一份超大文本，
  * 就在堆上留下多份副本。
  *
- * 各工具自己的入口上限（如 web_fetch 的 `MAX_INLINE_CHARS`）是主约束；本模块是**兜底**：
+ * 各工具自己的入口上限（如 web_extract 的 `MAX_INLINE_CHARS`）是主约束；本模块是**兜底**：
  * 新增工具、外部 MCP 工具、hook 改写后的结果都会经过这里，不依赖每个工具自觉设限。
  *
  * ## 为什么中间截断而不是尾部截断
@@ -18,9 +18,9 @@ import type { ToolResult } from '../tools/types.js';
  * 工具输出的头部通常是结构信息（表头、文件头、命令回显），尾部通常是结论（汇总行、错误栈的
  * 最内层、退出码）。只保头会丢结论，只保尾会丢上下文。保头尾、挖掉中间，是对模型最友好的一档。
  *
- * ## 为什么默认值比 web_fetch 的单条上限宽
+ * ## 为什么默认值比 web_extract 的单条上限宽
  *
- * 400k 字符 ≈ 800KB（UTF-16），是 web_fetch `MAX_INLINE_CHARS`（200k）的两倍。兜底层设宽一档，
+ * 400k 字符 ≈ 800KB（UTF-16），是 web_extract `MAX_INLINE_CHARS`（200k）的两倍。兜底层设宽一档，
  * 保证正常路径由各工具的语义化上限决定行为（它们能给出针对性的恢复提示），本层只拦真正异常的
  * 体量，不干扰正常截断策略。
  */

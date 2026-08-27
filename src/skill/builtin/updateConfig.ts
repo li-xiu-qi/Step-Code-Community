@@ -52,6 +52,7 @@ const UPDATE_CONFIG_BODY = `# update-config：step-code 自身配置的查询与
 | skill_listing_budget | number | 8000 | system prompt 中可用技能清单的字符预算；超预算先压缩描述，再截断尾部技能。技能较多时可调大（如 20000），让更多技能名称和描述常驻；也可始终用 skill_search 工具搜索被截断的技能 |
 | continuation | table | 无 | 输出截断自动续写配置（[continuation] 段） |
 | git | table | 无 | Git 集成配置（[git] 段），未配置时 auto_commit 默认 false |
+| dream | table | 无 | 睡眠巩固配置（[dream] 段），未配置时 enabled 默认 false |
 | advisor | table | 无 | Advisor 旁路审查配置（[advisor] 段），缺省不启用 |
 | tools | table | 无 | 网页结果缓存配置（[tools.web] 段），未配置时使用内置默认值 |
 
@@ -171,6 +172,16 @@ endpoint 解析优先级：[search.web]/[search.image] → [search] → 主会�
 | 键 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | auto_commit | boolean | false | 会话结束时是否自动提交变更 |
+### [dream] 睡眠巩固
+
+| 键 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| enabled | boolean | false | 是否启用自动后台巩固（需要用户 opt-in） |
+| interval | number | 5 | 每 N 轮用户对话后自动触发一次巩固；0 = 关闭自动触发 |
+| model | string | 空（用主模型） | 巩固用的模型覆盖；为空时使用主模型 |
+| max_tokens_per_segment | number | 8000 | 每段巩固的 token 预算 |
+| max_segments | number | 12 | 段数上限 |
+| min_score | number | 5 | 最小评分阈值（满分 9），低于此分的 finding 不写入 |
 ### [tui] 终端界面渲染
 
 | 键 | 类型 | 默认值 | 说明 |
@@ -191,7 +202,7 @@ endpoint 解析优先级：[search.web]/[search.image] → [search] → 主会�
 | max_tokens | number | 覆盖顶层 |
 | display_name | string | 选择器与状态栏展示名 |
 | capabilities | string[] | 能力标记（如 thinking / image_in），原样透传给多模态门控 |
-| image_max_edge_px | number | 无（read_media 回退全局 1568） | 图片输入长边上限（像素），read_media 降采样阈值；高上限通道（如 GPT 系 2048）按别名放宽，下限钳制 256 |
+| image_max_edge_px | number | 无（read_media 回退全局 2048） | 图片输入长边上限（像素），read_media 降采样阈值；可按别名放宽或收紧，下限钳制 256 |
 | image_budget_bytes | number | 无（read_media 回退全局 262144） | 单图交付字节预算（经济性预算，非 API 硬限制）；需要原图精度的读图场景按别名放宽，下限钳制 16384 |
 | video_budget_bytes | number | 无（read_media 回退全局 33554432） | 单视频交付字节预算（v1 视频 inline base64，膨胀 1.33 倍进请求体）；确认端点吃得下更大文件时按别名放宽，下限钳制 1048576 |
 

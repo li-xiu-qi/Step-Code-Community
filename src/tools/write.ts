@@ -37,6 +37,8 @@ export const writeFileTool: ToolDef<z.infer<typeof schema>> = {
       // 文件级 checkpoint：覆盖写前备份原始内容（已存在时），供 /restore 回滚
       backupBeforeWrite(ctx.cwd, abs, 'write_file');
       writeFileSync(abs, input.content, 'utf8');
+      // 写入后刷新快照，避免后续编辑命中自己造成的 stale
+      if (guard) guard.track(abs);
       // git 自动提交（config [git] auto_commit = true 时生效）
       maybeAutoCommit(ctx.gitConfig, abs, ctx.cwd);
     } catch (e) {
