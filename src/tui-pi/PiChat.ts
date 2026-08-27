@@ -8,7 +8,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Container, ProcessTerminal, TuiMainScreen, matchesKey } from '@earendil-works/pi-tui';
+import { Container, ProcessTerminal, TuiAltScreen, matchesKey } from '@earendil-works/pi-tui';
 import type { Component, SelectItem } from '@earendil-works/pi-tui';
 import type { AgentEvent, SubagentProgressEvent, WorkflowStepEvent } from '../agent/events.js';
 import type { LoopHooks } from '../agent/hooks.js';
@@ -208,7 +208,7 @@ const ABORT_COOLDOWN_MS = 1000;
 
 export class PiChat {
   private readonly deps: PiChatDeps;
-  private readonly tui: TuiMainScreen;
+  private readonly tui: TuiAltScreen;
   private readonly transcript = new Transcript();
   private readonly activity = new ActivityLine();
   private readonly status: StatusLine;
@@ -394,6 +394,21 @@ export class PiChat {
   private resolveExit: ((info: PiChatExit) => void) | undefined;
   /** 弹层（审批/计划/提问）激活中：暂停 spinner，用户此时在读弹层，动画只是噪声与无谓重绘。 */
   private promptActive = false;
+  /** 底部跳转指示器显示锁：viewport 不在底部时 flash 提示，滚回底部后解锁不再重复弹。 */
+  private bottomFlashShown = false;
+
+  /** 后台任务终态通知的 XML 前缀（formatSettleNotification 产出）。用于识别队列中的通知条目。 */
+  private static readonly NOTIFICATION_PREFIX = '<notification id="task:';
+
+  /** 判断队列条目是否为后台任务终态通知正文。 */
+  private static isNotificationBody(text: string): boolean {
+    return text.startsWith(PiChat.NOTIFICATION_PREFIX);
+  }
+
+  /** 从队列中过滤掉后台任务通知条目（通知未持久化结构化元数据，resume 后无法恢复其 origin，不应跨会话传递）。 */
+  private static filterUserMessages(queue: readonly string[]): string[] {
+    return queue.filter((text) => !PiChat.isNotificationBody(text));
+  }
 
   constructor(deps: PiChatDeps) {
     this.deps = deps;
@@ -411,10 +426,17 @@ export class PiChat {
     this.planMode = deps.session.planMode ?? false;
     // 待发队列随会话恢复：上次退出时排着队没发出去的内容，接回来等本轮结束照常自动发送。
     // 不在这里立刻起回合——启动这一刻用户可能正要输别的（与后台通知补投同一考虑）。
-    this.queue = [...(deps.session.queue ?? [])];
+    // 恢复队列：通知条目缺少持久化结构化元数据（notifyPrepared 不落盘），
+    // resume 后会退化为纯文本消息——既丢失 origin 又无法做 delivery 去重，
+    // 反复触发无意义的模型轮次。只恢复用户草稿，通知由 reconcileBackground 重新生成。
+    const filtered = PiChat.filterUserMessages(deps.session.queue ?? []);
+    this.queue = [...filtered];
     this.history = [...deps.session.messages];
 
-    this.tui = new TuiMainScreen(new ProcessTerminal());
+    this.tui = new TuiAltScreen(new ProcessTerminal(), undefined, undefined, {
+      mouse: true,
+      openUrl: (url) => this.handleUrlClick(url),
+    });
     // 内容变短不清屏：开启会让每次折叠/裁剪都清一次 scrollback（实测结论第二条）
     this.tui.setClearOnShrink(false);
 
@@ -424,7 +446,6 @@ export class PiChat {
       model: this.modelLabel,
       thinking: this.thinkOverride,
       busy: false,
-      cwd: deps.ctx.cwd,
       usedTokens: 0,
       maxContextSize: deps.maxContextSize,
       hints: HINTS,
@@ -660,6 +681,15 @@ export class PiChat {
         if (this.overlayTickCount % 8 === 0) this.tui.requestRender();
       }
       if (!this.busy || this.promptActive) return;
+      // 底部跳转指示器：viewport 不在底部时 flash 提示（仅弹一次）。
+      if (!this.tui.isFollowingOutput) {
+        if (!this.bottomFlashShown) {
+          this.tui.flash('↓ 新内容在底部 · End 跳转', 3500);
+          this.bottomFlashShown = true;
+        }
+      } else if (this.bottomFlashShown) {
+        this.bottomFlashShown = false;
+      }
       // goal 徽标的用时要跟着走秒（只在有 goal 时同步，避免每 120ms 白替换一次状态）
       if (this.goal.get() !== null) this.syncGoalBadge();
       this.tui.requestRender();
@@ -705,8 +735,6 @@ export class PiChat {
       busy: this.busy,
       queueLen: this.queue.length,
       backgroundCount: running.length,
-      // 最近一个 running 任务的命令名：只有 bg:N 数字时用户不知道是哪个任务在占用
-      latestBgTask: running.length > 0 ? running[running.length - 1]!.command : undefined,
     });
     this.syncGoalBadge();
     // 常驻面板跟状态同步：todos 由工具改、queue 由排队改，busy 态影响队列取回提示
@@ -941,8 +969,11 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     this.session.model = this.currentAlias ?? this.model;
     this.session.thinkOverride = this.thinkOverride;
     this.session.planMode = this.planMode;
-    // 空队列写 undefined 而非空数组：与 queue.update 事件的归一口径一致，快照里不留噪音
-    this.session.queue = this.queue.length > 0 ? [...this.queue] : undefined;
+    // 持久化只存用户草稿：通知条目携带 XML 正文但无结构化元数据（notifyPrepared 不落盘），
+    // resume 后会退化为纯文本用户消息，既丢失 origin 又会触发无意义的模型轮次。
+    // 通知由运行时动态生成（reconcileBackground / onBackgroundSettle），不跨会话传递。
+    const userMessages = PiChat.filterUserMessages(this.queue);
+    this.session.queue = userMessages.length > 0 ? userMessages : undefined;
     // goal 独立持久化：不再写入 session 快照，改存 GoalStore（无 goal 时不写）
     const goalSnap = this.goal.snapshot();
     if (goalSnap && this.deps.goalStore) {
@@ -1171,6 +1202,24 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     }, PRIMED_TIMEOUT_MS);
     this.tui.requestRender();
     return true;
+  }
+
+  /** OSC 8 超链接点击回调：用户点击了某轮 prompt 行 → 将该轮文本载入输入框。 */
+  private handleUrlClick(url: string): void {
+    const m = url.match(/^step:\/\/turn\/(\d+)$/);
+    if (!m) return;
+    const targetTurn = parseInt(m[1], 10);
+    if (Number.isNaN(targetTurn)) return;
+    // 在转录区找对应轮次的用户消息
+    const item = this.transcript.items().find(
+      (it) => it.kind === 'user' && it.turnNum === targetTurn,
+    );
+    if (item === undefined) return;
+    const text = 'text' in item ? (item as { text: string }).text : '';
+    if (text === '') return;
+    this.editor.setText(text);
+    this.tui.flash(`已载入第 ${targetTurn} 轮输入（Enter 发送 · Esc 取消）`, 2000);
+    this.tui.requestRender();
   }
 
   /**
@@ -2831,6 +2880,9 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       })();
     }
     const redelivered: string[] = [];
+    // 去重：persisted 队列里已有的正文不再补投（结束应用时后台任务通知已在队列中，
+    // 恢复后又由 reconcileBackground 重复入队 = 同一条通知在队列中出现两次）。
+    const existingKeys = new Set(this.queue);
     for (const task of result.redeliver) {
       this.push({
         kind: 'note',
@@ -2840,10 +2892,9 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
           command: task.command,
         }),
       });
-      // 补投走队列而不是直接 runTurn：启动/切会话这一刻不该自动起一个回合，
-      // 用户可能正要输别的。队列在下次回合收尾或手动 Esc 取回时排空。
       const msg = buildSettleMessage(task, { startsPromptTurn: true });
       const body = typeof msg.message.content === 'string' ? msg.message.content : '';
+      if (existingKeys.has(body)) continue; // 队列中已有，跳过
       this.notifyPrepared.set(body, msg);
       redelivered.push(body);
     }
@@ -3197,7 +3248,8 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     // 直接赋值不落 wire 事件——此刻 this.session 已经是新会话，落事件会把「恢复」这个
     // 读取动作记成新会话的一次队列变更。
     const restoredQueue = [...(data.queue ?? [])];
-    this.queue = restoredQueue;
+    // 过滤通知条目：同构造函数恢复路径的考虑——通知元数据不落盘，resume 后会退化为纯文本。
+    this.queue = PiChat.filterUserMessages(restoredQueue);
     this.notifyPrepared.clear();
     // goal 跟着目标会话恢复：从 GoalStore 按目标 sessionId 加载最近的活跃 goal（已完成的不恢复）。
     const targetGoal = this.deps.goalStore
@@ -3971,11 +4023,18 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
         }
         // steer 残留倒进队列头部：中断后按队列机制续发，用户留言不凭空消失
         if (this.steers.length > 0) this.queue.unshift(...this.steers.splice(0));
-        this.transcript.push({
-          kind: 'note',
-          text: this.queue.length > 0 ? `已中断，队列中 ${this.queue.length} 条将继续发送` : '已中断',
-          boundary: true,
-        });
+        // 去重：连续 abort 只推一条通知（末尾已存在 abort 通知则跳过），避免队列消耗过程中
+        // 每条消息触发一次通知形成瀑布（实测 61 条队列 → 61 条通知刷屏）。
+        // 队列剩余数由状态栏 queue:N 实时反映，转录区只需提示「发生了中断」，不须逐条计数。
+        const last = this.transcript.items().at(-1);
+        const isDuplicateAbort = last !== undefined && last.kind === 'note' && last.text.startsWith('已中断');
+        if (!isDuplicateAbort) {
+          this.transcript.push({
+            kind: 'note',
+            text: this.queue.length > 0 ? `已中断，队列中 ${this.queue.length} 条将继续发送` : '已中断',
+            boundary: true,
+          });
+        }
         break;
       case 'error':
         this.transcript.push({ kind: 'error', text: ev.message });

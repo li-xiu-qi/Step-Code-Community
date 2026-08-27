@@ -3,8 +3,8 @@
  * 行级差分渲染下，未变化的行不重画，所以定稿块与在途块共用同一组件。
  * 每个块自带缓存（width 未变则复用上次行数组），render() 是取缓存 + 拼接。
  */
+import { Markdown, truncateToWidth, visibleWidth, wrapTextWithAnsi, sliceByColumn, hyperlink } from '@earendil-works/pi-tui';
 import type { Component } from '@earendil-works/pi-tui';
-import { Markdown, truncateToWidth, visibleWidth, wrapTextWithAnsi, sliceByColumn } from '@earendil-works/pi-tui';
 import { basename } from 'node:path';
 import type { DisplayItem, WelcomeData } from '../chat/types.js';
 import { offloadIfNeeded as offloadLargeResult, readCachedOutput } from '../agent/outputCache.js';
@@ -313,14 +313,26 @@ export class ItemBlock implements Component {
         // 为何必须区分：压缩过的长会话 resume 后，保真原话与真人输入在此一视同仁都高亮成黄泡，
         // 结果是「满屏用户消息」掩盖模型输出（2026-08-18 实测会话 122e9c：14 条原话堆顶部）。
         // 真人输入仍是高亮黄底，两相对比才分得出「这是你刚说的」还是「那是早先保留下来的」。
+        const bodyLines = wrap(it.text, width - 2);
+        const bg = c.userBg;
+        if (it.turnNum !== undefined) {
+          // 带轮次编号的 prompt 可点击：OSC 8 超链接包裹正文，点击后跳转到该轮输入框
+          const url = `step://turn/${it.turnNum}`;
+          const linked = bodyLines.map((l) => {
+            const plain = bg(c.userText(l));
+            return hyperlink(plain, url);
+          });
+          if (it.verbatim === true) {
+            return [...hanging(linked, c.dim('┊ 原话 '), 2), ''];
+          }
+          return [...indent(linked, bg(c.user('│ '))), ''];
+        }
+        // 无轮次编号（开源模型/旧快照不可点）
         if (it.verbatim === true) {
-          const body = wrap(it.text, width - 2).map((l) => c.dim(l));
+          const body = bodyLines.map((l) => c.dim(l));
           return [...hanging(body, c.dim('┊ 原话 '), 2), ''];
         }
-        // 蓝色前缀 + 黄色正文 + 整行深灰背景（SGR 48;5;236）。
-        // 背景覆盖整行：前缀和正文都套 c.userBg，长对话靠背景块区分用户/助手输出。
-        const bg = c.userBg;
-        const body = wrap(it.text, width - 2).map((l) => bg(c.userText(l)));
+        const body = bodyLines.map((l) => bg(c.userText(l)));
         return [...indent(body, bg(c.user('│ '))), ''];
       }
       case 'assistant': {
