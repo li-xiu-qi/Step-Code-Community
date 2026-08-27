@@ -657,6 +657,24 @@ export class PiChat {
     // 上个进程崩溃或被强杀时，那批任务的 onSettle 从未触发过，只有这里能捞回来。
     this.reconcileBackground(this.deps.resumeDelivered ?? new Set());
     this.tui.start();
+    // 滚动条与鼠标模式修正。
+    // TuiAltScreen 的 implicitScrollView 默认 scrollbar="hidden"，显式设为 "auto"
+    // 恢复用户在 TuiMainScreen 时代习惯的滚动条交互（拖拽 / 滚轮）。
+    // 同时关掉 1003h（any-event 鼠标跟踪）：它让终端在每次鼠标移动时发 CSI 序列，
+    // 是滚动与点击卡顿的根因；保留 1000h（按键）+ 1002h（拖拽）+ 1006h（SGR 坐标）
+    // 即可覆盖 hyperlink 点击与滚动条拖拽，且大幅降低事件量。
+    try {
+      const alt = this.tui as Record<string, unknown>;
+      const sv = alt.implicitScrollView as { setScrollbar(mode: string): void } | undefined;
+      if (sv !== undefined) sv.setScrollbar('auto');
+    } catch {
+      // pi-tui 内部结构变化时静默跳过，不影响功能
+    }
+    try {
+      this.tui.terminal.write('\x1b[?1003l');
+    } catch {
+      // 终端不支持时静默跳过
+    }
     // 预热模型连接：发送一个最小请求，建立 HTTP 连接池/TLS 握手。
     // 首条真实消息时复用已建立的连接，减少等待时间。失败静默。
     void this.warmupProvider();
