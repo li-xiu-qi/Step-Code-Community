@@ -394,8 +394,15 @@ export class PiChat {
   private resolveExit: ((info: PiChatExit) => void) | undefined;
   /** 弹层（审批/计划/提问）激活中：暂停 spinner，用户此时在读弹层，动画只是噪声与无谓重绘。 */
   private promptActive = false;
-  /** 底部跳转指示器显示锁：viewport 不在底部时 flash 提示，滚回底部后解锁不再重复弹。 */
+  /** 底部跳转指示器显示锁与冷却：viewport 不在底部时 flash 提示，避免短时间内重复弹。 */
   private bottomFlashShown = false;
+  private bottomFlashLastTime = 0;
+  private static readonly FLASH_COOLDOWN_MS = 60000; // 60 秒冷却，防止滚动/跳转时反复触发
+
+  /** 判断是否应跳过 flash：不久前已经弹过。 */
+  private shouldSkipBottomFlash(): boolean {
+    return Date.now() - this.bottomFlashLastTime < PiChat.FLASH_COOLDOWN_MS;
+  }
 
   /** 后台任务终态通知的 XML 前缀（formatSettleNotification 产出）。用于识别队列中的通知条目。 */
   private static readonly NOTIFICATION_PREFIX = '<notification id="task:';
@@ -699,13 +706,16 @@ export class PiChat {
         if (this.overlayTickCount % 8 === 0) this.tui.requestRender();
       }
       if (!this.busy || this.promptActive) return;
-      // 底部跳转指示器：viewport 不在底部时 flash 提示（仅弹一次）。
+      // 底部跳转指示器：viewport 不在底部时 flash 提示。
+      // 两个保护：(1) 冷却 60s 防止滚动/跳转时反复触发；(2) 短暂到底部不自动解锁，
+      // 避免 viewport 在渲染中轻微抖动导致 flash 立即重置然后再弹。
       if (!this.tui.isFollowingOutput) {
-        if (!this.bottomFlashShown) {
+        if (!this.bottomFlashShown && !this.shouldSkipBottomFlash()) {
           this.tui.flash('↓ 新内容在底部 · End 跳转', 3500);
           this.bottomFlashShown = true;
+          this.bottomFlashLastTime = Date.now();
         }
-      } else if (this.bottomFlashShown) {
+      } else if (this.bottomFlashShown && !this.shouldSkipBottomFlash()) {
         this.bottomFlashShown = false;
       }
       // goal 徽标的用时要跟着走秒（只在有 goal 时同步，避免每 120ms 白替换一次状态）
