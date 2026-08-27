@@ -215,7 +215,7 @@ describe('窄终端：剩余三件套（WelcomeBox / StatusLine / ChromePanels�
     }
   });
 
-  it('StatusLine：全字段 + 超长 model/cwd/bgTask/goal 不超宽', () => {
+  it('StatusLine：全字段 + 超长 model/bgTask/goal 不超宽', () => {
     checkWidth('status.full', () => {
       const s = new StatusLine({
         mode: 'yolo',

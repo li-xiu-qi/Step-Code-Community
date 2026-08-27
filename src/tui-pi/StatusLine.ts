@@ -89,13 +89,10 @@ export interface StatusState {
   model: string;
   thinking?: string;
   busy: boolean;
-  cwd: string;
   usedTokens: number;
   maxContextSize: number;
   hints: string;
   backgroundCount: number;
-  /** 最近一个 running 后台任务的命令名（在 bg:N 后灰色显示，截断到 20 列）。 */
-  latestBgTask?: string;
   queueLen: number;
   /**
    * goal 徽标数据：任何非终态 goal 都显示（不只 active）——用户看不到徽标就不知道
@@ -137,8 +134,7 @@ export class StatusLine implements Component {
     if (s.thinking !== undefined) badges.push(c.dim(`think:${s.thinking}`));
     badges.push(s.busy ? c.warn('busy') : c.dim('ready'));
     if (s.backgroundCount > 0) {
-      const name = s.latestBgTask !== undefined && s.latestBgTask !== '' ? ` ${truncateToWidth(s.latestBgTask, 20)}` : '';
-      badges.push(c.toolName(`bg:${s.backgroundCount}`) + c.dim(name));
+      badges.push(c.toolName(`bg:${s.backgroundCount}`));
     }
     if (s.queueLen > 0) badges.push(c.accent(`queue:${s.queueLen}`));
     // goal 与 team 是「当前处于某种自主/协作状态」的提示，必须常驻可见：看不到徽标就不知道下一轮会自动续跑
@@ -149,10 +145,7 @@ export class StatusLine implements Component {
     }
     if (s.teamActive === true) badges.push(c.accent('team'));
     const left = badges.join(c.dim('  '));
-    // 路径是唯一可被压缩的部分：先算徽章占宽，剩下的给路径
-    const room = width - visibleWidth(left) - 2;
-    const path = room > 8 ? c.dim(`  ${truncateToWidth(shortenPath(s.cwd), room)}`) : '';
-    const line1 = left + path;
+    const line1 = left;
 
     const pct = s.maxContextSize > 0 ? Math.min(100, Math.round((s.usedTokens / s.maxContextSize) * 100)) : 0;
     const ctx = c.dim(`context: ${pct}% (${formatCount(s.usedTokens)}/${formatCount(s.maxContextSize)})`);

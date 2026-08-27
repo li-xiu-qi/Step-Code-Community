@@ -478,16 +478,8 @@ describe('StatusLine', () => {
       hints: '',
       queueLen: 0,
     };
-    const s = new StatusLine({ ...base, backgroundCount: 1, latestBgTask: 'npm run build' });
-    expect(plain(s.render(80))[0]!).toContain('bg:1 npm run build');
-    const long = new StatusLine({
-      ...base,
-      backgroundCount: 1,
-      latestBgTask: 'node scripts/very-long-command-name.mjs --flag',
-    });
-    const line = plain(long.render(120))[0]!;
-    expect(line).toContain('bg:1 node scripts/very');
-    expect(line).not.toContain('--flag');
+    const s = new StatusLine({ ...base, backgroundCount: 1 });
+    expect(plain(s.render(80))[0]!).toContain('bg:1');
   });
 
   it('goal 徽章：圆点按状态着色，显示用时与轮次/预算', () => {
