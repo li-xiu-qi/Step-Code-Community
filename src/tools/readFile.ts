@@ -132,7 +132,7 @@ function renderWindow(slice: string[], start: number, totalLines: number): strin
 export const readFileTool: ToolDef<z.infer<typeof schema>> = {
   name: 'read_file',
   description:
-    '读取文本文件内容。支持用 offset/limit 按行分页。每行以「行号<TAB>内容」返回，末尾附 <system> 状态块（读取行数、总行数、是否截断）。图片请用 read_media。',
+    '读取文本文件内容。支持 offset/limit 按行分页。每行以「行号<TAB>内容」返回，末尾附状态块（读取行数、总行数、是否截断）。二进制/图片用 read_media。',
   schema,
   access: (input, ctx) => ({ kind: 'read', path: resolvePath(ctx.cwd, input.path) }),
   async execute(input, ctx) {

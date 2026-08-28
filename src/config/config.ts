@@ -18,6 +18,8 @@ export interface SubagentLimits {
   maxSteps: number;
   /** 并行子 agent 的并发上限（一轮里并行执行的 explore 数量）。 */
   maxConcurrent: number;
+  /** 单个子 agent 的墙钟超时（秒）。0 = 不限。超时后 abort 该子 agent。 */
+  timeoutS: number;
   /** 子会话留存与清理策略（[subagent.retention] 段）。 */
   retention: SubagentRetention;
 }
@@ -474,6 +476,9 @@ const SUBAGENT_MAX_STEPS_MAX = 1000;
 const SUBAGENT_MAX_CONCURRENT_DEFAULT = 4;
 const SUBAGENT_MAX_CONCURRENT_MIN = 1;
 const SUBAGENT_MAX_CONCURRENT_MAX = 16;
+const SUBAGENT_TIMEOUT_S_DEFAULT = 0; // 0 = 不限
+const SUBAGENT_TIMEOUT_S_MIN = 0;
+const SUBAGENT_TIMEOUT_S_MAX = 7200; // 2 小时硬顶
 
 // 压缩配置默认值与 clamp 边界（0.85 触发 + 预留安全垫）。
 const COMPACTION_TRIGGER_RATIO_DEFAULT = 0.85;
@@ -726,6 +731,12 @@ export function resolveSubagentLimits(raw: unknown): SubagentLimits {
       SUBAGENT_MAX_CONCURRENT_MIN,
       SUBAGENT_MAX_CONCURRENT_MAX,
       SUBAGENT_MAX_CONCURRENT_DEFAULT,
+    ),
+    timeoutS: clampInt(
+      t['timeout_s'],
+      SUBAGENT_TIMEOUT_S_MIN,
+      SUBAGENT_TIMEOUT_S_MAX,
+      SUBAGENT_TIMEOUT_S_DEFAULT,
     ),
     retention: resolveSubagentRetention(t['retention']),
   };

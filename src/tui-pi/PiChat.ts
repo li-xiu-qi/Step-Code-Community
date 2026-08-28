@@ -8,13 +8,14 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Container, ProcessTerminal, TuiAltScreen, matchesKey } from '@earendil-works/pi-tui';
+import { Container, ProcessTerminal, TuiAltScreen, matchesKey, getKeybindings } from '@earendil-works/pi-tui';
 import type { Component, SelectItem } from '@earendil-works/pi-tui';
 import type { AgentEvent, SubagentProgressEvent, WorkflowStepEvent } from '../agent/events.js';
 import type { LoopHooks } from '../agent/hooks.js';
 import { composeLoopHooks, type HookEngine } from '../agent/hooks/engine.js';
 import { runAgent } from '../agent/loop.js';
 import { stored, type StoredMessage } from '../agent/message.js';
+import { navigateHistory, initialNavState } from '../session/inputHistory.js';
 import { notifyDedupKeyFromOrigin, pendingDeliveredEvents } from '../agent/wirelog.js';
 
 import { buildSettleMessage, decideNotifyRoute } from '../agent/background/notify.js';
@@ -256,6 +257,10 @@ export class PiChat {
   private dreamTurnCount = 0;
 
   private readonly history: StoredMessage[] = [];
+  /** input prompt 历史（正序，末尾最新）。按工作目录隔离存储。 */
+  private readonly promptHistory: string[] = [];
+  /** prompt history 导航游标。 */
+  private navState = initialNavState();
   private session: SessionData;
   /** 运行期可变：/new 与 /fork 换绑到新会话的任务目录。 */
   private background = new BackgroundManager();
@@ -394,22 +399,10 @@ export class PiChat {
   private resolveExit: ((info: PiChatExit) => void) | undefined;
   /** 弹层（审批/计划/提问）激活中：暂停 spinner，用户此时在读弹层，动画只是噪声与无谓重绘。 */
   private promptActive = false;
-  /** 底部跳转指示器显示锁与冷却：viewport 不在底部时 flash 提示，避免短时间内重复弹。 */
-  private bottomFlashShown = false;
-  private bottomFlashLastTime = 0;
-  private static readonly FLASH_COOLDOWN_MS = 60000; // 60 秒冷却，防止滚动/跳转时反复触发
-
-  /** 判断是否应跳过 flash：不久前已经弹过。 */
-  private shouldSkipBottomFlash(): boolean {
-    return Date.now() - this.bottomFlashLastTime < PiChat.FLASH_COOLDOWN_MS;
-  }
-
-  /** 后台任务终态通知的 XML 前缀（formatSettleNotification 产出）。用于识别队列中的通知条目。 */
-  private static readonly NOTIFICATION_PREFIX = '<notification id="task:';
-
   /** 判断队列条目是否为后台任务终态通知正文。 */
   private static isNotificationBody(text: string): boolean {
-    return text.startsWith(PiChat.NOTIFICATION_PREFIX);
+    const trimmed = text.trimStart();
+    return trimmed.startsWith('<notification') || trimmed.startsWith('· ⏱ 补投');
   }
 
   /** 从队列中过滤掉后台任务通知条目（通知未持久化结构化元数据，resume 后无法恢复其 origin，不应跨会话传递）。 */
@@ -443,6 +436,14 @@ export class PiChat {
     this.tui = new TuiAltScreen(new ProcessTerminal(), undefined, undefined, {
       mouse: true,
       openUrl: (url) => this.handleUrlClick(url),
+    });
+    // Home/End 留给编辑器做光标导航（行首/行尾）。
+    // Ctrl+Home/Ctrl+End 滚 viewport 顶部/底部。
+    // 将 viewport 的 top/bottom 绑定改为空数组，彻底禁用 plain home/end 触发 viewport 滚动；
+    // Ctrl+Home/Ctrl+End 在 ChatEditor.handleInput 里直接接管。
+    getKeybindings().setUserBindings({
+      'tui.altScreen.top': [],
+      'tui.altScreen.bottom': [],
     });
     // 内容变短不清屏：开启会让每次折叠/裁剪都清一次 scrollback（实测结论第二条）
     this.tui.setClearOnShrink(false);
@@ -529,6 +530,35 @@ export class PiChat {
     // 系统合成注入（后台通知 / cron / skill 正文）不给取回——正文是给模型看的 XML，
     // 用户改完提交会以真人身份进历史。取回即从 notifyPrepared 摘除。
     this.editor.onUpArrow = () => this.recallQueuedOne();
+
+    // Prompt history navigation（↑/↓ 翻已发送的输入）。
+    // 队列取回优先（busy + 空输入时 ↑ 取尾部草稿）；队列空则回退到 prompt 历史。
+    // navigateUp/navigateDown 为 Optional Function，当 entries 为空时静默放行（false）。
+    this.editor.historyEntries = this.promptHistory;
+    const makeNavUp = (): (() => boolean) => {
+      return () => {
+        const r = navigateHistory(this.promptHistory, this.navState, -1, this.editor.getText());
+        if (r.text !== undefined) {
+          this.navState = r.state;
+          this.editor.setText(r.text);
+          return true;
+        }
+        return false;
+      };
+    };
+    const makeNavDown = (): (() => boolean) => {
+      return () => {
+        const r = navigateHistory(this.promptHistory, this.navState, 1, this.editor.getText());
+        if (r.text !== undefined) {
+          this.navState = r.state;
+          this.editor.setText(r.text);
+          return true;
+        }
+        return false;
+      };
+    };
+    this.editor.navigateUp = makeNavUp();
+    this.editor.navigateDown = makeNavDown();
     // Ctrl+B 转后台：busy 且有前台任务时全部 detach（进程继续跑、终态自动通知）；
     // 空闲或无前台任务时返回 null → 不消费按键，交回编辑器。
     this.editor.onCtrlB = () => {
@@ -547,6 +577,7 @@ export class PiChat {
     // 主流 CLI 编辑器普遍提供此能力。找不到编辑器时返回 false（不消费按键）。
     this.editor.onCtrlG = () => this.openExternalEditor();
 
+    // Ctrl+↑ ：跳转到上一个 prompt（在 ChatEditor.handleInput 中直接处理）。
     // cron 装配：到点把 prompt 静默注入跑一轮；isIdle 闸门保证回合进行中不触发
     // （错过的会在下个空闲 tick 合并补投，coalesced 计数进卡片）。
     this.pluginCommandMap = new Map((deps.pluginCommands ?? []).map((c) => [c.name, c]));
@@ -602,7 +633,7 @@ export class PiChat {
     this.termTitle = new TerminalTitleWriter(
       process.env,
       process.stdout.isTTY,
-      deps.config.tui?.terminalTitle ?? true,
+      deps.config.tui?.terminalTitle ?? false,
       (str) => process.stdout.write(str),
     );
     this.syncTerminalTitle();
@@ -664,24 +695,6 @@ export class PiChat {
     // 上个进程崩溃或被强杀时，那批任务的 onSettle 从未触发过，只有这里能捞回来。
     this.reconcileBackground(this.deps.resumeDelivered ?? new Set());
     this.tui.start();
-    // 滚动条与鼠标模式修正。
-    // TuiAltScreen 的 implicitScrollView 默认 scrollbar="hidden"，显式设为 "auto"
-    // 恢复用户在 TuiMainScreen 时代习惯的滚动条交互（拖拽 / 滚轮）。
-    // 同时关掉 1003h（any-event 鼠标跟踪）：它让终端在每次鼠标移动时发 CSI 序列，
-    // 是滚动与点击卡顿的根因；保留 1000h（按键）+ 1002h（拖拽）+ 1006h（SGR 坐标）
-    // 即可覆盖 hyperlink 点击与滚动条拖拽，且大幅降低事件量。
-    try {
-      const alt = this.tui as unknown as { implicitScrollView?: { setScrollbar(mode: string): void } };
-      const sv = alt.implicitScrollView;
-      if (sv !== undefined) sv.setScrollbar('auto');
-    } catch {
-      // pi-tui 内部结构变化时静默跳过，不影响功能
-    }
-    try {
-      this.tui.terminal.write('\x1b[?1003l');
-    } catch {
-      // 终端不支持时静默跳过
-    }
     // 预热模型连接：发送一个最小请求，建立 HTTP 连接池/TLS 握手。
     // 首条真实消息时复用已建立的连接，减少等待时间。失败静默。
     void this.warmupProvider();
@@ -706,19 +719,9 @@ export class PiChat {
         if (this.overlayTickCount % 8 === 0) this.tui.requestRender();
       }
       if (!this.busy || this.promptActive) return;
-      // 底部跳转指示器：viewport 不在底部时 flash 提示。
-      // 两个保护：(1) 冷却 60s 防止滚动/跳转时反复触发；(2) 短暂到底部不自动解锁，
-      // 避免 viewport 在渲染中轻微抖动导致 flash 立即重置然后再弹。
-      if (!this.tui.isFollowingOutput) {
-        if (!this.bottomFlashShown && !this.shouldSkipBottomFlash()) {
-          this.tui.flash('↓ 新内容在底部 · End 跳转', 3500);
-          this.bottomFlashShown = true;
-          this.bottomFlashLastTime = Date.now();
-        }
-      } else if (this.bottomFlashShown && !this.shouldSkipBottomFlash()) {
-        this.bottomFlashShown = false;
-      }
-      // goal 徽标的用时要跟着走秒（只在有 goal 时同步，避免每 120ms 白替换一次状态）
+      // viewport 不在底部时不再显示滚动提示——Home/End 已被编辑器占用（文本光标导航），
+      // 用户可用 Ctrl+↑ 跳 prompt、Ctrl+↓ 翻页、鼠标滚轮滚动。
+      this.activity.setTip('');
       if (this.goal.get() !== null) this.syncGoalBadge();
       this.tui.requestRender();
     }, 120);
@@ -1002,6 +1005,20 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     // 通知由运行时动态生成（reconcileBackground / onBackgroundSettle），不跨会话传递。
     const userMessages = PiChat.filterUserMessages(this.queue);
     this.session.queue = userMessages.length > 0 ? userMessages : undefined;
+    // 记录持久化的后台通知正文，供 resume 后 reconcileBackground 做补投去重。
+    // 只保留最近 24 小时内的 body（ISO 时间戳 + 正文），过期条目不参与去重。
+    const now = new Date().toISOString();
+    const bodies = [...this.notifyPrepared.values()]
+      .map((m) => {
+        const body = typeof m.message.content === 'string' ? m.message.content : '';
+        return { body, ts: now };
+      })
+      .filter((x) => x.body !== '');
+    // 合并已有 notificationBodies，去掉 24h 过期条目
+    const cutoff = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+    const prevBodies = (this.session.notificationBodies as { body: string; ts: string }[] | undefined) ?? [];
+    const merged = [...prevBodies.filter((x) => x.ts >= cutoff), ...bodies];
+    this.session.notificationBodies = merged;
     // goal 独立持久化：不再写入 session 快照，改存 GoalStore（无 goal 时不写）
     const goalSnap = this.goal.snapshot();
     if (goalSnap && this.deps.goalStore) {
@@ -1246,6 +1263,8 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     const text = 'text' in item ? (item as { text: string }).text : '';
     if (text === '') return;
     this.editor.setText(text);
+    // 滚动到输入框位置（输入框在底部），让用户看到已载入的 prompt
+    this.tui.scrollToBottom();
     this.tui.flash(`已载入第 ${targetTurn} 轮输入（Enter 发送 · Esc 取消）`, 2000);
     this.tui.requestRender();
   }
@@ -1433,7 +1452,10 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     }
     const isBang = text.startsWith('!') && text.length > 1;
     // 历史隔离：shell 命令不进提示词历史（↑ 取回的是对话草稿，不是一次性命令）
-    if (!isBang) this.editor.addToHistory(text);
+    if (!isBang) {
+      this.editor.addToHistory(text);
+      this.promptHistory.push(text);
+    }
 
     if (text.startsWith('/')) {
       await this.handleSlash(text);
@@ -2068,6 +2090,12 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       providerNote = `别名 ${plan.alias ?? ''} 无法解析，本会话继续用当前 provider`;
     } else if (plan.reason === 'buildFailed') {
       providerNote = `provider 重建失败：${plan.message ?? ''}，继续用旧实例`;
+    }
+    // maxContextSize 变化是配置级绑定：即使 provider 无需重建（如只改了 max_context_size 或
+    // 其他非模型参数），也要刷新状态栏显示，否则用户改完 config.toml 后重载还是旧值。
+    if (this.maxContextSize !== next.maxContextSize) {
+      this.maxContextSize = next.maxContextSize;
+      this.status.setState({ maxContextSize: next.maxContextSize });
     }
     const nextLang = next.language ?? 'zh';
     if (nextLang !== getLocale()) setLocale(nextLang);
@@ -2830,7 +2858,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
   }
 
   /** 从当前最新点整会话复制：新 id + forkedFrom 记谱系，源会话不动。 */
-  private forkSession(): void {
+  forkSession(): void {
     this.persist();
     const src = this.session;
     const forked = this.deps.store.create(this.deps.ctx.cwd, this.currentAlias ?? this.model);
@@ -2890,6 +2918,14 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     } catch {
       return; // 对账失败不该挡住会话启动
     }
+    // 恢复会话时已持久化的通知正文（带时间戳），去重 + 24h 过期过滤。
+    const cutoff = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+    const persistedBodies = (this.session.notificationBodies as { body: string; ts: string }[] | undefined) ?? [];
+    const persistedHashes = new Set(
+      persistedBodies
+        .filter((x) => x.ts >= cutoff)
+        .map((x) => x.body),
+    );
     for (const task of result.lost) {
       const m = /^team·([A-Z]\d+)\s/.exec(task.command);
       if (m === null) continue;
@@ -2908,25 +2944,62 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       })();
     }
     const redelivered: string[] = [];
-    // 去重：队列里已有的通知正文不再补投。persist() 过滤器会把通知从 queue 中移走，
-    // 所以 existingKeys 同时要覆盖 notifyPrepared 中已存在但未落盘的运行时通知。
-    const existingKeys = new Set([...this.queue, ...this.notifyPrepared.keys()]);
-    for (const task of result.redeliver) {
+    const redeliverCount = result.redeliver.length;
+    // 按终态归类输出摘要
+    const completed = result.redeliver.filter((t) => t.status === 'completed');
+    const failed = result.redeliver.filter((t) => t.status === 'failed');
+    const killed = result.redeliver.filter((t) => t.status === 'killed');
+    const lost = result.redeliver.filter((t) => t.status === 'lost');
+    const other = result.redeliver.filter(
+      (t) => !['completed', 'failed', 'killed', 'lost'].includes(t.status),
+    );
+
+    // 折叠成一条聚合 note（避免 60 条刷屏）
+    const parts: string[] = [];
+    if (completed.length > 0)
+      parts.push(
+        `${completed.length} 个已完成（${completed.map((t) => t.id.slice(0, 8)).join(', ')}）`,
+      );
+    if (failed.length > 0)
+      parts.push(
+        `${failed.length} 个失败（${failed.map((t) => t.id.slice(0, 8)).join(', ')}）`,
+      );
+    if (killed.length > 0)
+      parts.push(
+        `${killed.length} 个被终止（${killed.map((t) => t.id.slice(0, 8)).join(', ')}）`,
+      );
+    if (lost.length > 0)
+      parts.push(
+        `${lost.length} 个已失联（${lost.map((t) => t.id.slice(0, 8)).join(', ')}）`,
+      );
+    if (other.length > 0)
+      parts.push(
+        `${other.length} 个其他状态（${other.map((t) => t.id.slice(0, 8)).join(', ')}）`,
+      );
+    if (parts.length > 0) {
       this.push({
         kind: 'note',
-        text: t('background.redelivered', {
-          id: task.id,
-          status: t(`background.status.${task.status}`),
-          command: task.command,
-        }),
+        text: `⏱ 离开期间 ${redeliverCount} 个后台任务有更新：${parts.join('；')}（/tasks 查看详情）`,
       });
+    }
+
+    // 去重：队列里已有的通知正文不再补投。persist() 过滤器会把通知从 queue 中移走，
+    // 所以 existingKeys 同时要覆盖 notifyPrepared 中已存在但未落盘的运行时通知，
+    // 以及已持久化到 session.notificationBodies 的通知（防止 resume 后反复补投）。
+    const existingKeys = new Set([
+      ...this.queue,
+      ...this.notifyPrepared.keys(),
+      ...persistedHashes,
+    ]);
+    for (const task of result.redeliver) {
       const msg = buildSettleMessage(task, { startsPromptTurn: true });
       const body = typeof msg.message.content === 'string' ? msg.message.content : '';
       if (existingKeys.has(body)) continue; // 队列中已有，跳过
       this.notifyPrepared.set(body, msg);
       redelivered.push(body);
     }
-    // 循环外一次性落盘：逐条 updateQueue 会给一次补投写 N 条 queue.update 事件
+    // 补投通知进入发送队列：由 finishTurn → runTurn 投递给模型，让模型知道任务结果。
+    // 这是 resume 场景下通知闭环的关键：通知不仅展示给用户，也要让模型看到。
     if (redelivered.length > 0) this.updateQueue([...this.queue, ...redelivered]);
   }
 
@@ -3734,6 +3807,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       hooks,
       maxDepth: this.deps.config.subagent.maxDepth,
       maxStepsDefault: this.deps.config.subagent.maxSteps,
+      subagentTimeoutMs: this.deps.config.subagent.timeoutS > 0 ? this.deps.config.subagent.timeoutS * 1000 : undefined,
       userMessageBudget: {
         maxTokens: this.deps.config.compaction.userMessageMaxTokens,
         headTokens: this.deps.config.compaction.userMessageHeadTokens,
@@ -3794,6 +3868,8 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
           sessionQueue: this.deps.sessionQueue,
           // 会话持久化存储：供 session_list 工具查询本 cwd 会话列表（query/limit 过滤，防上下文爆炸）。
           sessionStore: this.deps.store,
+          // 子 agent 会话持久层：供 subagent_list/subagent_kill/subagent_status 工具查询和管理子 agent。
+          subagentStore: this.deps.subagentStore,
           // 当前会话 id：跨会话投递时作为发送方记录。
           sessionId: this.session.id,
           askUser: (req) => this.askUserQuestion(req),

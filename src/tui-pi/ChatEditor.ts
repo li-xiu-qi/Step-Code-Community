@@ -13,6 +13,8 @@ import {
   type TUI,
   visibleWidth,
 } from '@earendil-works/pi-tui';
+import { planAutoPair, isPairSurrounding } from './autoPair.js';
+import { initialNavState, type HistoryNavState } from '../session/inputHistory.js';
 
 /**
  * 输入提示符。用 `›`（U+203A）：比 `>` 窄一格，不与正文引用块（`>`）或 diff 标记混淆。
@@ -78,6 +80,23 @@ export class ChatEditor extends Editor {
    * 只在 busy + 输入框空时生效——空闲时 ↑ 走正常历史回溯（如果有的话）。
    */
   onUpArrow?: () => boolean;
+  /**
+   * ↓：busy + 空输入时无意义（队列里只有尾部可取，↑ 已在消费）；空闲时 ↓ 也
+   * 回退到 prompt 历史导航（向下翻）。
+   *
+   * 返回 true 表示已消费（历史或队列）；false 让按键下传父类做光标移动。
+   */
+  onDownArrow?: () => boolean;
+  /** prompt 历史条目（时间正序，末尾最新）。由控制器在每次提交后追加。 */
+  historyEntries: string[] = [];
+  /** 输入历史导航游标状态。由控制器维护，Editor 只读。 */
+  historyNavState: HistoryNavState = initialNavState();
+  /**
+   * Navigator delegate：Editors 自己不动 InputHistoryStore，只调这个 delegate。
+   * 由控制器装配（引用 InputHistoryStore 实例）。
+   */
+  navigateUp?: () => boolean;
+  navigateDown?: () => boolean;
   /**
    * 除 Esc / Ctrl+C 之外的任意按键。用于解除双击确认（primed）态。
    *
@@ -243,6 +262,57 @@ export class ChatEditor extends Editor {
     }
     if (matchesKey(data, 'up')) {
       if (this.onUpArrow?.() === true) return;
+      if (this.navigateUp?.() === true) return;
+    }
+    if (matchesKey(data, 'down')) {
+      if (this.onDownArrow?.() === true) return;
+      if (this.navigateDown?.() === true) return;
+    }
+    // Ctrl+↑ ：跳转到上一个 prompt。
+    if (matchesKey(data, 'ctrl+up')) {
+      (this.tui as unknown as { scrollToPrompt(d: number): void }).scrollToPrompt(-1);
+      return;
+    }
+    // Ctrl+↓ ：半屏向下滚动。
+    if (matchesKey(data, 'ctrl+down')) {
+      (this.tui as unknown as { scrollBy(n: number): void }).scrollBy(Math.floor((this.tui as unknown as { terminal: { rows: number } }).terminal.rows / 2));
+      return;
+    }
+    // Ctrl+Home：滚到会话流顶部（viewport 层已解绑，在此接管）。
+    if (matchesKey(data, 'ctrl+home')) {
+      (this.tui as unknown as { scrollToTop(): void }).scrollToTop();
+      return;
+    }
+    // Ctrl+End：滚到会话流底部（viewport 层已解绑，在此接管）。
+    if (matchesKey(data, 'ctrl+end')) {
+      (this.tui as unknown as { scrollToBottom(): void }).scrollToBottom();
+      return;
+    }
+    // 自动括号配对：已移除。 pairing logic removed.
+    // 粘贴（多字符块）走 PasteBurst 分支已提前处理，不在下游触发配对。
+    if (data.length === 1 && data.charCodeAt(0) >= 32) {
+      const cursor = this.getCursor();
+      const lineText = this.getLines()[cursor.line] ?? '';
+      const charAtCursor = lineText.slice(cursor.col, cursor.col + 1);
+      const charBefore = cursor.col > 0 ? lineText.slice(cursor.col - 1, cursor.col) : '';
+      // 闭符 type-over（光标处已是该闭符 → 右移越过，不重复插入）
+      if (planAutoPair(data, charAtCursor).kind === 'skip-close') {
+        (this as unknown as { setCursorCol(col: number): void }).setCursorCol(cursor.col + 1);
+        return;
+      }
+      // 开符配对（光标前一字符是该开符 → 整对删除，模拟退格）
+      if (isPairSurrounding(charBefore, data)) {
+        (this as unknown as { setCursorCol(col: number): void }).setCursorCol(cursor.col - 1);
+        super.handleInput('\x7f'); // 删除开符
+        return;
+      }
+      // 普通配对插入
+      const pair = planAutoPair(data, charAtCursor);
+      if (pair.kind === 'insert-pair') {
+        this.insertTextAtCursor(pair.text);
+        (this as unknown as { setCursorCol(col: number): void }).setCursorCol(cursor.col + 1);
+        return;
+      }
     }
     super.handleInput(data);
   }

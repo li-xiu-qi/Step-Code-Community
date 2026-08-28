@@ -23,8 +23,8 @@ export function sortAgents(agents: readonly SessionMeta[]): SessionMeta[] {
   });
 }
 
-/** 单行子 agent 摘要：状态 · 类型 · 名称 · 消息数 · id。全部截断到 width。 */
-export function agentRow(agent: SessionMeta, selected: boolean, width: number): string {
+/** 单行子 agent 摘要：状态 · 类型 · 名称 · 消息数 · id。按 depth 缩进显示层级。 */
+export function agentRow(agent: SessionMeta, selected: boolean, width: number, depth?: number): string {
   const mark =
     agent.status === 'running'
       ? c.warn('●')
@@ -34,15 +34,21 @@ export function agentRow(agent: SessionMeta, selected: boolean, width: number): 
           ? c.error('✗')
           : c.dim('·');
   const sel = selected ? c.toolName('›') : ' ';
+  // 树形缩进：每层 2 空格 + 连接线
+  const indent = depth !== undefined && depth > 0 ? '  │ '.repeat(depth - 1) + '  ├─ ' : ' ';
   const type = c.accent(agent.agentType ?? 'general');
-  const label = agent.name ?? agent.title ?? agent.id.slice(0, 8);
+  const label = c.dim(agent.name ?? agent.title ?? agent.id.slice(0, 8));
   const msgs = c.dim(`${agent.messageCount} 条`);
-  const head = `${sel} ${mark} ${type} ${label}  ${msgs}`;
+  const head = `${sel}${indent}${mark} ${type} ${label}  ${msgs}`;
   return truncateToWidth(head, width);
 }
 
 export class AgentsOverlay implements Component {
   private sel = 0;
+  private filter = '';
+  private filterActive = false;
+  /** 被折叠的 depth 层级（及其所有子级都被隐藏）。 */
+  private collapsedDepths = new Set<number>();
   private readonly getAgents: () => readonly SessionMeta[];
   private readonly onBrowse: (id: string) => void;
   private readonly requestRender: () => void;
@@ -61,13 +67,93 @@ export class AgentsOverlay implements Component {
   }
 
   private visible(): SessionMeta[] {
-    return sortAgents(this.getAgents());
+    const all = sortAgents(this.getAgents());
+    if (this.filter === '') return all;
+    const q = this.filter.toLowerCase();
+    return all.filter((m) => {
+      const haystack = `${m.id} ${m.agentType ?? ''} ${m.title ?? ''} ${m.name ?? ''}`.toLowerCase();
+      return haystack.includes(q);
+    });
+  }
+
+  /** 过滤掉被折叠层级的子代理。 */
+  private visibleFlat(): SessionMeta[] {
+    const all = this.visible();
+    if (this.collapsedDepths.size === 0) return all;
+    return all.filter((m) => {
+      const d = m.depth ?? 0;
+      // 检查该 depth 的直接父级是否被折叠
+      if (d <= 0) return true;
+      // 如果 depth-1 层被折叠，则此节点不可见
+      for (const cd of this.collapsedDepths) {
+        if (d > cd && all.some((p) => (p.depth ?? 0) === cd && p.id !== m.id)) return false;
+      }
+      return true;
+    });
+  }
+
+  private applyFilter(ch: string): void {
+    if (ch === '\b' || ch === '\x7f') {
+      this.filter = this.filter.slice(0, -1);
+    } else if (ch.length === 1 && ch >= ' ') {
+      this.filter += ch;
+    }
   }
 
   handleInput(data: string): void {
-    const list = this.visible();
+    if (this.filterActive) {
+      if (matchesKey(data, 'escape')) {
+        this.filterActive = false;
+        this.requestRender();
+        return;
+      }
+      if (matchesKey(data, 'return')) {
+        this.filterActive = false;
+        this.sel = 0;
+        this.requestRender();
+        return;
+      }
+      if (data === '\b' || data === '\x7f') {
+        this.applyFilter(data);
+        this.sel = 0;
+        this.requestRender();
+        return;
+      }
+      if (data.length === 1 && data >= ' ') {
+        this.applyFilter(data);
+        this.sel = 0;
+        this.requestRender();
+        return;
+      }
+      return;
+    }
+
+    const list = this.visibleFlat();
     if (matchesKey(data, 'escape') || data === 'q') {
       this.close();
+      return;
+    }
+    if (data === '/') {
+      this.filterActive = true;
+      this.requestRender();
+      return;
+    }
+    if (matchesKey(data, 'left')) {
+      // 折叠当前选中项的层级
+      const agent = list[this.sel];
+      if (agent !== undefined && (agent.depth ?? 0) > 0) {
+        this.collapsedDepths.add(agent.depth!);
+      }
+      this.requestRender();
+      return;
+    }
+    if (matchesKey(data, 'right')) {
+      // 展开当前选中项的父级
+      const agent = list[this.sel];
+      if (agent !== undefined && (agent.depth ?? 0) > 0) {
+        this.collapsedDepths.delete(agent.depth!);
+      }
+      this.requestRender();
       return;
     }
     if (matchesKey(data, 'up') || data === 'k') {
@@ -78,7 +164,7 @@ export class AgentsOverlay implements Component {
       const agent = list[this.sel];
       if (agent !== undefined) {
         this.onBrowse(agent.id);
-        return; // onBrowse 会关掉弹层（进入浏览态），这里不重渲
+        return;
       }
     }
     this.requestRender();
@@ -117,16 +203,21 @@ export class AgentsOverlay implements Component {
   }
 
   render(width: number): string[] {
-    const list = this.visible();
+    const list = this.visibleFlat();
+    const all = this.visible();
     const out: string[] = [
-      c.accent(truncateToWidth(`子 agent 总览（${list.length} 个）`, width)),
+      c.accent(truncateToWidth(`子 agent 总览（${list.length} / ${all.length} 个，← → 折叠展开）`, width)),
     ];
+    if (this.filterActive) {
+      out.push(c.dim(truncateToWidth(`过滤: ${this.filter}█`, width)));
+      out.push('');
+    }
     if (list.length === 0) {
-      out.push(c.dim(truncateToWidth('本会话还没有派生过子 agent', width)));
+      out.push(c.dim(truncateToWidth(this.filter !== '' ? '无匹配结果' : '本会话还没有派生过子 agent', width)));
     } else {
-      const sel = Math.min(this.sel, list.length - 1);
+      const sel = Math.min(this.sel, Math.max(0, list.length - 1));
       for (const [i, agent] of list.entries()) {
-        out.push(agentRow(agent, i === sel, width));
+        out.push(agentRow(agent, i === sel, width, agent.depth));
       }
       const agent = list[sel];
       if (agent !== undefined) {
@@ -134,7 +225,11 @@ export class AgentsOverlay implements Component {
         out.push(...this.renderDetail(agent, width));
       }
     }
-    out.push(c.dim(truncateToWidth('↑↓/jk 选择 · Enter 浏览 · Esc 关闭', width)));
+    if (this.filterActive) {
+      out.push(c.dim(truncateToWidth('输入过滤文字 · Enter 确认 · Esc 取消', width)));
+    } else {
+      out.push(c.dim(truncateToWidth('↑↓/jk 选择 · Enter 浏览 · ←→ 折叠 · / 过滤 · Esc 关闭', width)));
+    }
     return out;
   }
 

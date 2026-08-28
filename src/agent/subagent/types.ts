@@ -15,6 +15,10 @@ export interface AgentDefinition {
   model?: string;
   /** 单次子 agent 最大 模型↔工具 往返轮数；undefined = 用 config 的全局默认（subagent.maxSteps）。 */
   maxSteps?: number;
+  /** 仅启用的 skill 名列表；undefined = 全部可用。与 disabledSkills 同时存在时先排除再启用。 */
+  skills?: string[];
+  /** 排除的 skill 名列表（适合基于通用角色做减法：继承全部能力再禁止少数）。 */
+  disabledSkills?: string[];
   /** system prompt（markdown 定义时取正文）。 */
   systemPrompt: string;
 }
@@ -35,6 +39,12 @@ export interface SpawnSubagentRequest {
    * 唯一门槛是目标会话当前没在跑（活跃锁判定）。
    */
   resume?: string;
+  /**
+   * Fork 一个子会话：从源会话的历史快照创建全新会话（新 UUID），历史消息全量复制后追加 prompt。
+   * 与 resume 的核心区别：resume 在源会话上续跑（同一 sessionId）；fork 开新会话（独立 sessionId），
+   * 源会话不受影响，双方各自独立推进。
+   */
+  fork?: string;
   /**
    * 覆盖子 agent 的工作目录（缺省继承主会话 cwd）。
    * team worker 用它把默认落点收进自己的工作间。

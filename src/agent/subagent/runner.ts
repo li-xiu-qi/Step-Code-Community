@@ -11,7 +11,7 @@ import type { SubagentProgressEvent } from '../events.js';
 import type { LoopHooks } from '../hooks.js';
 import { runAgent } from '../loop.js';
 import { stored, type StoredMessage } from '../message.js';
-import { skillListing, type SkillRegistry } from '../../skill/registry.js';
+import { filterSkillRegistry, skillListing, type SkillRegistry } from '../../skill/registry.js';
 import type { SessionData } from '../../session/store.js';
 import { resolveModelEntry, type StepCodeConfig } from '../../config/config.js';
 import { createProvider } from '../../provider/factory.js';
@@ -127,6 +127,8 @@ export interface SubagentRunnerDeps {
   parentSessionId?: string;
   /** skill 注册表（组合根注入）：子 agent 共享，system 拼清单 + ctx 带 skills，使其 skill 工具可用。 */
   skills?: SkillRegistry;
+  /** 单个子 agent 的墙钟超时（毫秒）。0 = 不限。超时后 abort 该子 agent。 */
+  subagentTimeoutMs?: number;
   /** 子 agent 进度事件回调（带子 agent 标识 + 生命周期，供 UI 区分各并行子 agent）。 */
   onEvent?: (id: string | undefined, ev: SubagentProgressEvent) => void;
 }
@@ -223,12 +225,49 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): RunSubagentFn {
     }
 
     const resumeId = req.resume !== undefined && req.resume !== '' ? req.resume : undefined;
+    const forkId = req.fork !== undefined && req.fork !== '' ? req.fork : undefined;
     let subSession: SessionData;
     let sessionId: string;
     let messages: StoredMessage[];
     let agentDef: AgentDefinition;
 
-    if (resumeId !== undefined) {
+    if (forkId !== undefined) {
+      // === Fork：从源会话历史创建全新会话 ===
+      const sourceSnap = deps.subagentStore.loadSnapshot(deps.cwd, forkId);
+      if (sourceSnap === null) {
+        return { summary: `找不到子会话「${forkId}」（本工作目录下无此子 agent 会话）。`, isError: true };
+      }
+      const sourceDef = registry.get(sourceSnap.agentType ?? req.subagentType);
+      if (sourceDef === undefined) {
+        return {
+          summary: `子会话「${forkId}」的角色类型「${sourceSnap.agentType ?? req.subagentType}」已不存在，无法 fork。可用类型：${[...registry.keys()].join(', ')}。`,
+          isError: true,
+        };
+      }
+      agentDef = sourceDef;
+      // 新建会话（新 UUID，不占源会话的 ID）
+      subSession = deps.subagentStore.create(deps.cwd, {
+        model: agentDef.model ?? '',
+        agentType: agentDef.name,
+        depth: sourceSnap.depth ?? 0,
+        parentId: forkId,
+      });
+      sessionId = subSession.id;
+      // 复制源会话的历史消息（浅拷贝，不共享数组引用）
+      messages = [...sourceSnap.messages];
+      // 尾部闭合（源会话可能停在工具执行段中间）
+      const closure = closeDanglingToolUse(messages);
+      subSession.messages = messages = closure.messages;
+      // 新 prompt 追加
+      messages.push(stored({ role: 'user', content: req.prompt }, { kind: 'user' }));
+      subSession.status = 'running';
+      // 新会话需要获取活跃锁（不碰源会话的锁）
+      if (!deps.subagentStore.acquireLock(deps.cwd, sessionId)) {
+        return { summary: '子会话创建失败（活跃锁建立失败）。', isError: true };
+      }
+      // Fork 创建新会话，占派生配额
+      deps.sessionCounter.spawned += 1;
+    } else if (resumeId !== undefined) {
       // resume 路径：不是新派生，不占 sessionCounter 配额；唯一门槛是目标会话当前没在跑（活跃锁判定）。
       // 已完成与失败的子会话不做区别处理，都可续跑。
       const snap = deps.subagentStore.loadSnapshot(deps.cwd, resumeId);
@@ -318,6 +357,24 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): RunSubagentFn {
     // 定义在 try 外：catch 分支补发终态时也要带上这两个统计。
     let toolUses = 0;
     const startedAt = Date.now();
+    // 墙钟超时包装：创建独立 AbortController，同时监听父信号和超时定时器。
+    // 超时后 abort 该 controller，runAgent 的 for-await 循环收到 abort 信号退出。
+    const timeoutCtrl = new AbortController();
+    if (req.signal !== undefined) {
+      if (req.signal.aborted) {
+        timeoutCtrl.abort();
+      } else {
+        req.signal.addEventListener('abort', () => timeoutCtrl.abort(), { once: true });
+      }
+    }
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutMs = deps.subagentTimeoutMs ?? 0;
+    if (timeoutMs > 0) {
+      timeoutHandle = setTimeout(() => {
+        timeoutCtrl.abort();
+      }, timeoutMs);
+    }
+    const effectiveSignal = timeoutCtrl.signal;
     try {
       // 角色的模型绑定：命中别名则连 provider 一起换（跨渠道），未命中退回父 provider
       const binding = resolveBinding(agentDef.model);
@@ -343,7 +400,11 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): RunSubagentFn {
       // system 拼上 skill 清单：子 agent 也能按需激活技能（与主 agent 一致的懒加载呈现）
       // cwd 覆盖（team worker 落进自己工作间）：system 提示与 ctx 同步用覆盖值
       const cwd = req.cwd ?? deps.cwd;
-      const skillPart = deps.skills !== undefined ? skillListing(deps.skills, deps.config?.skillListingBudget) : '';
+      // 按 agent 定义的 skills / disabledSkills 过滤注册表：子 agent 只能看到允许的 skill
+      const filteredSkills = deps.skills !== undefined && (agentDef.skills !== undefined || agentDef.disabledSkills !== undefined)
+        ? filterSkillRegistry(deps.skills, agentDef.skills, agentDef.disabledSkills)
+        : deps.skills;
+      const skillPart = filteredSkills !== undefined ? skillListing(filteredSkills, deps.config?.skillListingBudget) : '';
       // 记忆索引对子 agent 只读注入（开启时）：它做调研需要偏好上下文，但无写入权
       const memoryPart =
         deps.config?.memory?.enabled === true ? `\n\n${memorySection(scanMemory(cwd), 'readonly')}` : '';
@@ -360,11 +421,11 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): RunSubagentFn {
         baseUrl: deps.baseUrl,
         // 搜索配置继承主会话（子 agent 自己的 model 别名只换模型 provider，不改变搜索配置归属）
         searchConfig: deps.config?.search,
-        signal: req.signal,
+        signal: effectiveSignal,
         depth: req.depth + 1,
         runSubagent: selfRunner,
-        // 子 agent 共享 skill 注册表
-        skills: deps.skills,
+        // 子 agent 使用过滤后的 skill 注册表
+        skills: filteredSkills,
         // resume 回灌的历史里图片是 stepref 指针：toWire 发 provider 前需要 attachments 做 rehydrate
         attachments: deps.subagentStore.attachments,
         // 能力标记随解析后的别名走（跨渠道时父模型的能力表不适用于子模型）
@@ -404,7 +465,7 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): RunSubagentFn {
           system,
           ctx,
           messages,
-          signal: req.signal,
+          signal: effectiveSignal,
           hooks: subHooks,
           maxIterations: agentDef.maxSteps ?? deps.maxStepsDefault,
           allowedTools: allowed,
@@ -502,6 +563,7 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): RunSubagentFn {
       });
       throw e;
     } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
       deps.subagentStore.releaseLock(deps.cwd, sessionId);
     }
   };

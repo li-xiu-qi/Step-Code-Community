@@ -71,6 +71,7 @@ const opts = program.opts<{
   continue?: boolean;
   session?: string;
   resume?: string | boolean;
+  fork?: string;
   outputFormat?: string;
   model?: string;
   provider?: string;
@@ -284,6 +285,47 @@ if (program.args[0] === 'subagents') {
     if (res === 'deleted') console.log(t('cli.subagents.deleted', { id }));
     else if (res === 'locked') console.error(t('cli.subagents.locked', { id }));
     else console.error(t('cli.subagents.deleteFailed', { id }));
+  } else if (sub === 'search') {
+    const query = program.args[2];
+    if (query === undefined || query.length === 0) {
+      console.error('用法：step subagents search <关键词>');
+      process.exit(1);
+    }
+    const q = query.toLowerCase();
+    const results = subStore.list(cwd).filter((m) => {
+      const title = (m.title ?? '').toLowerCase();
+      const type = (m.agentType ?? '').toLowerCase();
+      const head = `${m.id} ${title} ${type}`;
+      if (head.includes(q)) return true;
+      const snap = subStore.loadSnapshot(cwd, m.id);
+      if (snap === null) return false;
+      const text = snap.messages
+        .map((msg) => {
+          const c = msg.message.content;
+          if (typeof c === 'string') return c;
+          return c.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('');
+        })
+        .join(' ')
+        .toLowerCase();
+      return text.includes(q);
+    });
+    if (results.length === 0) {
+      console.log(`未找到匹配「${query}」的子 agent。`);
+    } else {
+      console.log(`找到 ${results.length} 个匹配「${query}」的子 agent：`);
+      for (const m of results) {
+        console.log(
+          t('cli.subagents.line', {
+            id: m.id,
+            type: m.agentType ?? '-',
+            status: m.status ?? '-',
+            title: m.title ?? t('app.sessions.untitled'),
+            updated: relativeTime(m.updatedAt),
+            parent: m.parentId !== undefined ? m.parentId.slice(0, 8) : '-',
+          }),
+        );
+      }
+    }
   } else {
     console.error(t('cli.subagents.unknownSub', { sub }));
     process.exit(1);
@@ -588,6 +630,21 @@ if (opts.resume !== undefined) {
     if (opts.outputFormat === 'stream-json') {
       const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       process.stdout.write(`${JSON.stringify(sessionNotFoundEvent(opts.session, requestId, sessionsDir))}\n`);
+    }
+    process.exitCode = 2;
+    await mcpManager.closeAll();
+    process.exit(2);
+  }
+  resumeHit = r !== null;
+  resolved = resolveResume(r);
+} else if (opts.fork !== undefined) {
+  // --fork <id>：先恢复源会话，之后 forkSession() 分出新会话
+  const r = resumeSession(store, cwd, opts.fork);
+  if (r === null) {
+    const sessionsDir = join(homedir(), '.step-code', 'sessions');
+    process.stderr.write(`错误：源会话 ${opts.fork} 未找到（sessions 目录：${sessionsDir}）。\n`);
+    if (opts.print !== undefined) {
+      process.stderr.write(`错误：无法 fork 不存在的会话 ${opts.fork}。\n`);
     }
     process.exitCode = 2;
     await mcpManager.closeAll();
@@ -910,6 +967,7 @@ async function runPrint(prompt: string): Promise<void> {
       hooks,
       maxDepth: config.subagent.maxDepth,
       maxStepsDefault: config.subagent.maxSteps,
+      subagentTimeoutMs: config.subagent.timeoutS > 0 ? config.subagent.timeoutS * 1000 : undefined,
       compaction: {
         maxContextSize: config.maxContextSize,
         triggerRatio: config.compaction.triggerRatio,
@@ -1157,6 +1215,10 @@ if (opts.reflect === true) {
     sessionStartSkills: plugins.filter((p) => p.sessionStartSkill).map((p) => p.sessionStartSkill!),
     configStartupNotice: renderConfigDiagnostics(configWarnings, ignoredBadConfig),
   });
+  // --fork <id>：PiChat 已加载源会话，立即分叉出新会话
+  if (opts.fork !== undefined) {
+    chat.forkSession();
+  }
   // SIGHUP/死终端的紧急出口：终端已死时继续写 stdout 会 EIO 循环占满 CPU，
   // 进程残留还会把用户的 shell 挂在 raw mode。只恢复终端立即退出，不做清理。
   // SIGTERM 走正常退出（Ctrl+C 双击退出的 exit() 路径已含完整清理）。

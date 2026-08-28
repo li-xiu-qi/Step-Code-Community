@@ -53,6 +53,8 @@ export interface ToolContext {
   sessionQueue?: import('../agent/sessionQueue/store.js').SessionQueueStore;
   /** 会话持久化存储（组合根注入）：供 session_list 工具查询本 cwd 的会话列表。缺失则列表工具不可用。 */
   sessionStore?: import('../session/store.js').SessionStore;
+  /** 子 agent 会话持久层（组合根注入）：供 subagent_list/subagent_kill/subagent_status 工具查询和管理子 agent。缺失则子 agent 控制工具不可用。 */
+  subagentStore?: import('../agent/subagent/store.js').SubagentStore;
   /** 当前会话 id（组合根注入）：跨会话投递时作为发送方记录；缺失则发送方留空。 */
   sessionId?: string;
   /** tool_search 外部工具注册表（组合根注入，懒加载）。缺失表示无可搜索外部工具。 */

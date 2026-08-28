@@ -1,5 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { t } from '../i18n.js';
+import type { CircuitBreaker } from '../agent/circuit-breaker.js';
+export { createCircuitBreaker, type CircuitBreaker } from '../agent/circuit-breaker.js';
 
 /**
  * 识别 Anthropic SDK 的空流错误：MessageStream 在没收到任何 message_start 的情况下被
@@ -248,6 +250,10 @@ export interface RetryOptions {
   signal?: AbortSignal;
   /** 每次重试前回调，供上层提示用户。 */
   onRetry?: (attempt: number, delayMs: number, err: unknown) => void;
+  /** provider 名（用于 circuit breaker 按 provider 隔离）。 */
+  providerName?: string;
+  /** circuit breaker 实例（可选）。提供时 429 重试前先检查断路器。 */
+  circuitBreaker?: CircuitBreaker;
 }
 
 /** 默认退避参数，供流式循环手动重试时复用（保持单一真相）。 */

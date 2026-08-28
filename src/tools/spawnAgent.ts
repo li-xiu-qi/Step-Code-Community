@@ -3,11 +3,20 @@ import type { SubagentResult } from '../agent/subagent/types.js';
 import { fail, ok, type ToolContext, type ToolDef } from './types.js';
 
 const schema = z.object({
-  description: z.string().optional().describe('子任务简述（3-5 词），显示在用户界面的进度卡片上。'),
+  description: z
+    .string()
+    .optional()
+    .describe(
+      '子任务简述（3-5 词），显示在用户界面的进度卡片上。' +
+        '给进度卡片用的标题——短、具体、能让人一眼知道这条任务在干嘛。',
+    ),
   prompt: z
     .string()
     .optional()
-    .describe('完整任务描述。子 agent 看不到父上下文，所有必要背景都要写进来。'),
+    .describe(
+      '完整任务描述。子 agent 看不到当前对话，所有必要背景、上下文、约束都要写进来。' +
+        '含糊的 prompt 产出的结果也含糊——背景写够 3 行，子 agent 少猜 1 轮。',
+    ),
   subagent_type: z
     .string()
     .optional()
@@ -25,6 +34,10 @@ const schema = z.object({
     .string()
     .optional()
     .describe('恢复指定 id 的子会话：从历史断点续跑（prompt 作为新指令追加）。与派生新子 agent 二选一；目标会话正在运行时会被拒绝。'),
+  fork: z
+    .string()
+    .optional()
+    .describe('从指定 id 的子会话 fork 出新会话：全量复制历史后创建独立会话继续，与 resume 二选一。fork 后的新会话有自己独立的 session id，源会话不受影响。'),
 });
 
 /**
@@ -43,7 +56,7 @@ function formatSubagentResult(
       : `subagent: ${subagentType} | status: ${status}`;
   const tail =
     status === 'error' && sessionId !== undefined
-      ? `\n\n（需要在它已有工作基础上继续时，用 spawn_agent 的 resume="${sessionId}" 续跑）`
+      ? `\n\n（需要在它已有工作基础上继续时，用 spawn_agent 的 resume="${sessionId}" 续跑；如需带着历史另起炉灶但不影响源会话，用 fork="${sessionId}"）`
       : '';
   return `${head}\n\n${summary}${tail}`;
 }
@@ -53,6 +66,7 @@ export const spawnAgentTool: ToolDef<z.infer<typeof schema>> = {
   description:
     '派生一个子 agent 处理子任务（全新上下文、受限工具、只回摘要）。委派同时把大量中间过程（文件原文、搜索结果）挡在你的上下文之外——你拿回的是结论，不是一堆原始输出。\n' +
     '可选角色见 system prompt 的「可派生的子 agent 角色」清单，subagent_type 省略时用 general。\n' +
+    '派生后用 subagent_list 查看运行状态，subagent_kill 删除不需要的会话，subagent_status 查看详情。\n' +
     '\n' +
     '写 prompt：\n' +
     '- 子 agent 零上下文，没看过这段对话。像给刚进门的同事交接一样写：目标是什么、你已经知道什么、具体要它做什么。\n' +
@@ -65,6 +79,7 @@ export const spawnAgentTool: ToolDef<z.infer<typeof schema>> = {
     '派生之后：那块范围就交给它了。不要并行重做它正在做的搜索和读取，也不要中途放弃自己接管——两者都会抵消委派本身省下的上下文。\n' +
     '\n' +
     '返回串带子会话 id，需要在它已有工作基础上继续时用 resume=<id> 续跑（不新建会话、不占派生配额）。\n' +
+    '如需带着历史上下文但独立推进新会话（源会话不受影响），用 fork=<id>（新建会话，历史全量复制）。\n' +
     '一次要并行几个独立子任务，在同一轮里发多个 spawn_agent（全为只读 explore 时并行执行）；带依赖的多阶段编排或大批量同构 fan-out 改用 dynamic_workflow 工具。',
   schema,
   // 只读 explore 无本地副作用（可并行）；general 可写必须独占（自然串行）
@@ -98,6 +113,7 @@ export const spawnAgentTool: ToolDef<z.infer<typeof schema>> = {
           signal: bgCtrl.signal,
           description: input.description,
           resume: input.resume,
+          fork: input.fork,
         })
         .then((r) => ({
           output: r.sessionId !== undefined ? `${r.summary}\n（子会话 id：${r.sessionId}）` : r.summary,
@@ -140,7 +156,7 @@ export const spawnAgentTool: ToolDef<z.infer<typeof schema>> = {
  * 登记失败（并发上限）或上下文不支持后台任务时，退化为直接前台等待（信号原样透传）。
  */
 async function runForegroundSubagent(
-  input: { description?: string | undefined; resume?: string | undefined },
+  input: { description?: string | undefined; resume?: string | undefined; fork?: string | undefined },
   ctx: ToolContext,
   subagentType: string,
   prompt: string,
@@ -154,6 +170,7 @@ async function runForegroundSubagent(
       signal: ctx.signal,
       description: input.description,
       resume: input.resume,
+      fork: input.fork,
     });
   }
 
@@ -174,6 +191,7 @@ async function runForegroundSubagent(
       signal: subCtrl.signal,
       description: input.description,
       resume: input.resume,
+      fork: input.fork,
     })
     .then((result) => ({
       result,

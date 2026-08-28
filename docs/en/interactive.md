@@ -9,7 +9,7 @@ This page covers day-to-day use of the interactive interface: slash commands, ke
 
 ## Interface layout
 
-The pi-tui terminal interface has a welcome box at the top, the conversation stream in the middle (your input, model replies, tool call cards), and a two-line status bar at the bottom. The first line shows the permission tier (manual green / auto yellow / yolo red), the model name, the status, the background task badge `bg:N`, the autonomous goal badge `goal ● elapsed · turns`, and the current path (shortened when too long). The second line shows keybinding hints and context usage (real token percentage). The last two badges appear only when relevant; they take up no space when there is no background task or goal.
+The pi-tui terminal interface has a welcome box at the top, the conversation stream in the middle (your input, model replies, tool call cards), and a two-line status bar at the bottom. The first line shows the permission tier (manual green / auto yellow / yolo red), the model name, the status, the background task badge `bg:N`, the autonomous goal badge `goal ● elapsed · turns`, and the send queue badge `queue:N` (highlighted in red when backed up). Badges appear only when relevant and take up no space otherwise. The cwd path is not displayed in the status bar—usually too long and not actionable for in-session decisions.
 
 Text you type while the model is working is not lost: it joins the send queue and is dispatched one entry at a time when the turn ends, with a queue preview above the input box.
 
@@ -89,8 +89,8 @@ With no argument, this opens the input history panel for the session: it lists, 
 This re-reads `config.toml` without restarting the process and without touching the session history. After running, it prints a field-level diff (`+` added / `-` removed / `~ old → new`); for `api_key` it reports only that it changed, without echoing the content.
 
 - **Failure atomicity**: when parsing or validation fails, the old config is kept in its entirety, with nothing partially applied, and only the error is reported.
-- The provider is rebuilt as circumstances require: if the alias the current model is bound to still exists, it is rebuilt from the new config (taking effect on the next request); if the alias was deleted or cannot be resolved, or the rebuild fails, the old provider is kept and a note is printed. When the construction parameters have not changed, the rebuild is skipped.
-- A change to `language` switches the interface language immediately.
+- The provider is rebuilt as circumstances require: if the alias the current model is bound to still exists, it is rebuilt from the new config (taking effect on the next request); if the alias was deleted or cannot be resolved, or the rebuild fails, the old provider is kept and a note is printed. When the construction parameters have not changed, the rebuild is skipped—but `max_context_size` and other non-construction parameters (e.g. `language`) refresh instantly regardless of whether the provider is rebuilt.
+- A change to `language` switches the interface language immediately. A change to `max_context_size` updates the status bar display (`context: N%`) instantly, with no provider rebuild or restart required.
 - A few fields are fixed once at startup, and their diff lines get "restart required" appended: `agents_paths`, `agents_md_max_bytes`, `background.bash_task_timeout_s`.
 
 ## Keybindings
@@ -102,7 +102,9 @@ This re-reads `config.toml` without restarting the process and without touching 
 | Ctrl+B | Send all foreground tasks (bash or sub-agent) to the background: the process keeps running, the tool call returns a background task id immediately, and the final-state notification and status bar `bg:N` badge stay in sync. When busy with foreground tasks, a hint appears below the input box. Foreground tasks are now registered at process start, so user-initiated detach and foreground-timeout auto-detach share the same release path; interrupting with Esc / Ctrl+C no longer kills a task that has already been detached |
 | Ctrl+O | Open the full-screen viewer: recent expandable tool output and thinking content, grouped by turn and rendered in full; ↑↓ or `k`/`j` to scroll by line, PgUp/PgDn to page, ←/→ to switch turns, Home/`g` to jump to the top, End/`G` to jump to the bottom, Esc/`q`/Ctrl+O to close (output already committed to history stays a collapsed summary in the conversation area) |
 | Alt+V | Paste an image from the clipboard: appends the placeholder `[image #1 (width×height)]` at the end of the input box, which you can edit and delete like ordinary text and which expands into the image on submit. Available only when idle. On Windows it uses the built-in PowerShell; on macOS the built-in osascript; on Linux it needs `xclip` (X11) or `wl-clipboard` (Wayland) installed, and prints a note when they are missing |
-| ↑ / ↓ | With an empty input box, walks back through send history (bash-style draft stashing); when a menu is visible, they belong to menu selection; while busy with an empty input box, ↑ first recalls one entry from the tail of the send queue for editing |
+| ↑ / ↓ | With an empty input box, walks back through send history (bash-style draft stashing); when a menu is visible, they belong to menu selection; while busy with an empty input box, ↑ first recalls one entry from the tail of the send queue for editing. After reaching the oldest history entry, further ↑ clears the input |
+| Ctrl+↑ | Jump to previous user prompt in the conversation stream. Quick navigation through prior turns; at the target, ↓ returns focus to the input box |
+| Ctrl+↓ | Scroll down half a viewport of the conversation stream (jump hint displayed in the bottom status bar, not the precious conversation area) |
 
 While an overlay is active (the model picker, the thinking level picker, the history review panel, the session picker, the provider channel panel, the add-channel wizard, the background task browser, the approval panel, the question panel, the plan confirmation box), every key goes to that overlay and the global keys in the table above stand down for the moment. Ctrl+O is no exception: pressing Ctrl+O while another overlay is open is ignored, and while the viewer itself is open it takes over every key.
 
@@ -124,6 +126,8 @@ The input box supports readline-style cursor movement and deletion keys. When ty
 |------|------|
 | Home / Ctrl+A | Cursor to the start of the line |
 | End / Ctrl+E | Cursor to the end of the line |
+| Ctrl+End | Scroll to the bottom of the conversation stream |
+| Ctrl+Home | Scroll to the top of the conversation stream |
 | ← / → | Move one character left or right |
 | Ctrl+← / Alt+B | Move left by word |
 | Ctrl+→ / Alt+F | Move right by word |
