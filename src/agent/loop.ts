@@ -217,6 +217,8 @@ async function maybeCompact(
   compactionProvider?: ChatProvider,
   signal?: AbortSignal,
   preserveThinking = false,
+  systemPrompt?: string,
+  tools?: unknown[],
 ): Promise<CompactOutcome> {
   if (!shouldCompact(usedTokens, thresholds)) return { acted: false, attemptedButFailed: false };
   let acted = false;
@@ -258,6 +260,8 @@ async function maybeCompact(
       userMessageBudget,
       signal,
       preserveThinking,
+      systemPrompt,
+      tools,
     );
     if (compacted !== messages) {
       replaceMessages(messages, compacted);
@@ -464,6 +468,9 @@ export async function* runAgent(opts: RunAgentOptions): AsyncGenerator<AgentEven
           opts.onWireEvent,
           opts.compactionProvider,
           signal,
+          compaction?.preserveThinking ?? false,
+          opts.system,
+          toAnthropicTools(opts.allowedTools),
         );
         if (outcome.acted) {
           compactionCount++;
@@ -490,6 +497,9 @@ export async function* runAgent(opts: RunAgentOptions): AsyncGenerator<AgentEven
           opts.onWireEvent,
           opts.compactionProvider,
           signal,
+          compaction?.preserveThinking ?? false,
+          opts.system,
+          toAnthropicTools(opts.allowedTools),
         );
         if (outcome.acted) {
           compactionCount++;
@@ -657,6 +667,8 @@ export async function* runAgent(opts: RunAgentOptions): AsyncGenerator<AgentEven
           { maxTokens: userMaxTokens },
           signal,
           compaction?.preserveThinking ?? false,
+          opts.system,
+          toAnthropicTools(opts.allowedTools),
         );
         if (compacted !== messages) {
           replaceMessages(messages, compacted);

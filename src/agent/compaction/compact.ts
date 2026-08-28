@@ -717,6 +717,16 @@ export async function fullCompact(
   userBudget?: { maxTokens?: number; headTokens?: number },
   signal?: AbortSignal,
   preserveThinking = false,
+  /**
+   * 父会话的实际 system prompt。省略 = 用内置 SUMMARY_SYSTEM（旧行为）。
+   * 传入真实 system prompt 使压缩请求的前缀与父会话同构 → 命中 prompt cache，降低压缩成本。
+   */
+  systemPrompt?: string,
+  /**
+   * 父会话的工具定义（精简版即可）。省略 = 空数组（旧行为）。
+   * 传入工具定义使前缀更稳定，提升 cache 命中率。
+   */
+  tools?: unknown[],
 ): Promise<StoredMessage[]> {
   /**
    * 中断判定统一走这里读实时值。
@@ -778,8 +788,8 @@ export async function fullCompact(
     let candidate: string;
     try {
       const stream = provider.stream({
-        system: SUMMARY_SYSTEM,
-        tools: [],
+        system: systemPrompt ?? SUMMARY_SYSTEM,
+        tools: (tools ?? []) as Anthropic.Tool[],
         messages: [{ role: 'user', content: summaryPrompt }],
         model,
         // 压缩摘要压到最低思考档：摘要是机械交接任务，不需要推理深度；更关键的是
