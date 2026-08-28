@@ -25,6 +25,7 @@ program
   .option('-c, --continue', '恢复本工作目录下最近的一个会话')
   .option('--session <id>', '恢复指定 id 的会话')
   .option('-r, --resume [id]', '恢复会话：带 id 直接恢复；不带 id 打开交互选择器')
+  .option('--fork <id>', '从指定会话分叉出一个新会话（副本），源会话不动')
   .option('--output-format <fmt>', '非交互输出格式：text（默认）、stream-json 或 json', 'text')
   .option('--model <name>', '覆盖模型（config.model）')
   .option('--provider <name>', '覆盖服务商（stepfun|anthropic|openai|openai_responses），未同时指定 model/base_url 时按其预设补默认')

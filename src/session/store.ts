@@ -39,6 +39,13 @@ export interface SessionMeta {
   agentType?: string;
   /** 子会话终态（仅子 agent 会话填写：父进程仍活着时子会话可能已终态；主会话不填）。 */
   status?: 'running' | 'done' | 'error' | 'aborted';
+  /**
+   * 已持久化的后台通知正文（带时间戳），供 resume 后 reconcileBackground 做补投去重。
+   * 每项 { body, ts } 的 ts 为持久化时的 ISO 时间戳；超过 24 小时的条目不参与去重。
+   * persist() 只存运行时动态生成的通知 body（不存用户草稿），resume 时由 reconcileBackground
+   * 与 existingKeys 比对，防止同一 settle 通知反复补投。
+   */
+  notificationBodies?: { body: string; ts: string }[];
 }
 
 export interface SessionData extends SessionMeta {

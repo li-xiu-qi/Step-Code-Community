@@ -113,10 +113,8 @@ function renderBlind(blind: Blind, cwd: string): string {
 export const grepTool: ToolDef<z.infer<typeof schema>> = {
   name: 'grep',
   description:
-    '在目录下按正则搜索文件内容，返回 匹配行（path:line:内容）。自动忽略 node_modules、.git、dist 等目录；' +
-    '文件大小不限（大文件走流式扫描），但**含超长单行的文件每行只有前 1MB 参与匹配**，' +
-    '这类情况会在结果末尾的「搜索盲区」里列出（无匹配时同样列出）——看到盲区说明本次搜索有未覆盖范围，' +
-    '不能据此断定目标不存在。',
+    '在目录下按正则搜索文件内容，返回 匹配行（path:line:内容）。自动忽略 node_modules/.git/dist。' +
+    '超长单行文件每行只取前 1MB，搜索盲区会在结果里标出。不能用此工具做精确存在性判断——结果里没有不代表目标不存在。',
   schema,
   access: (input, ctx) => ({ kind: 'read', path: resolvePath(ctx.cwd, input.path ?? '.') }),
   async execute(input, ctx) {

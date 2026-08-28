@@ -14,7 +14,7 @@ const schema = z.object({
 export const writeFileTool: ToolDef<z.infer<typeof schema>> = {
   name: 'write_file',
   description:
-    '创建新文件或整体覆盖已有文件。会自动创建缺失的父目录。对已有文件的局部修改请优先用 edit_file。',
+    '创建新文件或整体覆盖已有文件。会自动创建缺失的父目录。对已有文件的局部修改请优先用 edit_file——write_file 整体覆盖会丢失未改部分。',
   schema,
   access: (input, ctx) => ({ kind: 'write', path: resolvePath(ctx.cwd, input.path) }),
   async execute(input, ctx) {

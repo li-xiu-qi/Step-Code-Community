@@ -50,6 +50,8 @@ export class Transcript implements Component {
    * 工具状态回填的唯一热变更目标，它的变化不该让前缀缓存每帧失效，否则冻结形同虚设。
    */
   private structVer = 0;
+  /** 自动递增的 turn 编号：push 时给无 turnNum 的 user 消息补齐（实时对话 / bash 输入）。 */
+  private nextTurnNum = 0;
   /** 冻结前缀缓存：head 提示行 + 除尾块外全部块的渲染结果。尾块每帧重渲，前缀仅结构变化时重算。 */
   private prefixCache: { width: number; ver: number; lines: string[] } | null = null;
 
@@ -73,6 +75,9 @@ export class Transcript implements Component {
   }
 
   push(item: DisplayItem): void {
+    if (item.kind === 'user' && item.turnNum === undefined) {
+      item = { ...item, turnNum: ++this.nextTurnNum };
+    }
     this.blocks.push(new ItemBlock(item));
     this.structVer++;
     this.trim();

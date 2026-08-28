@@ -81,6 +81,10 @@ export function parseAgentMarkdown(content: string, fallbackName: string): Agent
   // maxSteps 未配或非法 → undefined，交给 config 全局默认兜底
   const maxSteps =
     typeof fm['maxSteps'] === 'number' && fm['maxSteps'] > 0 ? fm['maxSteps'] : undefined;
+  const skillsRaw = fm['skills'];
+  const skills = Array.isArray(skillsRaw) ? skillsRaw.map(String) : undefined;
+  const disabledSkillsRaw = fm['disabledSkills'] ?? fm['disabled_skills'];
+  const disabledSkills = Array.isArray(disabledSkillsRaw) ? disabledSkillsRaw.map(String) : undefined;
   return {
     name,
     description,
@@ -88,6 +92,8 @@ export function parseAgentMarkdown(content: string, fallbackName: string): Agent
     tools,
     model: typeof fm['model'] === 'string' ? fm['model'] : undefined,
     maxSteps,
+    skills,
+    disabledSkills,
     systemPrompt: body,
   };
 }

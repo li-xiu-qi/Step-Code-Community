@@ -75,6 +75,29 @@ export interface SkillRegistry {
   conflicts?: SkillConflict[];
 }
 
+/** 按 agent 定义的 skills / disabledSkills 过滤 skill 注册表。 */
+export function filterSkillRegistry(
+  registry: SkillRegistry,
+  skills?: readonly string[],
+  disabledSkills?: readonly string[],
+): SkillRegistry {
+  const out = new Map<string, SkillDefinition>();
+  const disabled = new Set(disabledSkills ?? []);
+  for (const [name, def] of registry.skills) {
+    if (disabled.has(name)) continue;
+    out.set(name, def);
+  }
+  if (skills !== undefined && skills.length > 0) {
+    const allowed = new Set(skills);
+    const toDelete: string[] = [];
+    for (const [name] of out) {
+      if (!allowed.has(name)) toDelete.push(name);
+    }
+    for (const name of toDelete) out.delete(name);
+  }
+  return { skills: out };
+}
+
 /** 一条同名冲突：最终生效的定义 + 被覆盖的定义（按扫描顺序，先扫的在前）。 */
 export interface SkillConflict {
   name: string;

@@ -39,8 +39,7 @@ const MAX_SNIPPET = 500;
 export const webSearchTool: ToolDef<z.infer<typeof schema>> = {
   name: 'web_search',
   description:
-    '联网搜索互联网公开信息（阶跃官方网页搜索）。用于获取最新的 API 文档、库版本、CVE、实时资讯等模型训练后才有的信息。返回标题、链接与摘要。' +
-    '搜索结果会自动写入本地内存缓存（TTL 30 分钟），后续 web_extract 可直接读取缓存中的正文内容，无需重复网络请求。',
+    '联网搜索互联网公开信息（阶跃官方网页搜索）。用于获取最新信息（库版本、API 文档、实时资讯等模型训练后才有的内容）。返回标题、链接与摘要。结果缓存 30 分钟，web_extract 可直接读缓存。',
   schema,
   access: () => ({ kind: 'none' }), // 纯网络调用，无本地副作用
   async execute(input, ctx) {

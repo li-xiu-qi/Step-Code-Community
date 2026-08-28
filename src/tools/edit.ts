@@ -79,9 +79,9 @@ const schema = z
 export const editFileTool: ToolDef<z.infer<typeof schema>> = {
   name: 'edit_file',
   description:
-    '对已有文件做精确字符串替换。支持单条编辑（old_string/new_string）或批量编辑（edits 数组）。'
-    + ' old_string 必须与文件内容逐字符匹配。默认要求唯一匹配，replace_all=true 时替换所有匹配。'
-    + ' 批量编辑时按顺序应用，前一次编辑的输出作为后一次的输入。',
+    '对已有文件做精确字符串替换。支持单条编辑或批量编辑。' +
+    '用场景：局部修改代码、更新配置值、替换函数实现。' +
+    '不用场景：整文件重写——用 write_file；追加内容——用 bash 的 echo >>；大规模结构性改动——重新写整个文件效率更高。',
   schema,
   access: (input, ctx) => ({ kind: 'write', path: resolvePath(ctx.cwd, input.path) }),
   async execute(input, ctx) {

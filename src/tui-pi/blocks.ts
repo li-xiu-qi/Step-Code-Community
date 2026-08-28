@@ -13,6 +13,10 @@ import { offloadIfNeeded as offloadLargeResult, readCachedOutput } from '../agen
 const BRAILLE_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const SPINNER_INTERVAL_MS = 80;
 
+/** OSC 133 A — 语义化 prompt 起始标记。pi-tui 的 scrollToPrompt 用此标记定位用户 prompt 位置，
+ *  支持 Ctrl+Shift+↑/↓ 跳转到前/后一个 prompt。 */
+const PROMPT_MARKER = '\x1b]133;A\x1b\\';
+
 /** 字节大小格式化。 */
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -322,10 +326,16 @@ export class ItemBlock implements Component {
             const plain = bg(c.userText(l));
             return hyperlink(plain, url);
           });
+          // 在首行前注入 OSC 133 A 语义标记，供 pi-tui scrollToPrompt（Ctrl+Shift+↑/↓）定位。
+          // 必须在 indent/hanging 前缀之前，使标记处于行首（scrollContentLines 正则 ^ 锚定位置 0）。
+          const prependMarker = (lines: string[]): string[] => {
+            if (lines.length > 0) lines[0] = PROMPT_MARKER + lines[0]!;
+            return lines;
+          };
           if (it.verbatim === true) {
-            return [...hanging(linked, c.dim('┊ 原话 '), 2), ''];
+            return prependMarker([...hanging(linked, c.dim('┊ 原话 '), 2), '']);
           }
-          return [...indent(linked, bg(c.user('│ '))), ''];
+          return prependMarker([...indent(linked, bg(c.user('│ '))), '']);
         }
         // 无轮次编号（开源模型/旧快照不可点）
         if (it.verbatim === true) {
