@@ -107,6 +107,7 @@ import { appendText, settleThinking } from '../chat/streamReducer.js';
 import { generateContextReport } from '../chat/contextReport.js';
 import { TableHoldback } from '../chat/tableHoldback.js';
 import { composeSystem } from '../chat/composeSystem.js';
+import { toAnthropicTools } from '../tools/index.js';
 import { InlineApproval, PlanApproval, QuestionPrompt, type ApprovalOutcome, type PlanOutcome } from './prompts.js';
 import type { AskUserRequest, QuestionAnswers } from '../tools/askUser.js';
 import { ChatEditor } from './ChatEditor.js';
@@ -3117,6 +3118,15 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     this.push({ kind: 'note', text: '正在压缩上下文…' });
     try {
       const compaction = this.compactionBinding;
+      // 压缩请求使用父会话的 system prompt + tools → 前缀同构 → 命中 prompt cache
+      const compactionSystem = composeSystem({
+        prefix: this.deps.systemPrefix,
+        skills: skillListing(this.deps.skillsRef.current, this.deps.config.skillListingBudget),
+        subagents: subagentListing([...this.deps.subagentRegistry.values()]),
+        agentsMd: this.deps.agentsMd,
+        memory: this.deps.config.memory?.enabled === true ? memorySection(scanMemory(this.deps.ctx.cwd)) : '',
+        sessionContext: this.sessionContext,
+      });
       const compacted = await fullCompact(
         compaction.provider ?? this.provider,
         this.history,
@@ -3128,6 +3138,9 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
           headTokens: this.deps.config.compaction.userMessageHeadTokens,
         },
         controller.signal,
+        undefined,
+        compactionSystem,
+        toAnthropicTools(), // 全量工具（PiChat 默认不限制，与 turn 一致）
       );
       if (controller.signal.aborted) {
         this.push({ kind: 'note', text: '压缩已中断，历史未改动' });
