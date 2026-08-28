@@ -56,6 +56,11 @@ export interface SpawnSubagentRequest {
    */
   writeAllowRoot?: string;
   /**
+   * 覆盖子 agent 的模型（缺省用 agent 模板定义的 model 或主控模型）。
+   * 仅当次派生生效，不写回模板文件。适用于主控按任务难度灵活选择子 agent 模型。
+   */
+  model?: string;
+  /**
    * 父会话 id（内部线程化字段，不由工具层填写）：嵌套派生时 runner 把自己的子会话 id 传给下一层，
    * 使子会话 meta.parentId 指向真实的直接父级而非一律记主会话。
    */

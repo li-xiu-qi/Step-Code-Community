@@ -314,7 +314,7 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): RunSubagentFn {
       // 不能直接当文件名用。
       agentDef = def;
       subSession = deps.subagentStore.create(deps.cwd, {
-        model: def.model ?? '',
+        model: req.model ?? def.model ?? '',
         agentType: def.name,
         depth: req.depth + 1,
         // parentId 精确化：嵌套派生时 runner 经 req.parentSessionId 把自己的子会话 id 传给下一层，
@@ -376,8 +376,10 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): RunSubagentFn {
     }
     const effectiveSignal = timeoutCtrl.signal;
     try {
-      // 角色的模型绑定：命中别名则连 provider 一起换（跨渠道），未命中退回父 provider
-      const binding = resolveBinding(agentDef.model);
+      // 角色的模型绑定：命中别名则连 provider 一起换（跨渠道），未命中退回父 provider。
+      // req.model 优先级高于 agentDef.model：主控派生时的模型覆盖参数（--model / spawn_agent model 字段）
+      // 仅当次生效，不写回模板文件。
+      const binding = resolveBinding(req.model ?? agentDef.model);
       // 子 agent 别名能力声明注入 provider：让 stepfun adapter 的 degrader 按别名 capabilities 决定剥不剥图片。
       // 仅对子代理专属 provider 注入（binding.provider !== deps.provider），避免污染父 agent 的 adapter。
       if (

@@ -38,6 +38,10 @@ const schema = z.object({
     .string()
     .optional()
     .describe('从指定 id 的子会话 fork 出新会话：全量复制历史后创建独立会话继续，与 resume 二选一。fork 后的新会话有自己独立的 session id，源会话不受影响。'),
+  model: z
+    .string()
+    .optional()
+    .describe('覆盖子 agent 的模型（别名或裸 id）。优先级高于 agent 模板定义的 model，仅当次派生生效。留空则用模板默认值。'),
 });
 
 /**
@@ -114,6 +118,7 @@ export const spawnAgentTool: ToolDef<z.infer<typeof schema>> = {
           description: input.description,
           resume: input.resume,
           fork: input.fork,
+          model: input.model,
         })
         .then((r) => ({
           output: r.sessionId !== undefined ? `${r.summary}\n（子会话 id：${r.sessionId}）` : r.summary,
@@ -156,7 +161,12 @@ export const spawnAgentTool: ToolDef<z.infer<typeof schema>> = {
  * 登记失败（并发上限）或上下文不支持后台任务时，退化为直接前台等待（信号原样透传）。
  */
 async function runForegroundSubagent(
-  input: { description?: string | undefined; resume?: string | undefined; fork?: string | undefined },
+  input: {
+    description?: string | undefined;
+    resume?: string | undefined;
+    fork?: string | undefined;
+    model?: string | undefined;
+  },
   ctx: ToolContext,
   subagentType: string,
   prompt: string,
@@ -171,6 +181,7 @@ async function runForegroundSubagent(
       description: input.description,
       resume: input.resume,
       fork: input.fork,
+      model: input.model,
     });
   }
 
@@ -192,6 +203,7 @@ async function runForegroundSubagent(
       description: input.description,
       resume: input.resume,
       fork: input.fork,
+      model: input.model,
     })
     .then((result) => ({
       result,
