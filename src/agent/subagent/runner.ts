@@ -162,18 +162,20 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): RunSubagentFn {
    * provider 构造失败（如该渠道缺 key）时退回父 provider，不让子 agent 直接死掉。
    */
   const resolveBinding = (alias: string | undefined): ResolvedBinding => {
+    // 'inherit' = 跟随父会话模型（共享 prompt cache）
+    const normalizedAlias = alias === 'inherit' ? undefined : alias;
     const fallback: ResolvedBinding = {
       provider: deps.provider,
-      model: alias,
+      model: normalizedAlias,
       capabilities: deps.capabilities,
       imageMaxEdgePx: deps.imageMaxEdgePx,
       imageBudgetBytes: deps.imageBudgetBytes,
       videoBudgetBytes: deps.videoBudgetBytes,
     };
-    if (alias === undefined || alias === '' || deps.config === undefined) return fallback;
+    if (normalizedAlias === undefined || normalizedAlias === '' || deps.config === undefined) return fallback;
 
-    const cached = providerCache.get(alias);
-    const resolved = resolveModelEntry(deps.config, alias);
+    const cached = providerCache.get(normalizedAlias);
+    const resolved = resolveModelEntry(deps.config, normalizedAlias);
     if (resolved === null) return fallback; // 不是别名 → 按真实模型 id 处理
     if (cached !== undefined) {
       return {
@@ -189,7 +191,7 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): RunSubagentFn {
     }
     try {
       const provider = createProvider(resolved);
-      providerCache.set(alias, provider);
+      providerCache.set(normalizedAlias, provider);
       return {
         provider,
         model: resolved.model,
@@ -504,6 +506,12 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): RunSubagentFn {
         }
       };
 
+      // 模型覆盖代价提示：切换模型导致 prompt cache 失效
+      const modelNotice =
+        req.model !== undefined && req.model !== '' && req.model !== (agentDef.model ?? '')
+          ? `\n\n[模型覆盖：模板默认 ${agentDef.model ?? '（未指定）'}，实际使用 ${req.model}。⚠️ 切换模型导致 prompt cache 失效，本次请求成本增加。]`
+          : '';
+
       await run();
       let summary = lastAssistantText(messages);
 
@@ -547,7 +555,7 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): RunSubagentFn {
       subSession.status = hadError ? 'error' : 'done';
       persist();
       progress({ kind: 'end', isError: hadError, summary, ...endStats() });
-      return { summary, isError: hadError, cause: hadError ? lastCause : undefined, sessionId };
+      return { summary: summary + modelNotice, isError: hadError, cause: hadError ? lastCause : undefined, sessionId };
     } catch (e) {
       // 未捕获异常（如 provider 层抛出）：同样写终态落盘，保住已有历史
       subSession.status = 'error';
