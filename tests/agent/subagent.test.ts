@@ -1402,7 +1402,7 @@ describe('subagentListing 角色清单', () => {
       description: `这是第${String(i)}个角色的说明文字用来占预算`,
     }));
     const out = subagentListing(roles, 400);
-    expect(out).toMatch(/另有 \d+ 个角色因篇幅省略/);
+    expect(out).toMatch(/另有 \d+ 个角色省略/);
     expect(out.length).toBeLessThanOrEqual(400);
   });
 });
