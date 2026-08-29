@@ -13,7 +13,6 @@ import {
   type TUI,
   visibleWidth,
 } from '@earendil-works/pi-tui';
-import { planAutoPair, isPairSurrounding } from './autoPair.js';
 import { initialNavState, type HistoryNavState } from '../session/inputHistory.js';
 
 /**
@@ -288,32 +287,8 @@ export class ChatEditor extends Editor {
       (this.tui as unknown as { scrollToBottom(): void }).scrollToBottom();
       return;
     }
-    // 自动括号配对：已移除。 pairing logic removed.
-    // 粘贴（多字符块）走 PasteBurst 分支已提前处理，不在下游触发配对。
-    if (data.length === 1 && data.charCodeAt(0) >= 32) {
-      const cursor = this.getCursor();
-      const lineText = this.getLines()[cursor.line] ?? '';
-      const charAtCursor = lineText.slice(cursor.col, cursor.col + 1);
-      const charBefore = cursor.col > 0 ? lineText.slice(cursor.col - 1, cursor.col) : '';
-      // 闭符 type-over（光标处已是该闭符 → 右移越过，不重复插入）
-      if (planAutoPair(data, charAtCursor).kind === 'skip-close') {
-        (this as unknown as { setCursorCol(col: number): void }).setCursorCol(cursor.col + 1);
-        return;
-      }
-      // 开符配对（光标前一字符是该开符 → 整对删除，模拟退格）
-      if (isPairSurrounding(charBefore, data)) {
-        (this as unknown as { setCursorCol(col: number): void }).setCursorCol(cursor.col - 1);
-        super.handleInput('\x7f'); // 删除开符
-        return;
-      }
-      // 普通配对插入
-      const pair = planAutoPair(data, charAtCursor);
-      if (pair.kind === 'insert-pair') {
-        this.insertTextAtCursor(pair.text);
-        (this as unknown as { setCursorCol(col: number): void }).setCursorCol(cursor.col + 1);
-        return;
-      }
-    }
+    // 自动括号配对已移除（2026-08-29）：键入 `(` 不再自动补 `)`。
+    // 粘贴路径由上方 PasteBurst 分支提前截流，两者互不影响。
     super.handleInput(data);
   }
 }
