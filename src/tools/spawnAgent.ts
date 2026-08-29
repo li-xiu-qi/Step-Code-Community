@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { SubagentResult } from '../agent/subagent/types.js';
+import { subagentParallelKind } from './subagentAccess.js';
 import { fail, ok, type ToolContext, type ToolDef } from './types.js';
 
 const schema = z.object({
@@ -86,8 +87,17 @@ export const spawnAgentTool: ToolDef<z.infer<typeof schema>> = {
     '如需带着历史上下文但独立推进新会话（源会话不受影响），用 fork=<id>（新建会话，历史全量复制）。\n' +
     '一次要并行几个独立子任务，在同一轮里发多个 spawn_agent（全为只读 explore 时并行执行）；带依赖的多阶段编排或大批量同构 fan-out 改用 dynamic_workflow 工具。',
   schema,
-  // 只读 explore 无本地副作用（可并行）；general 可写必须独占（自然串行）
-  access: (input) => ((input.subagent_type ?? 'general') === 'explore' ? { kind: 'none' } : { kind: 'all' }),
+  // 子 agent 的并行能力按模板 tools 声明推断：只读模板（无写工具）可并行，
+  // 其余（未声明 tools = 拥有全部工具，或声明了写工具）必须串行。
+  //
+  // 只读用 {kind:'none'} 而非 {kind:'read', path}：none 与任何 access 不冲突，
+  // 两个只读子 agent 天然可并行。若用 read 并填 cwd，pathOverlap 对相等路径
+  // 返回 true，同 cwd 的只读任务反而互相排斥——并行依旧不成立。
+  // 只读子 agent 已被模板 tools 限制为不可写，all 冲突无法触发，用 none 是安全的。
+  access: (input, ctx) =>
+    subagentParallelKind(ctx.cwd, input.subagent_type ?? 'general') === 'read'
+      ? { kind: 'none' }
+      : { kind: 'all' },
   async execute(input, ctx) {
     if (ctx.runSubagent === undefined) {
       return fail('当前上下文不支持派生子 agent（子 agent 内不能再派生）。请自己完成该任务。');

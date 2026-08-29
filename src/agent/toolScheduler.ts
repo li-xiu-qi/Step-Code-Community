@@ -163,6 +163,14 @@ export class ToolScheduler {
       this.states[i] = 'done';
       if (t.needsSubagentSlot === true) this.subagentSlots--;
       this.settled[i]!.resolve();
+      // 完成自驱放行：不依赖调用方 drain。调用方按数组顺序 waitSettled，
+      // 若卡在等一个长任务，排在它后面、本可并行的任务永远等不到 drain（死锁式串行）。
+      //
+      // 必须在 resolve() 之后：调用方收到 resolve 才 yield 本任务的 tool_end，
+      // drain 在 resolve 前跑会让「下一个 start」插到「本任务 end」之前，
+      // 破坏串行场景下 start→end 逐个交替的事件契约（runTurnParallel 有断言）。
+      // resolve 后 drain 既放行兄弟，又保住该交替顺序。
+      this.drain();
     })();
   }
 }
