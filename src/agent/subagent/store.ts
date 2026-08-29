@@ -240,7 +240,9 @@ export class SubagentStore {
     const tmp = `${file}.tmp`;
     writeFileSync(tmp, JSON.stringify(toWrite, null, 2), 'utf8');
     renameSync(tmp, file);
-    // 同步更新索引
+    // 同步更新索引。standby 必须进索引：list() 读的是索引而非快照，
+    // 漏写会让 archiveStaleStandby() 永远扫不到待命会话（meta.standby 恒 undefined），
+    // 整个 TTL 归档成为死代码——而它不会让任何测试变红。
     this.updateIndexEntry(session.cwd, {
       id: toWrite.id,
       cwd: toWrite.cwd,
@@ -253,6 +255,7 @@ export class SubagentStore {
       depth: toWrite.depth,
       agentType: toWrite.agentType,
       status: toWrite.status,
+      standby: toWrite.standby,
     });
   }
 

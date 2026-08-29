@@ -908,6 +908,12 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
   private openAgentsOverlay(): void {
     if (this.promptActive) return;
     const sessionId = this.session.id;
+    // 先归档超时的待命会话：否则 standby 子会话在列表里无限堆积，
+    // 用户看到的是一堆早就不能续聊的僵尸条目。
+    const archived = this.deps.subagentStore.archiveStaleStandby(this.deps.ctx.cwd);
+    if (archived.length > 0) {
+      this.push({ kind: 'note', text: `已归档 ${archived.length} 个超时待命的子 agent` });
+    }
     const overlay = new AgentsOverlay({
       getAgents: () => this.deps.subagentStore.list(this.deps.ctx.cwd).filter((m) => m.parentId === sessionId),
       onBrowse: (id) => {
@@ -939,6 +945,12 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
   private openHandoffPicker(): void {
     if (this.promptActive) return;
     const sessionId = this.session.id;
+    // 同一处归档：/agents 与 /handoff 是两个入口，都要在列会话前清一次超时待命，
+    // 否则从一个入口进去看不到另一个刚归档掉的。
+    const archived = this.deps.subagentStore.archiveStaleStandby(this.deps.ctx.cwd);
+    if (archived.length > 0) {
+      this.push({ kind: 'note', text: `已归档 ${archived.length} 个超时待命的子 agent` });
+    }
     const standby = this.deps.subagentStore
       .list(this.deps.ctx.cwd)
       .filter((m) => m.parentId === sessionId && m.standby === true);
