@@ -40,6 +40,7 @@ const STEP_CODE_BODY = `# step-code：自身能力地图
 **子 agent 与协作**
 - spawn_agent：派生子 agent（可带 resume / fork / model / skills 覆盖）
 - subagent_list / subagent_status / subagent_trace：列会话、看元信息、读消息正文
+- subagent_trace_export：把完整 trace 落盘（.jsonl 供脚本回读 + .md 供人读）。要留存全量历史做复盘、或 A/B 对比两个模型的产出时用它——subagent_trace 受 50 条上限约束（防上下文爆炸），导出不受限，截断会丢掉关键轮次
 - session_send / session_list / session_inbox：跨会话投递与收件
 - team_init / team_plan / team_spawn / team_send / team_inbox / team_status / team_merge / team_teardown：团队模式九件套（细节见内置 team skill）
 

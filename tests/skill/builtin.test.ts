@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { BUILTIN_SKILLS } from '../../src/skill/builtin/index.js';
 import { UPDATE_CONFIG_SKILL } from '../../src/skill/builtin/updateConfig.js';
+import { STEP_CODE_SKILL } from '../../src/skill/builtin/stepCode.js';
 import { buildSkillRegistry, renderSkillActivation, skillListing } from '../../src/skill/registry.js';
 
 let dir: string;
@@ -55,6 +56,15 @@ describe('builtin skill 注册', () => {
     expect(rendered).toContain('<step-skill-loaded name="update-config" source="builtin">');
     expect(rendered).toContain('变更协议');
     expect(rendered).toContain('step doctor config');
+  });
+
+  it('内置 stepCode skill 提到子 agent 管理四件套与 trace 导出', () => {
+    // 内置 skill 是主控了解自身能力的入口。漏提一个工具，主控就不知道它存在——
+    // 新增工具后必须同步这里，否则「实现了但没人用」。
+    expect(STEP_CODE_SKILL.content).toContain('subagent_list');
+    expect(STEP_CODE_SKILL.content).toContain('subagent_trace');
+    expect(STEP_CODE_SKILL.content).toContain('subagent_trace_export');
+    expect(STEP_CODE_SKILL.content).toContain('spawn_agent');
   });
 
   it('BUILTIN_SKILLS 清单即当前全部内置 skill', () => {
