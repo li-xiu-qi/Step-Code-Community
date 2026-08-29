@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import Anthropic from '@anthropic-ai/sdk';
 import { fail, ok, type ToolDef, type ToolResult } from './types.js';
 import type { SubagentDeleteResult } from '../agent/subagent/store.js';
 
@@ -95,6 +96,82 @@ export const subagentKillTool: ToolDef<z.infer<typeof killSchema>> = {
       case 'missing':
         return fail(`子 agent 会话 ${input.id} 不存在。用 subagent_list 确认 id。`);
     }
+  },
+};
+
+// ─── subagent_trace ─────────────────────────────────────────────────────────
+
+const traceSchema = z.object({
+  id: z.string().describe('要查看的子 agent 会话 id。从 subagent_list 获取。'),
+  limit: z
+    .number()
+    .int()
+    .positive()
+    .max(50)
+    .optional()
+    .describe('返回最近 N 条消息，默认 20，上限 50。防止上下文爆炸。'),
+  role: z
+    .enum(['user', 'assistant', 'tool'])
+    .optional()
+    .describe('只返回指定角色的消息。留空返回全部。'),
+});
+
+/** 提取消息文本内容（兼容 string 和 block array 两种形态）。 */
+function extractText(content: Anthropic.MessageParam['content']): string {
+  if (typeof content === 'string') return content;
+  const parts: string[] = [];
+  for (const block of content) {
+    if (block.type === 'text') parts.push(block.text);
+    else if (block.type === 'tool_use') {
+      const args = JSON.stringify(block.input);
+      const truncated = args.length > 200 ? args.slice(0, 200) + '...' : args;
+      parts.push(`[tool_use: ${block.name}(${truncated})]`);
+    } else if (block.type === 'tool_result') {
+      const resultContent = block.content;
+      let text: string;
+      if (typeof resultContent === 'string') text = resultContent;
+      else if (Array.isArray(resultContent)) {
+        text = resultContent
+          .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+          .map((b) => b.text)
+          .join('');
+      } else text = '';
+      const truncated = text.length > 300 ? text.slice(0, 300) + '...' : text;
+      parts.push(`[tool_result: ${truncated}]`);
+    }
+  }
+  return parts.join('\n');
+}
+
+export const subagentTraceTool: ToolDef<z.infer<typeof traceSchema>> = {
+  name: 'subagent_trace',
+  description:
+    '读取一个子 agent 会话的消息历史（正文），用于分析子 agent 的执行过程、调试行为、或提取关键信息。默认返回最近 20 条，可用 limit 调整。',
+  schema: traceSchema,
+  access: () => ({ kind: 'none' }),
+  async execute(input, ctx) {
+    if (ctx.subagentStore === undefined) return fail('当前上下文不支持子 agent 管理。');
+    const snap = ctx.subagentStore.loadSnapshot(ctx.cwd, input.id);
+    if (snap === null) return fail(`子 agent 会话 ${input.id} 不存在。用 subagent_list 确认 id。`);
+    const all = ctx.subagentStore.loadFull(ctx.cwd, input.id);
+    if (all.length === 0) return fail(`子 agent 会话 ${input.id} 没有消息记录。`);
+    let filtered = all;
+    if (input.role !== undefined) {
+      filtered = all.filter((m) => m.message.role === input.role);
+    }
+    const limit = input.limit ?? 20;
+    const shown = filtered.slice(-limit);
+    if (shown.length === 0) {
+      return ok(`子 agent 会话 ${input.id} 没有 ${input.role} 角色的消息。`);
+    }
+    const lines = shown.map((m, i) => {
+      const role = m.message.role;
+      const text = extractText(m.message.content).trim();
+      const preview = text.length > 500 ? text.slice(0, 500) + '...' : text;
+      return `[${i + 1}] ${role}: ${preview}`;
+    });
+    const header = `子 agent ${input.id}（${snap.agentType ?? '未知角色'}）消息历史，共 ${filtered.length} 条，显示最近 ${shown.length} 条：\n`;
+    return ok(header + lines.join('\n\n'));
   },
 };
 
