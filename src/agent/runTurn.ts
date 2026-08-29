@@ -695,7 +695,13 @@ export async function* runTurn(
   // 执行 + 回收：tool_start 在任务实际启动时发出（onStart），tool_end 按数组顺序随回收发出；
   // 串行场景（单工具或全部冲突）下事件仍是 start→end 逐个交替，与旧串行实现字节级一致。
   const toolResults: Anthropic.ToolResultBlockParam[] = [];
-  const pendingStarts: AgentEvent[] = [];
+  // start 事件带批次号：同一批 drain 连续启动的任务（并行）须连在一起产出，
+  // 跨批（串行等待）须等前一个 end。notice 不受约束，分队列。
+  // batchSeq 必须在 scheduler 构造前声明：onStart 闭包引用它，否则 TDZ 报错。
+  const pendingStarts: Array<{ index: number; batch: number; id: string; name: string; input: unknown }> = [];
+  const pendingNotices: AgentEvent[] = [];
+  let batchSeq = 0;
+  let inDrain = false;
   const scheduler = new ToolScheduler(
     prepared.map((p) => ({
       access: p.access,
@@ -726,10 +732,15 @@ export async function* runTurn(
       signal,
       onStart: (i) => {
         const p = prepared[i]!;
-        pendingStarts.push({ type: 'tool_start', id: p.tu.id, name: p.tu.name, input: p.tu.input });
+        // 批次归属区分两种 drain：
+        // emitBatch 内的 drain（inDrain=true）放行的任务归当前批次，同批连发体现并行；
+        // 自驱 drain（任务完成触发，inDrain=false）放行的任务归下一批，
+        // 由接下来的 emitBatch 认领，其 start 排在 end 之后，串行交替契约成立。
+        const b = inDrain ? batchSeq : batchSeq + 1;
+        pendingStarts.push({ index: i, batch: b, id: p.tu.id, name: p.tu.name, input: p.tu.input });
       },
       onRequeue: (_i, delayMs, requeued) => {
-        pendingStarts.push({
+        pendingNotices.push({
           type: 'notice',
           message: t('turn.subagentRequeue', {
             delay: Math.round(delayMs),
@@ -742,7 +753,24 @@ export async function* runTurn(
   );
 
   scheduler.start();
-  while (pendingStarts.length > 0) yield pendingStarts.shift()!;
+  // 产出规则：同一批（同一次 drain 连续启动）的 start 连在一起，体现并行；
+  // 跨批的必须等前一个 end，体现串行交替。自驱 drain 会在 waitSettled 返回前放行
+  // 后面的任务（我修的那个死锁），所以不能只按入队顺序吐。
+  /** 推进一批：执行 drain 并吐出该批放行的 start。自驱 drain 已在 onStart 时刻
+   *  用当前 batchSeq 打标记，故必须先 ++ 再 drain，新启动的任务才落进这批。 */
+  function* emitBatch(): Generator<AgentEvent> {
+    batchSeq++;
+    inDrain = true;
+    scheduler.drain();
+    inDrain = false;
+    while (pendingNotices.length > 0) yield pendingNotices.shift()!;
+    const b = batchSeq;
+    while (pendingStarts.length > 0 && pendingStarts[0]!.batch === b) {
+      const ev = pendingStarts.shift()!;
+      yield { type: 'tool_start', id: ev.id, name: ev.name, input: ev.input };
+    }
+  }
+  yield* emitBatch();
   for (let i = 0; i < prepared.length; i++) {
     const p = prepared[i]!;
     const state = await scheduler.waitSettled(i);
@@ -756,9 +784,15 @@ export async function* runTurn(
     const result = p.result!;
     yield { type: 'tool_end', id: p.tu.id, name: p.tu.name, result: result.content, isError: result.isError };
     toolResults.push(makeToolResult(p.tu.id, result));
-    // 完成放行：被本任务卡住的后续任务现在启动，其 tool_start 排在本 tool_end 之后
-    scheduler.drain();
-    while (pendingStarts.length > 0) yield pendingStarts.shift()!;
+    // 本任务结束放行下一批：它们的 start 排在本 end 之后，串行交替契约成立。
+    yield* emitBatch();
+  }
+  // 兜底：skipped 任务不产 end，残留的 start 全部吐出。
+  // 必须在 messages.push 之前：tool_result 进 history 前，同回合所有 tool_start 都要已产出。
+  while (pendingNotices.length > 0) yield pendingNotices.shift()!;
+  while (pendingStarts.length > 0) {
+    const ev = pendingStarts.shift()!;
+    yield { type: 'tool_start', id: ev.id, name: ev.name, input: ev.input };
   }
   messages.push(stored({ role: 'user', content: toolResults }, { kind: 'tool' }));
 
