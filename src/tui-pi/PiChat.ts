@@ -20,6 +20,7 @@ import { notifyDedupKeyFromOrigin, pendingDeliveredEvents } from '../agent/wirel
 
 import { buildSettleMessage, decideNotifyRoute } from '../agent/background/notify.js';
 import { startHeapWatch } from './heapWatch.js';
+import { logDebug } from '../utils/logger.js';
 import { emitTerminalNotification } from '../agent/background/terminal-notify.js';
 import { decide, planModeDenyReason, type PermissionMode } from '../agent/permission/mode.js';
 import { createSubagentRunner } from '../agent/subagent/runner.js';
@@ -993,20 +994,31 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
   }
 
   /**
-   * 把子 agent 进度写进最近一条运行中的 spawn_agent 条目。
+   * 把子 agent 进度写进属于它的那张 spawn_agent 卡片。
    *
-   * 只找「运行中」的那条：同一轮可能并行派多个子 agent，但 runner 的 onEvent 不带
-   * 工具调用 id（只有 session id），无法精确路由。取最近一条运行中的条目作近似——并行时
-   * 进度会挤在最后一条上（如实记在设计档案的差异清单里）。
+   * 按 ev.id（= tool_use id，runner 在 runTurn 的工具边界由 tu.id 注入）精确归属。
+   * 旧实现用 updateLastWhere 找「最后一个运行中的 spawn_agent」作近似：并行时所有
+   * 子 agent 的 token/耗时/工具数互相覆盖，只剩一张卡片在动，其余看起来像卡死。
+   * 未命中不静默丢弃——落到 updateLastWhere 兜底一次并记日志，避免 id 链路断了又退化成
+   * 「进度凭空消失」（两者症状不同，别用一个掩盖另一个）。
    */
   private applySubagentProgress(ev: SubagentProgressEvent): void {
     const patch = (
       apply: (it: Extract<DisplayItem, { kind: 'tool' }>) => Extract<DisplayItem, { kind: 'tool' }>,
     ): void => {
-      this.transcript.updateLastWhere(
-        (it) => it.kind === 'tool' && it.name === 'spawn_agent' && it.status === 'running',
+      const hit = this.transcript.updateById(
+        ev.id,
         (it) => apply(it as Extract<DisplayItem, { kind: 'tool' }>),
       );
+      if (!hit) {
+        // id 未命中：卡片可能已被折叠成摘要或尚在 forming。兜底到最后一个 running 卡片，
+        // 宁可将就归属也不要吞掉进度。记一条 debug，便于区分「归属错了」与「根本没进度」。
+        logDebug(`子 agent 进度未按 id 命中卡片（id=${ev.id}），已退化为就近归属`);
+        this.transcript.updateLastWhere(
+          (it) => it.kind === 'tool' && it.name === 'spawn_agent' && it.status === 'running',
+          (it) => apply(it as Extract<DisplayItem, { kind: 'tool' }>),
+        );
+      }
       this.tui.requestRender();
     };
     if (ev.kind === 'start') {
