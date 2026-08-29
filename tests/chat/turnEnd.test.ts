@@ -109,8 +109,15 @@ describe('planTurnEnd 回合收尾决策', () => {
 
   // ─────────────────────────────────────────────────────────────────
   // 双队列与通知批量（2026-08-29）：用户输入与系统注入拆成两个队列。
-  // 旧实现二者混在一个 queue 里，通知会挤占槽位（用户第 2 条要等 N 条通知走完），
-  // 且 Esc 取回队尾会取到通知。批量投递解决 N 条通知 = N 次模型调用的问题。
+  //
+  // 消费规则不同：用户输入逐条按序发（显式授权，合并会打乱语义与权限节奏），
+  // 通知批量一次发完（系统事实陈述，一次看完全部模型才能判断该读哪个输出）。
+  // 批量解决 N 条通知 = N 次模型调用的问题。
+  //
+  // 优先级：通知优先。它是用户上一条输入的产物、那条输入尚未闭合的部分，模型
+  // 处理新指令前必须先看到它。初版把用户队列排在前面，理由「显式授权不应被通知
+  // 挤占」——对消费规则成立，对优先级不成立：批量后通知只占 1 个回合，用户最多
+  // 等一个回合，不会饿死。
   // ─────────────────────────────────────────────────────────────────
 
   it('notifyQueue 非空时批量投递：submit-notify，notifyBatch 含全部通知', () => {
@@ -121,29 +128,48 @@ describe('planTurnEnd 回合收尾决策', () => {
     expect(plan.notifyBatch).toEqual(['通知1', '通知2', '通知3']);
   });
 
-  it('用户队列优先于通知：queue 非空时先发用户输入，通知留在队列', () => {
+  it('通知优先于用户输入：两者同存时先投通知，用户输入留队', () => {
     const plan = planTurnEnd(input({
       queue: ['用户消息'],
       notifyQueue: ['通知1', '通知2'],
     }));
-    expect(plan.action).toBe('submit-queue');
-    expect(plan.text).toBe('用户消息');
-    expect(plan.queueRemainder).toEqual([]);
-    expect(plan.notifyBatch).toEqual([]);
+    expect(plan.action).toBe('submit-notify');
+    expect(plan.text).toBeUndefined();
+    expect(plan.notifyBatch).toEqual(['通知1', '通知2']);
+    // 用户输入不能被吞掉：原样带回下一轮
+    expect(plan.queueRemainder).toEqual(['用户消息']);
   });
 
-  it('用户队列与通知队列同存时，用户队列先排空，通知最后批量投', () => {
-    // 第一轮：用户队列非空，发队首，通知不动
+  it('通知发完后用户输入才发：通知只占一个回合', () => {
+    // 第一轮：通知优先，用户输入留队
     const r1 = planTurnEnd(input({ queue: ['u1', 'u2'], notifyQueue: ['n1', 'n2'] }));
-    expect(r1).toMatchObject({ action: 'submit-queue', text: 'u1', queueRemainder: ['u2'] });
-    expect(r1.notifyBatch).toEqual([]);
-    // 第二轮：用户队列还有一条，继续发
-    const r2 = planTurnEnd(input({ queue: r1.queueRemainder, notifyQueue: ['n1', 'n2'] }));
-    expect(r2).toMatchObject({ action: 'submit-queue', text: 'u2', queueRemainder: [] });
-    // 第三轮：用户队列空了，通知一次性全部投出
-    const r3 = planTurnEnd(input({ queue: r2.queueRemainder, notifyQueue: ['n1', 'n2'] }));
-    expect(r3.action).toBe('submit-notify');
-    expect(r3.notifyBatch).toEqual(['n1', 'n2']);
+    expect(r1.action).toBe('submit-notify');
+    expect(r1.notifyBatch).toEqual(['n1', 'n2']);
+    expect(r1.queueRemainder).toEqual(['u1', 'u2']);
+    // 第二轮：通知已空，发用户输入队首
+    const r2 = planTurnEnd(input({ queue: r1.queueRemainder }));
+    expect(r2).toMatchObject({ action: 'submit-queue', text: 'u1', queueRemainder: ['u2'] });
+    const r3 = planTurnEnd(input({ queue: r2.queueRemainder }));
+    expect(r3).toMatchObject({ action: 'submit-queue', text: 'u2', queueRemainder: [] });
+  });
+
+  it('模型每轮都起后台任务时用户输入只被延迟一个回合，不会饿死', () => {
+    // 模拟自激场景：每轮结束都有新通知。用户输入排在第二回合之后发出，而非无限等待。
+    let queue = ['用户的话'];
+    let notify = ['n1'];
+    // 第一轮：通知优先
+    const r1 = planTurnEnd(input({ queue, notifyQueue: notify }));
+    expect(r1.action).toBe('submit-notify');
+    queue = r1.queueRemainder;
+    // 模型回应后又起任务 → 新通知（模拟 settle 追加）
+    notify = [...r1.notifyBatch, 'n2'];
+    // 第二轮：仍是通知优先，但批量后一次发完，用户输入仍在队里没丢
+    const r2 = planTurnEnd(input({ queue, notifyQueue: notify }));
+    expect(r2.action).toBe('submit-notify');
+    expect(r2.queueRemainder).toEqual(['用户的话']);
+    // 第三轮：这次没起新任务，用户输入终于发出
+    const r3 = planTurnEnd(input({ queue: r2.queueRemainder }));
+    expect(r3).toMatchObject({ action: 'submit-queue', text: '用户的话', queueRemainder: [] });
   });
 
   it('continuation 让位于通知：通知未投完前不发 goal 续接', () => {
@@ -154,13 +180,19 @@ describe('planTurnEnd 回合收尾决策', () => {
     }));
     expect(plan.action).toBe('submit-notify');
     expect(plan.text).toBeUndefined();
+    expect(plan.queueRemainder).toEqual([]);
     expect(plan.notifyBatch).toEqual(['通知1']);
   });
 
-  it('pending 弹层时不投通知：通知原样留队', () => {
-    const plan = planTurnEnd(input({ notifyQueue: ['通知1', '通知2'], hasPendingPrompt: true }));
+  it('pending 弹层时不投通知：通知与用户输入都原样留队', () => {
+    const plan = planTurnEnd(input({
+      queue: ['用户消息'],
+      notifyQueue: ['通知1', '通知2'],
+      hasPendingPrompt: true,
+    }));
     expect(plan.action).toBe('idle');
     expect(plan.notifyBatch).toEqual([]);
+    expect(plan.queueRemainder).toEqual(['用户消息']);
   });
 
   // ─────────────────────────────────────────────────────────────────

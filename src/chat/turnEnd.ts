@@ -14,9 +14,15 @@
  * 等弹层关闭后的下一收尾点。
  *
  * **双队列与通知批量（2026-08-29）**：用户输入与系统注入（后台任务通知）拆成两个队列，
- * 因为两者优先级不同——用户每发一条是一次显式授权，必须逐条按序发出，合并会打乱语义与
- * 权限节奏；通知是系统单方面的事实陈述，一次看完全部模型才能判断准。混在一个队列时
- * 通知会挤占槽位（用户第 2 条要等 N 条通知走完），且 Esc 取回队尾会取到通知。
+ * 因为两者的**消费规则**不同——用户输入是显式授权，必须逐条按序发出，合并会打乱语义与
+ * 权限节奏；通知是系统单方面的事实陈述，一次看完全部模型才能判断该 task_output 读哪个。
+ *
+ * **优先级：通知优先于用户输入（同日二次修正）**。通知是用户上一条输入的产物，是那条
+ * 输入尚未闭合的部分——模型在处理新指令前必须先看到它，否则会基于过时信息判断，或重复
+ * 起一个已在跑的任务。初版把用户队列排在前面，理由「用户输入是显式授权不应被通知挤占」，
+ * 该理由对消费规则成立、对优先级不成立：批量投递后 N 条通知只占 1 个回合，用户最多等
+ * 一个回合；而模型真的每轮都在起后台任务时，说明它的工作尚未完成，用户输入晚一点发
+ * 本来就是合理的。
  *
  * 通知走批量：notifyQueue 非空时一次性全部提交，避免 N 条通知 = N 次模型调用
  * （旧实现实测：3 天会话 resume 后补投 98 条，队列滚雪球且每个回合都要起一次模型调用）。
@@ -59,13 +65,15 @@ export function planTurnEnd(input: TurnEndInput): TurnEndPlan {
   if (hasPendingPrompt) {
     return { action: 'idle', queueRemainder: [...queue], notifyBatch: [] };
   }
-  // 用户队列优先：真人输入是显式授权，逐条按序发出，且不能被通知挤占
+  // 通知优先：它是用户上一条输入的产物，是那条输入尚未闭合的部分。模型在处理新指令前
+  // 必须先看到它，否则会基于过时信息判断，或重复起一个已在跑的任务。批量投递让它只占
+  // 一个回合，用户输入最多等一个回合。
+  if (notifyQueue.length > 0) {
+    return { action: 'submit-notify', queueRemainder: [...queue], notifyBatch: [...notifyQueue] };
+  }
+  // 通知发完才发用户输入：真人输入是显式授权，逐条按序发出，只是不能让位于更早的未闭合信息。
   if (queue.length > 0) {
     return { action: 'submit-queue', text: queue[0], queueRemainder: queue.slice(1), notifyBatch: [] };
-  }
-  // 用户队列空才批量投通知：一次看完全部终态，模型才能判断该 task_output 读哪个
-  if (notifyQueue.length > 0) {
-    return { action: 'submit-notify', queueRemainder: [], notifyBatch: [...notifyQueue] };
   }
   // 队列空才续接：goal 续接与 Stop hook 兜底派发动作一致
   if (continuation !== null) {
