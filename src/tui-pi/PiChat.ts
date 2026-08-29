@@ -175,6 +175,22 @@ export interface PiChatExit {
 
 const HINTS = 'Enter 发送 · Esc 中断 · Ctrl+C 退出 · /help 命令';
 
+/**
+ * 判定普通用户输入该发给谁：当前对话目标（activeSubagent）非空且不是 `!` bash 时，
+ * 输入旁路主 agent 直接 resume 那个子 agent 会话。
+ *
+ * 导出为纯函数供测试直接调用：路由正确性是这个特性的核心，而 PiChat 是 TUI 类，
+ * 构造它才能测路由的代价太高，判定逻辑本身又与状态机无关。
+ *
+ * `!` 前缀一律本地执行——亲手敲下的 shell 命令这个行为本身就是授权，把它转给子 agent
+ * 会改变语义（子 agent 跑的命令不再是用户直接授权的）。
+ */
+export function routesToActiveSubagent(activeSubagent: string | null, text: string): boolean {
+  if (activeSubagent === null) return false;
+  if (text.startsWith('!') && text.length > 1) return false;
+  return true;
+}
+
 /** /compact 保留的最近消息条数（与 fullCompact 的 keepRecent 默认值一致，两处必须同值）。 */
 const COMPACT_KEEP_RECENT = 6;
 
@@ -322,6 +338,16 @@ export class PiChat {
    * 每次 /handoff <id> 更新为 id，/handoff back 弹栈后更新为弹出的值。
    */
   private handoffCurrent: string | null = null;
+  /**
+   * 当前对话目标：非 null 时，用户的普通输入不再发给主 agent，直接 resume 这个子 agent 会话。
+   *
+   * 与 handoffCurrent 的分工：后者记录「最近一次 handoff 去了哪」，用于 /handoff back 弹栈；
+   * 本字段决定「用户下一条消息发给谁」。两者在 /handoff 时同时设为 id，在 /handoff back/main 时
+   * 同时清空——绝大多数情况同值，但只有 activeSubagent 真正影响消息路由。
+   *
+   * 不新建会话模型、不改 spawn/resume/fork 原语：这只是 PiChat 输入路由层的一个旁路开关。
+   */
+  private activeSubagent: string | null = null;
 
   private busy = false;
   /** 运行期可变（/model 切换会重建）：provider 与它绑定的模型 id、别名、上下文窗口。 */
@@ -1520,7 +1546,54 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       await this.runBangCommand(text.slice(1).trim());
       return;
     }
+    // 当前对话目标是子 agent 时，普通输入旁路主 agent 直接 resume 那个子会话。
+    // 切过去就留在那里，不必每次敲 /handoff——这是与一次性 handoff 的核心区别。
+    if (this.routesToActiveSubagent(text)) {
+      await this.runActiveSubagentTurn(text);
+      return;
+    }
     await this.runTurn(text);
+  }
+
+  /**
+   * 当前对话目标是否为子 agent（普通输入应旁路主 agent）。
+   */
+  private routesToActiveSubagent(text: string): boolean {
+    return routesToActiveSubagent(this.activeSubagent, text);
+  }
+
+  /**
+   * 把用户输入直接投给当前激活的子 agent 会话（绕过主 agent）。
+   *
+   * 与 /handoff 走同一条 resume 原语，区别只在触发方式：/handoff 是一次性调用（跑完即回主会话），
+   * 本方法由普通输入触发且不清 activeSubagent，所以可以连续对话。
+   */
+  private async runActiveSubagentTurn(text: string): Promise<void> {
+    const id = this.activeSubagent;
+    if (id === null) return;
+    if (this.busy) {
+      this.updateQueue([...this.queue, text]);
+      this.push({ kind: 'note', text: `已排队（${this.queue.length} 条），回合结束后自动发送` });
+      return;
+    }
+    if (this.currentRunSubagent === undefined) {
+      this.push({ kind: 'error', text: t('cmd.handoff.busy') });
+      return;
+    }
+    this.transcript.push({ kind: 'user', text: `→ ${id}：${text}` });
+    this.tui.requestRender();
+    try {
+      const result = await this.currentRunSubagent({
+        subagentType: 'general',
+        description: `talk to ${id}`,
+        prompt: text,
+        depth: 0,
+        resume: id,
+      });
+      this.push({ kind: 'note', text: result.summary, boundary: true });
+    } catch (e) {
+      this.push({ kind: 'error', text: `与子 agent ${id} 对话失败：${(e as Error).message}` });
+    }
   }
 
   /**
@@ -1972,15 +2045,35 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
    * runSubagent 实例存在 currentRunSubagent 字段里，turn 期间有效。
    *
    * 返回栈跟踪的是「用户声明过的 handoff 意图」，不是真实的模式切换——
-   * 每次 /handoff 都是一次性 resume 调用，TUI 的会话对象始终是主会话。
+   * TUI 的会话对象始终是主会话，handoff 只是从它发起的 resume 调用。
    * 栈的意义是让 /handoff back 能回到「上次所在的会话」。
+   *
+   * 与「当前对话目标」（activeSubagent）的关系：/handoff <id> 同时压栈并激活该子 agent，
+   * 于是用户的普通输入会直接续聊它；/handoff main 只解除激活回主会话，不动栈；
+   * /handoff back 先解除激活，再弹栈 resume 到上一个 handoff 目标。
    */
   private async runHandoff(args: string): Promise<void> {
     const parts = args.split(/\s+/).filter((x) => x !== '');
     const id = parts[0] ?? '';
-    // /handoff back：弹栈并 resume 上一次的来源会话。
+    // /handoff main：解除激活，用户后续输入回到主 agent。不动返回栈——
+    // 栈记录的是「去过哪」，main 只回答「现在跟谁说话」，两者是不同的问题。
+    if (id === 'main') {
+      if (this.activeSubagent === null) {
+        this.push({ kind: 'note', text: '当前就在主会话，无需返回' });
+        return;
+      }
+      const prev = this.activeSubagent;
+      this.activeSubagent = null;
+      this.handoffCurrent = null;
+      this.syncSubagentTargetBadge();
+      this.push({ kind: 'note', text: `▶ 已离开子 agent ${prev}，后续输入发回主会话` });
+      return;
+    }
+    // /handoff back：先离开当前子 agent，再弹栈 resume 上一次的来源会话。
     // 栈空说明从未 handoff 过，当前就在主会话，无栈可弹。
     if (id === 'back') {
+      this.activeSubagent = null;
+      this.syncSubagentTargetBadge();
       const prev = this.handoffStack.pop();
       if (prev === undefined) {
         this.push({ kind: 'note', text: '从未 handoff 过，当前就在主会话（栈空）' });
@@ -1997,6 +2090,9 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
         return;
       }
       this.handoffCurrent = prev;
+      // 弹栈目标是另一个子 agent 时重新激活它，用户的普通输入继续走它
+      this.activeSubagent = prev;
+      this.syncSubagentTargetBadge();
       this.push({ kind: 'note', text: `▶ handoff back → ${prev}` });
       try {
         const result = await this.currentRunSubagent({
@@ -2013,7 +2109,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       return;
     }
     if (id === '') {
-      this.push({ kind: 'note', text: '用法：/handoff <子agent-id> [追加指令] · /handoff back（返回上层）\n示例：/handoff sub-01 继续写第三部分' });
+      this.push({ kind: 'note', text: '用法：/handoff <子agent-id> [追加指令] · /handoff back（返回上一层） · /handoff main（回主会话）\n示例：/handoff sub-01 继续写第三部分' });
       return;
     }
     if (this.currentRunSubagent === undefined) {
@@ -2025,6 +2121,10 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     // 把当前所在会话压栈作为返回点（null = 主会话，压空串标记）
     this.handoffStack.push(this.handoffCurrent ?? '');
     this.handoffCurrent = id;
+    // 激活该子 agent：此后用户的普通输入直接 resume 它，不再过主 agent。
+    // 要退出用 /handoff back|main。
+    this.activeSubagent = id;
+    this.syncSubagentTargetBadge();
     this.push({ kind: 'note', text: `▶ handoff → ${id}：${prompt}` });
     try {
       const result = await this.currentRunSubagent({
@@ -2038,6 +2138,18 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     } catch (e) {
       this.push({ kind: 'error', text: `handoff 失败：${(e as Error).message}` });
     }
+  }
+
+  /**
+   * 把当前对话目标同步到底栏徽标。
+   *
+   * 未激活时传 undefined 而不是 null：StatusState 里 subagentTarget 是可选字段，
+   * undefined 表示「不显示徽标」，与传 null 在渲染层同效但语义更准。
+   */
+  private syncSubagentTargetBadge(): void {
+    this.status.setState({
+      subagentTarget: this.activeSubagent === null ? undefined : this.activeSubagent,
+    });
   }
 
   // ---------------------------------------------------------------- 渠道 / 配置重载 / 对话回退

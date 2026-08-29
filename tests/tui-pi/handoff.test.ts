@@ -63,10 +63,29 @@ describe('/handoff back 返回栈语义', () => {
     expect(back).toContain('this.handoffCurrent = null');
   });
 
-  it('/handoff <id> 压栈时用 handoffCurrent 作返回点', () => {
+  it('/handoff <id> 压栈时用 handoffCurrent 作返回点，并激活该子会话', () => {
     const push = body.slice(body.indexOf('// 把当前所在会话压栈'));
-    expect(push).toContain('this.handoffStack.push(this.handoffCurrent') ;
+    expect(push).toContain('this.handoffStack.push(this.handoffCurrent');
     expect(push).toContain('this.handoffCurrent = id');
+    // 激活是「用户后续输入走子 agent」的前提，缺了它就退化成一次性 handoff
+    expect(push).toContain('this.activeSubagent = id');
+  });
+
+  it('/handoff main 解除激活但不动返回栈', () => {
+    const body = runHandoffBody();
+    expect(body).toContain("id === 'main'");
+    expect(body).toContain('this.activeSubagent = null');
+    expect(body).toContain('this.syncSubagentTargetBadge()');
+    // main 只管「现在跟谁说话」，栈记录「去过哪」——清激活时不能弹栈
+    const mainBranch = body.slice(body.indexOf("id === 'main'"), body.indexOf("id === 'back'"));
+    expect(mainBranch).not.toContain('this.handoffStack.pop()');
+  });
+
+  it('/handoff back 先解除激活再弹栈', () => {
+    const body = runHandoffBody();
+    const backBranch = body.slice(body.indexOf("id === 'back'"), body.indexOf("id === ''"));
+    expect(backBranch).toContain('this.activeSubagent = null');
+    expect(backBranch).toContain('this.handoffStack.pop()');
   });
 
   it('handoff 到子会话用 resume 而非新建', () => {

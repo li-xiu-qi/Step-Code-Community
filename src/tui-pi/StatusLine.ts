@@ -92,6 +92,12 @@ export interface StatusState {
   usedTokens: number;
   maxContextSize: number;
   hints: string;
+  /**
+   * 当前对话目标（用户正在直接对话的子 agent id）。非空时 hints 追加目标提示，
+   * 让用户知道 Enter 是发给子 agent 而不是主会话——否则切过去后输入悄悄改了去向，
+   * 是最难自查的一类交互错误。
+   */
+  subagentTarget?: string;
   backgroundCount: number;
   queueLen: number;
   /**
@@ -144,6 +150,9 @@ export class StatusLine implements Component {
       badges.push(`${c.dim('goal ')}${goalDot(g.status)}${c.dim(` ${formatElapsed(g.elapsedMs)} · ${turns}`)}`);
     }
     if (s.teamActive === true) badges.push(c.accent('team'));
+    // 当前对话目标：徽标里显示 id，用户一眼知道 Enter 发给谁。
+    // 与 goal/team 同级常驻——切过去后输入悄悄改了去向，是最难自查的一类交互错误。
+    if (s.subagentTarget !== undefined) badges.push(c.accent(`→ ${s.subagentTarget}`));
     const left = badges.join(c.dim('  '));
     const line1 = left;
 
