@@ -57,7 +57,7 @@ import type { ChatProvider } from '../provider/types.js';
 import { basename } from 'node:path';
 import { resolveCompactionBinding, type CompactionBinding } from '../provider/compaction.js';
 import { exportDebugBundle } from '../session/debugBundle.js';
-import { deriveTitle, type SessionData, type SessionStore } from '../session/store.js';
+import { deriveTitle, type SessionData, type SessionMeta, type SessionStore } from '../session/store.js';
 import { SessionQueueStore } from '../agent/sessionQueue/store.js';
 import { canOverwriteTitle, generateSessionTitle } from '../session/title.js';
 import { TerminalTitleWriter } from '../chat/terminalTitle.js';
@@ -103,7 +103,7 @@ import { computeCtrlSSteer } from './steer.js';
 import { ChatAutocompleteProvider } from './completion.js';
 import { clipboardToolHint, readClipboardImage } from '../chat/clipboardImage.js';
 import { countHistoryImages, extractImageContent, ImageAttachmentStore } from '../chat/imageAttachment.js';
-import { askLine, modelItems, modelTabs, showPicker, sessionItems, thinkItems, type PickerOverlay } from './pickers.js';
+import { askLine, modelItems, modelTabs, showPicker, agentItems, sessionItems, thinkItems, type PickerOverlay } from './pickers.js';
 import { StreamBuffer } from '../chat/streamBuffer.js';
 import { appendText, settleThinking } from '../chat/streamReducer.js';
 import { generateContextReport } from '../chat/contextReport.js';
@@ -117,7 +117,7 @@ import { ActivityLine, StatusLine } from './StatusLine.js';
 import { Transcript } from './Transcript.js';
 import { ChromePanels } from './ChromePanels.js';
 import { TasksOverlay } from './TasksOverlay.js';
-import { AgentsOverlay } from './AgentsOverlay.js';
+import { sortAgents, AgentsOverlay } from './AgentsOverlay.js';
 import { openProviderManager, runProviderWizard } from './ProviderManager.js';
 import { allTodosDone } from '../chat/chromePanels.js';
 import { ItemBlock, summarizeInput } from './blocks.js';
@@ -922,26 +922,32 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     if (archived.length > 0) {
       this.push({ kind: 'note', text: `已归档 ${archived.length} 个超时待命的子 agent` });
     }
-    const overlay = new AgentsOverlay({
-      getAgents: () => this.deps.subagentStore.list(this.deps.ctx.cwd).filter((m) => m.parentId === sessionId),
-      onBrowse: (id) => {
-        handle.hide();
-        this.overlayNeedsTick = false;
-        this.tui.setFocus(this.editor);
-        this.browseSubagentSession(id);
+    // 数据每帧现取（运行中子 agent 靠 runner 每轮 saveSnapshot 刷新，延迟 ≤ 1 轮）。
+    // 走 showInlinePicker 而非自绘浮层：与 /resume 同一套交互（内联挂载、输入过滤、
+    // 底部锚定）。浮层在转录区超长时靠屏幕绝对行定位，会飘到边缘并露出历史残边。
+    const agents = (): readonly SessionMeta[] =>
+      sortAgents(this.deps.subagentStore.list(this.deps.ctx.cwd).filter((m) => m.parentId === sessionId));
+    const byId = new Map(this.deps.subagentStore.list(this.deps.ctx.cwd).map((m) => [m.id, m]));
+    void this.showInlinePicker({
+      title: `子 agent（${agents().length} 个）`,
+      items: agentItems(agents()),
+      hint: '↑↓ 选择 · Enter 浏览 · 输入过滤 · Esc 关闭',
+      onSelectionChange: (item, overlay) => {
+        if (item === null) {
+          overlay.setSubtitle(undefined);
+          return;
+        }
+        // 详情行只补列表行放不下的两项：id（接管/fork 要敲）与归属（决定 Enter 后能否直连）。
+        // 角色/状态/消息数已在列表行，重复一遍只会让这行超过屏宽被截。
+        const a = byId.get(item.value);
+        if (a === undefined) return;
+        const owner = a.owner === 'user' ? c.ok('可接管') : c.dim('只读');
+        overlay.setSubtitle(`${c.dim(`id: ${a.id}`)}  ·  ${owner}`);
       },
-      requestRender: () => this.tui.requestRender(),
-      onClose: () => {
-        handle.hide();
-        this.overlayNeedsTick = false;
-        this.tui.setFocus(this.editor);
-        this.tui.requestRender();
-      },
+    }).then((picked) => {
+      if (picked === null) return;
+      this.browseSubagentSession(picked);
     });
-    const handle = this.tui.showOverlay(overlay, { width: '90%', maxHeight: '80%', anchor: 'center' });
-    handle.focus();
-    this.overlayNeedsTick = true;
-    this.tui.requestRender();
   }
 
   /**
