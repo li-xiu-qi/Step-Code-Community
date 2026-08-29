@@ -311,6 +311,17 @@ export class PiChat {
    * turn 结束后置 undefined。/handoff 只在非 busy 时可用，busy 时提示等待。
    */
   private currentRunSubagent: RunSubagentFn | undefined;
+  /**
+   * handoff 返回栈：每次 /handoff 到新的子会话前，把「当前所在」压栈。
+   * /handoff back 弹栈并 resume 那个会话。
+   * 与 subagentBrowsing 的区别：那是只读回看，这里是真切换对话对象。
+   */
+  private readonly handoffStack: string[] = [];
+  /**
+   * 用户当前所在的会话 id（handoff 意图的落点）。null = 主会话。
+   * 每次 /handoff <id> 更新为 id，/handoff back 弹栈后更新为弹出的值。
+   */
+  private handoffCurrent: string | null = null;
 
   private busy = false;
   /** 运行期可变（/model 切换会重建）：provider 与它绑定的模型 id、别名、上下文窗口。 */
@@ -1956,15 +1967,53 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
   }
 
   /**
-   * /handoff <id> [instruction]：直接 resume 一个子 agent 会话。
-   * 不等主 agent 响应，比 /handoff back 更可靠（不需要 spawn_agent 工具）。
+   * /handoff <id> [instruction] 与 /handoff back：直接 resume 一个子 agent 会话。
+   * 不等主 agent 响应，比让主 agent 代调 resume 更可靠（不污染主 agent 上下文）。
    * runSubagent 实例存在 currentRunSubagent 字段里，turn 期间有效。
+   *
+   * 返回栈跟踪的是「用户声明过的 handoff 意图」，不是真实的模式切换——
+   * 每次 /handoff 都是一次性 resume 调用，TUI 的会话对象始终是主会话。
+   * 栈的意义是让 /handoff back 能回到「上次所在的会话」。
    */
   private async runHandoff(args: string): Promise<void> {
     const parts = args.split(/\s+/).filter((x) => x !== '');
     const id = parts[0] ?? '';
+    // /handoff back：弹栈并 resume 上一次的来源会话。
+    // 栈空说明从未 handoff 过，当前就在主会话，无栈可弹。
+    if (id === 'back') {
+      const prev = this.handoffStack.pop();
+      if (prev === undefined) {
+        this.push({ kind: 'note', text: '从未 handoff 过，当前就在主会话（栈空）' });
+        return;
+      }
+      if (prev === '') {
+        // 栈底是主会话标记：TUI 本来就在主会话上，不需要 resume
+        this.handoffCurrent = null;
+        this.push({ kind: 'note', text: '▶ 已返回主会话' });
+        return;
+      }
+      if (this.currentRunSubagent === undefined) {
+        this.push({ kind: 'error', text: t('cmd.handoff.busy') });
+        return;
+      }
+      this.handoffCurrent = prev;
+      this.push({ kind: 'note', text: `▶ handoff back → ${prev}` });
+      try {
+        const result = await this.currentRunSubagent({
+          subagentType: 'general',
+          description: `handoff back to ${prev}`,
+          prompt: '继续',
+          depth: 0,
+          resume: prev,
+        });
+        this.push({ kind: 'note', text: result.summary, boundary: true });
+      } catch (e) {
+        this.push({ kind: 'error', text: `handoff back 失败：${(e as Error).message}` });
+      }
+      return;
+    }
     if (id === '') {
-      this.push({ kind: 'note', text: '用法：/handoff <子agent-id> [追加指令]\n示例：/handoff sub-01 继续写第三部分' });
+      this.push({ kind: 'note', text: '用法：/handoff <子agent-id> [追加指令] · /handoff back（返回上层）\n示例：/handoff sub-01 继续写第三部分' });
       return;
     }
     if (this.currentRunSubagent === undefined) {
@@ -1973,6 +2022,9 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     }
     const instruction = parts.slice(1).join(' ');
     const prompt = instruction === '' ? '继续' : instruction;
+    // 把当前所在会话压栈作为返回点（null = 主会话，压空串标记）
+    this.handoffStack.push(this.handoffCurrent ?? '');
+    this.handoffCurrent = id;
     this.push({ kind: 'note', text: `▶ handoff → ${id}：${prompt}` });
     try {
       const result = await this.currentRunSubagent({
