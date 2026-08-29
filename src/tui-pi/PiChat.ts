@@ -23,6 +23,7 @@ import { startHeapWatch } from './heapWatch.js';
 import { emitTerminalNotification } from '../agent/background/terminal-notify.js';
 import { decide, planModeDenyReason, type PermissionMode } from '../agent/permission/mode.js';
 import { createSubagentRunner } from '../agent/subagent/runner.js';
+import type { RunSubagentFn } from '../agent/subagent/types.js';
 import type { SubagentStore } from '../agent/subagent/store.js';
 import type { AgentDefinition } from '../agent/subagent/types.js';
 import { BackgroundManager, type BackgroundTask } from '../agent/background/manager.js';
@@ -305,6 +306,11 @@ export class PiChat {
   private readonly subagentCounter = { spawned: 0 };
   /** 子 agent 浏览快照：只读查看子会话历史时保存原 transcript，Esc 恢复。null = 不在浏览态。 */
   private subagentBrowsing: { saved: DisplayItem[] } | null = null;
+  /**
+   * 当前 turn 的 runSubagent 实例（/handoff 用）。每次 runTurn 开头刷新，
+   * turn 结束后置 undefined。/handoff 只在非 busy 时可用，busy 时提示等待。
+   */
+  private currentRunSubagent: RunSubagentFn | undefined;
 
   private busy = false;
   /** 运行期可变（/model 切换会重建）：provider 与它绑定的模型 id、别名、上下文窗口。 */
@@ -1752,6 +1758,10 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
         await this.runTeam(args);
         return;
 
+      case 'handoff':
+        await this.runHandoff(args);
+        return;
+
       default: {
         // plugin 命令：模板里的 $ARGUMENTS 展开后当作用户消息静默提交（同 /skill 激活路径）
         const cmd = this.pluginCommandMap.get(name);
@@ -1942,6 +1952,39 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       this.push({ kind: 'note', text: '用法：/team init [--dir 路径] [--repo 路径] [--base 分支] · /team status · /team exit · /team teardown [force]' });
     } catch (e) {
       this.push({ kind: 'error', text: (e as Error).message });
+    }
+  }
+
+  /**
+   * /handoff <id> [instruction]：直接 resume 一个子 agent 会话。
+   * 不等主 agent 响应，比 /handoff back 更可靠（不需要 spawn_agent 工具）。
+   * runSubagent 实例存在 currentRunSubagent 字段里，turn 期间有效。
+   */
+  private async runHandoff(args: string): Promise<void> {
+    const parts = args.split(/\s+/).filter((x) => x !== '');
+    const id = parts[0] ?? '';
+    if (id === '') {
+      this.push({ kind: 'note', text: '用法：/handoff <子agent-id> [追加指令]\n示例：/handoff sub-01 继续写第三部分' });
+      return;
+    }
+    if (this.currentRunSubagent === undefined) {
+      this.push({ kind: 'error', text: t('cmd.handoff.busy') });
+      return;
+    }
+    const instruction = parts.slice(1).join(' ');
+    const prompt = instruction === '' ? '继续' : instruction;
+    this.push({ kind: 'note', text: `▶ handoff → ${id}：${prompt}` });
+    try {
+      const result = await this.currentRunSubagent({
+        subagentType: 'general',
+        description: `handoff to ${id}`,
+        prompt,
+        depth: 0,
+        resume: id,
+      });
+      this.push({ kind: 'note', text: result.summary, boundary: true });
+    } catch (e) {
+      this.push({ kind: 'error', text: `handoff 失败：${(e as Error).message}` });
     }
   }
 
@@ -3847,6 +3890,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
         this.applySubagentProgress(ev);
       },
     });
+    this.currentRunSubagent = runSubagent;
 
     // system 逐轮组装（composeSystem 定段序：低频内容在前，保住 prompt 缓存前缀）。
     // memory 段仅开启时注入，每轮现扫目录——条目数小、开销可忽略，换来的是 agent 自己
@@ -3929,6 +3973,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       this.applyEvent({ type: 'error', message: (e as Error).message });
     } finally {
       this.streamBuffer.drain();
+      this.currentRunSubagent = undefined;
       // 收尾兜底：残留的思考必须在本回合内落块。
       //
       // drain() 只是把 StreamBuffer 的缓冲吐给 applyEvent，而 thinking_delta 在 applyEvent
