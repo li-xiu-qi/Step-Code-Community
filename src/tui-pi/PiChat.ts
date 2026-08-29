@@ -58,6 +58,7 @@ import { basename } from 'node:path';
 import { resolveCompactionBinding, type CompactionBinding } from '../provider/compaction.js';
 import { exportDebugBundle } from '../session/debugBundle.js';
 import { deriveTitle, type SessionData, type SessionMeta, type SessionStore } from '../session/store.js';
+import { resolveSubmitText } from '../chat/submitText.js';
 import { SessionQueueStore } from '../agent/sessionQueue/store.js';
 import { canOverwriteTitle, generateSessionTitle } from '../session/title.js';
 import { TerminalTitleWriter } from '../chat/terminalTitle.js';
@@ -1603,8 +1604,9 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
   private async onSubmit(raw: string): Promise<void> {
     // 粘贴占位符先还原为原文：pi-tui Editor 把大段粘贴折叠成标记，getText 拿到的是折叠形态，
     // 直接发出去模型只会看到「[pasted 120 lines]」这种标记而不是内容。
-    const expanded = this.editor.getExpandedText();
-    let text = (expanded === '' ? raw : expanded).trim();
+    // 逻辑在 chat/submitText.ts，可单测（内联时变异测试测不到，曾把 getExpandedText 改成
+    // getText 而测试全绿）。
+    let text = resolveSubmitText(this.editor, raw);
     this.editor.setText('');
     if (text === '') return;
     // 浏览子 agent 历史时输入了新内容：先退出浏览恢复主会话视图，再正常发送。
