@@ -103,6 +103,25 @@ describe('/handoff back 返回栈语义', () => {
 });
 
 describe('/handoff 与 /agents 的边界', () => {
+  it('无参 /handoff 开选择器而不是要求用户手抄 id', () => {
+    const body = runHandoffBody();
+    // 让用户复制 sub-01a7f3 去敲比直接选更麻烦——空参必须给选择器
+    expect(body).toContain('this.openHandoffPicker()');
+  });
+
+  it('选择器只列待命（standby）会话，一次性跑完即归档的没有续聊价值', () => {
+    const src = piChatSrc;
+    const picker = src.slice(src.indexOf('private openHandoffPicker'), src.indexOf('private openHandoffPicker') + 1200);
+    expect(picker).toContain('m.standby === true');
+  });
+
+  it('选择器里 Enter 直接激活，不必再敲一次 /handoff <id>', () => {
+    const src = piChatSrc;
+    const picker = src.slice(src.indexOf('private openHandoffPicker'), src.indexOf('private openHandoffPicker') + 1800);
+    expect(picker).toContain('onHandoff:');
+    expect(picker).toContain('this.runHandoff(id)');
+  });
+
   it('handoff 走 runSubagent，不走 browseSubagentSession（不是只读浏览）', () => {
     const body = runHandoffBody();
     expect(body).not.toContain('browseSubagentSession');

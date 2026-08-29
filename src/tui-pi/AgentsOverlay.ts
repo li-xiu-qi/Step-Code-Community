@@ -51,17 +51,26 @@ export class AgentsOverlay implements Component {
   private collapsedDepths = new Set<number>();
   private readonly getAgents: () => readonly SessionMeta[];
   private readonly onBrowse: (id: string) => void;
+  /**
+   * 可选：Enter 的替代动作（接管对话而非只读浏览）。
+   * 提供时 Enter 走它，未提供时维持 onBrowse——/agents 是只读下钻入口，
+   * 无参 /handoff 是切换入口，两者共用面板但 Enter 语义不同。
+   */
+  private readonly onHandoff?: (id: string) => void;
   private readonly requestRender: () => void;
   private readonly close: () => void;
 
   constructor(opts: {
     getAgents: () => readonly SessionMeta[];
+    /** 只读下钻动作。handoff 模式下不需要，传空函数即可。 */
     onBrowse: (id: string) => void;
     requestRender: () => void;
     onClose: () => void;
+    onHandoff?: (id: string) => void;
   }) {
     this.getAgents = opts.getAgents;
     this.onBrowse = opts.onBrowse;
+    this.onHandoff = opts.onHandoff;
     this.requestRender = opts.requestRender;
     this.close = opts.onClose;
   }
@@ -163,6 +172,11 @@ export class AgentsOverlay implements Component {
     } else if (matchesKey(data, 'return')) {
       const agent = list[this.sel];
       if (agent !== undefined) {
+        // 接管对话优先：提供了 onHandoff 时 Enter 是切换动作，不是只读浏览
+        if (this.onHandoff !== undefined) {
+          this.onHandoff(agent.id);
+          return;
+        }
         this.onBrowse(agent.id);
         return;
       }
@@ -228,7 +242,9 @@ export class AgentsOverlay implements Component {
     if (this.filterActive) {
       out.push(c.dim(truncateToWidth('输入过滤文字 · Enter 确认 · Esc 取消', width)));
     } else {
-      out.push(c.dim(truncateToWidth('↑↓/jk 选择 · Enter 浏览 · ←→ 折叠 · / 过滤 · Esc 关闭', width)));
+      // 提示文案跟着 Enter 的实际动作走：handoff 模式写「接管对话」，否则用户会以为只是看看
+      const enterHint = this.onHandoff !== undefined ? 'Enter 接管对话' : 'Enter 浏览';
+      out.push(c.dim(truncateToWidth(`↑↓/jk 选择 · ${enterHint} · ←→ 折叠 · / 过滤 · Esc 关闭`, width)));
     }
     return out;
   }
