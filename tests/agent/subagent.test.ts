@@ -1356,6 +1356,33 @@ describe('角色定义的 whenToUse 字段', () => {
     expect(def).not.toBeNull();
     expect(def!.whenToUse).toBeUndefined();
   });
+
+  it('markdown frontmatter 的 standby: true 可解析（跑完进待命而非直接归档）', () => {
+    const def = parseAgentMarkdown(
+      `---\nname: r\ndescription: d\nstandby: true\n---\n${'正文'.repeat(20)}`,
+      'r',
+    );
+    expect(def).not.toBeNull();
+    expect(def!.standby).toBe(true);
+  });
+
+  it('未写 standby 时为 false（一次性用完即归档）', () => {
+    const def = parseAgentMarkdown(
+      `---\nname: r\ndescription: d\n---\n${'正文'.repeat(20)}`,
+      'r',
+    );
+    expect(def).not.toBeNull();
+    expect(def!.standby).toBe(false);
+  });
+
+  it('standby 非布尔真值不生效（避免字符串 "false" 被当真）', () => {
+    const def = parseAgentMarkdown(
+      `---\nname: r\ndescription: d\nstandby: "false"\n---\n${'正文'.repeat(20)}`,
+      'r',
+    );
+    expect(def).not.toBeNull();
+    expect(def!.standby).toBe(false);
+  });
 });
 
 describe('subagentListing 角色清单', () => {

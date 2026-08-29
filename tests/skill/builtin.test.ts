@@ -58,6 +58,69 @@ describe('builtin skill 注册', () => {
   });
 
   it('BUILTIN_SKILLS 清单即当前全部内置 skill', () => {
-    expect(BUILTIN_SKILLS.map((s) => s.name)).toEqual(['update-config', 'team']);
+    expect(BUILTIN_SKILLS.map((s) => s.name)).toEqual([
+      'update-config',
+      'team',
+      'step-code',
+      'subagent-authoring',
+    ]);
+  });
+});
+
+describe('step-code 内置 skill 正文', () => {
+  const body = BUILTIN_SKILLS.find((s) => s.name === 'step-code')!.content;
+
+  it('正文覆盖四类关键事实', () => {
+    expect(body).toContain('read_file');
+    expect(body).toContain('dynamic_workflow');
+    // 六个 hook 事件全列
+    for (const ev of ['PreToolUse', 'PostToolUse', 'PreOutput', 'Stop', 'UserPromptSubmit', 'SessionStart']) {
+      expect(body).toContain(ev);
+    }
+    // 工具与命令条数
+    expect(body).toContain('38 个');
+    expect(body).toContain('37 个');
+  });
+
+  it('写明 busy 三分流（即时 / 排队 / 直接拒绝）', () => {
+    expect(body).toContain('即时执行');
+    expect(body).toContain('排队到回合边界');
+    expect(body).toContain('忙碌时直接拒绝');
+  });
+
+  it('写明 dynamic_workflow 并行反模式', () => {
+    expect(body).toContain('parallel');
+    expect(body).toContain('顺序逐个 await');
+  });
+
+  it('正文不含反引号（模板字符串冲突）', () => {
+    expect(body).not.toContain('`');
+  });
+});
+
+describe('subagent-authoring 内置 skill 正文', () => {
+  const body = BUILTIN_SKILLS.find((s) => s.name === 'subagent-authoring')!.content;
+
+  it('覆盖八个 frontmatter 字段', () => {
+    for (const f of ['description', 'whenToUse', 'tools', 'model', 'maxSteps', 'skills', 'disabledSkills', 'standby']) {
+      expect(body).toContain(f);
+    }
+  });
+
+  it('写明 skill 过滤的先后语义', () => {
+    expect(body).toContain('先排除再启用');
+  });
+
+  it('写明 fork 必须同源的约束', () => {
+    expect(body).toContain('fork');
+    expect(body).toContain('prompt cache');
+  });
+
+  it('写明 standby 的 TTL', () => {
+    expect(body).toContain('30 分钟');
+  });
+
+  it('正文不含反引号（模板字符串冲突）', () => {
+    expect(body).not.toContain('`');
   });
 });
