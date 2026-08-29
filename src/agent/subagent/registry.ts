@@ -85,6 +85,9 @@ export function parseAgentMarkdown(content: string, fallbackName: string): Agent
   const skills = Array.isArray(skillsRaw) ? skillsRaw.map(String) : undefined;
   const disabledSkillsRaw = fm['disabledSkills'] ?? fm['disabled_skills'];
   const disabledSkills = Array.isArray(disabledSkillsRaw) ? disabledSkillsRaw.map(String) : undefined;
+  // standby：缺省 false（一次性用完即归档）。配 true 进待命，30 分钟无活动自动归档。
+  // 之前这里漏了解析，模板写 standby: true 永远不生效（runner 读的是 undefined）。
+  const standby = fm['standby'] === true;
   return {
     name,
     description,
@@ -94,6 +97,7 @@ export function parseAgentMarkdown(content: string, fallbackName: string): Agent
     maxSteps,
     skills,
     disabledSkills,
+    standby,
     systemPrompt: body,
   };
 }
