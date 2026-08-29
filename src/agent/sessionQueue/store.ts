@@ -14,6 +14,12 @@ export interface SessionQueueMessage {
   createdAt: string;
   /** 被目标 session 消费的时刻（ISO）；undefined 表示待消费。 */
   consumedAt?: string;
+  /**
+   * 消息种类。`message`（缺省）= 普通指令，注入历史后模型当用户输入处理。
+   * `receipt` = 消费回执，由接收方 drain 时自动写给投递方；注入后是「对方已收到」的告知，
+   * **不再产生回执**——否则 A 的回执触发 B 的回执，无限递归。
+   */
+  kind?: 'message' | 'receipt';
 }
 
 /**
@@ -40,7 +46,7 @@ export class SessionQueueStore {
   }
 
   /** 投递：往目标会话队列追加一条消息，返回消息 id。 */
-  enqueue(to: string, from: string, text: string): string {
+  enqueue(to: string, from: string, text: string, kind: 'message' | 'receipt' = 'message'): string {
     this.ensureDir();
     const msg: SessionQueueMessage = {
       id: randomUUID(),
@@ -48,6 +54,7 @@ export class SessionQueueStore {
       to,
       text,
       createdAt: new Date().toISOString(),
+      ...(kind === 'receipt' ? { kind } : {}),
     };
     appendFileSync(this.fileFor(to), JSON.stringify(msg) + '\n', 'utf8');
     return msg.id;

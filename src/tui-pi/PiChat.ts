@@ -60,6 +60,7 @@ import { exportDebugBundle } from '../session/debugBundle.js';
 import { deriveTitle, type SessionData, type SessionMeta, type SessionStore } from '../session/store.js';
 import { resolveSubmitText } from '../chat/submitText.js';
 import { SessionQueueStore } from '../agent/sessionQueue/store.js';
+import { sendReadReceipts } from '../agent/sessionQueue/receipt.js';
 import { canOverwriteTitle, generateSessionTitle } from '../session/title.js';
 import { TerminalTitleWriter } from '../chat/terminalTitle.js';
 import { aggregateModelUsage } from '../session/usageReport.js';
@@ -4104,6 +4105,18 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     if (this.deps.sessionQueue !== undefined) {
       const pending = this.deps.sessionQueue.drain(this.session.id);
       for (const m of pending) {
+        // 回执：让投递方知道这条被读到了。逻辑在 sessionQueue/receipt.ts（可单测——
+        // 内联在 PiChat 里时，把「回执不再产生回执」改成 if (true) 制造递归，测试全绿）。
+        for (const r of sendReadReceipts(this.session.id, [m], this.deps.sessionQueue)) {
+          // 回执关系落 wire 供审计：跨会话交接断了时，能查出是哪一条没送达。
+          this.appendWire({
+            type: 'session.queue_receipt',
+            ts: new Date().toISOString(),
+            messageId: r.messageId,
+            receiptId: r.receiptId,
+            to: r.to,
+          });
+        }
         const body = `[跨会话消息 · 来自会话 ${m.from}]\n${m.text}`;
         const qMsg = stored({ role: 'user', content: body }, { kind: 'injection' });
         this.history.push(qMsg);
