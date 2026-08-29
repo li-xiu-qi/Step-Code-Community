@@ -1206,6 +1206,22 @@ describe('子 agent 进度（对标 Ink 版 AgentGroup，改为条目内嵌）',
     const done = plain(new ItemBlock(spawn({ status: 'ok', subagentToolEvents: events })).render(70));
     expect(done.join('\n')).toContain('4 个子工具调用');
   });
+
+  it('多张并行卡片各自渲染自己的统计段，互不串写', () => {
+    // 修 id 归属前的症状：updateLastWhere 让所有进度堆到最后一张卡片上，
+    // 其余卡片停在「spawn_agent」一行、没有统计段，看起来像卡死。
+    const mk = (over: Record<string, unknown>): DisplayItem =>
+      spawn({ ...over, input: { description: over.description as string } }) as DisplayItem;
+    const a = plain(new ItemBlock(mk({ id: 'toolu_a', subagentType: 'explore', description: '查接口', subagentTokens: 12_345 })).render(70));
+    const b = plain(new ItemBlock(mk({ id: 'toolu_b', subagentType: 'general', description: '写脚本', subagentToolEvents: [{ name: 'bash', status: 'ok' }], subagentTokens: 8_000 })).render(70));
+    expect(a.join('\n')).toContain('12.3k tok');
+    expect(a.join('\n')).toContain('explore');
+    expect(a.join('\n')).not.toContain('bash'); // A 的渲染里不含 B 的工具事件
+    expect(b.join('\n')).toContain('8.0k tok');
+    expect(b.join('\n')).toContain('1 tools');
+    expect(b.join('\n')).toContain('general');
+    expect(b.join('\n')).not.toContain('explore');
+  });
 });
 
 describe('dynamic_workflow 阶段渲染', () => {
