@@ -144,6 +144,7 @@ export class SubagentStore {
             depth: data.depth,
             agentType: data.agentType,
             status: data.status,
+            standby: data.standby,
           });
         } catch {
           // 跳过损坏的快照文件
@@ -324,6 +325,31 @@ export class SubagentStore {
     }
     // 索引不存在或过期：全量重建
     return this.rebuildIndex(cwd);
+  }
+
+  /** 待命默认 TTL：30 分钟无活动自动归档。 */
+  static readonly STANDBY_TTL_MS = 30 * 60 * 1000;
+
+  /**
+   * 归档超时的待命会话：standby=true 且 updatedAt 超过 TTL 的，把 standby 置 false。
+   * 返回被归档的会话 id 列表。调用方（/agents、/handoff）每次进入前跑一次。
+   */
+  archiveStaleStandby(cwd: string, ttlMs: number = SubagentStore.STANDBY_TTL_MS): string[] {
+    const all = this.list(cwd);
+    const now = Date.now();
+    const archived: string[] = [];
+    for (const meta of all) {
+      if (meta.standby !== true) continue;
+      const lastActivity = Date.parse(meta.updatedAt);
+      if (Number.isNaN(lastActivity) || now - lastActivity < ttlMs) continue;
+      const snap = this.loadSnapshot(cwd, meta.id);
+      if (snap === null) continue;
+      snap.standby = false;
+      this.saveSnapshot(snap);
+      meta.standby = false;
+      archived.push(meta.id);
+    }
+    return archived;
   }
 
   /** 判定锁文件是否持有存活进程：解析 pid 后用 process.kill(pid, 0) 探测；解析失败/pid 已死均视为 stale。 */

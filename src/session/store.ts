@@ -37,6 +37,12 @@ export interface SessionMeta {
   depth?: number;
   /** 子 agent 角色（如 explore / general / 自定义；仅子 agent 会话填写）。 */
   agentType?: string;
+  /**
+   * 待命标记（仅子 agent 会话填写）。
+   * true = 待命，出现在 /agents 列表，可被 handoff；false/undefined = 归档，记录保留但不在列表。
+   * 30 分钟无活动（以 updatedAt 判定）自动转归档。
+   */
+  standby?: boolean;
   /** 子会话终态（仅子 agent 会话填写：父进程仍活着时子会话可能已终态；主会话不填）。 */
   status?: 'running' | 'done' | 'error' | 'aborted';
   /**
