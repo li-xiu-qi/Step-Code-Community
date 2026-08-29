@@ -329,6 +329,13 @@ export class PiChat {
    */
   private currentRunSubagent: RunSubagentFn | undefined;
   /**
+   * 本回合运行中的子 agent id 集合（头部计数数据源）。
+   *
+   * 用 Set 而非裸计数：同一 id 的 end 可能因补发路径重复到达，Set.delete 返回 false
+   * 时不动计数，避免扣成负数。回合 finally 无条件清空——中断时 end 事件可能不全。
+   */
+  private runningSubagentIds = new Set<string>();
+  /**
    * handoff 返回栈：每次 /handoff 到新的子会话前，把「当前所在」压栈。
    * /handoff back 弹栈并 resume 那个会话。
    * 与 subagentBrowsing 的区别：那是只读回看，这里是真切换对话对象。
@@ -1003,6 +1010,17 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
    * 「进度凭空消失」（两者症状不同，别用一个掩盖另一个）。
    */
   private applySubagentProgress(ev: SubagentProgressEvent): void {
+    // 运行中 id 集合：头部计数用 Set 而非裸 ++/--——同一 id 的 end 只应减一次
+    // （abort 与正常 return 都会走补发点，runner 的 endSent 幂等挡住 runner 侧重复，
+    // 但外部 CLI 分支的兜底路径与事件乱序仍可能让消费方收到重复 end）。
+    if (ev.kind === 'start') {
+      this.runningSubagentIds.add(ev.id);
+      this.transcript.setRunningSubagents(this.runningSubagentIds.size);
+    } else if (ev.kind === 'end' || ev.kind === 'error') {
+      if (this.runningSubagentIds.delete(ev.id)) {
+        this.transcript.setRunningSubagents(this.runningSubagentIds.size);
+      }
+    }
     const patch = (
       apply: (it: Extract<DisplayItem, { kind: 'tool' }>) => Extract<DisplayItem, { kind: 'tool' }>,
     ): void => {
@@ -1759,6 +1777,10 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       case 'clear':
         // 清屏但保留会话历史：转录区清空 + 强制整屏重绘（这是唯一主动接受全量重绘的地方）
         this.transcript.reset([]);
+        // 头部计数一并归零：卡片已从屏幕消失，残留「并行运行 N 个」会指向不存在的东西。
+        // 回合若仍在跑，后续 start/end 事件会把计数重新填回来，不会丢。
+        this.runningSubagentIds.clear();
+        this.transcript.setRunningSubagents(0);
         this.tui.invalidate();
         this.tui.renderNow(true);
         return;
@@ -4226,6 +4248,13 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     } finally {
       this.streamBuffer.drain();
       this.currentRunSubagent = undefined;
+      // 头部计数收尾：无论正常结束、中断还是异常，运行中集合必须清空。
+      // 否则下次 /new 或 resume 会继承上一轮的数字——用户看到「并行运行 3 个子 agent」
+      // 而实际一个都没在跑。中断时 end 事件可能没发全，靠此处兜底而非靠计数自减。
+      if (this.runningSubagentIds.size > 0) {
+        this.runningSubagentIds.clear();
+        this.transcript.setRunningSubagents(0);
+      }
       // 收尾兜底：残留的思考必须在本回合内落块。
       //
       // drain() 只是把 StreamBuffer 的缓冲吐给 applyEvent，而 thinking_delta 在 applyEvent
