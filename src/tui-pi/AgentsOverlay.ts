@@ -191,6 +191,13 @@ export class AgentsOverlay implements Component {
       { label: '类型', value: agent.agentType ?? 'general' },
       { label: '状态', value: agent.status ?? '未知', color: (s) => this.statusColor(agent.status ?? '', s) },
       { label: '消息', value: String(agent.messageCount) },
+      // 归属决定能否 /handoff 接管：主 agent 编排产物只读，用户自己 fork 出来的才能直连。
+      // 缺省按 agent（旧快照无此字段）——默认锁死，不主动放开。
+      {
+        label: '归属',
+        value: agent.owner === 'user' ? '你的（可接管）' : '主 agent 的（只读）',
+        color: (s) => (agent.owner === 'user' ? c.ok(s) : c.dim(s)),
+      },
     ];
     if (agent.name !== undefined || agent.title !== undefined) {
       rows.push({ label: '任务', value: agent.name ?? agent.title ?? '' });
