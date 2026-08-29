@@ -93,14 +93,22 @@ export interface WorkflowStepEvent {
   title?: string;
 }
 
-/** 子 agent 进度事件（独立通道，经 runner 的 onEvent 上抛，带 id 区分并行子 agent）。 */
+/**
+ * 子 agent 进度事件（独立通道，经 runner 的 onEvent 上抛）。
+ *
+ * `id` 是子会话 id（= tool 卡片 id）。多个子 agent 并发时，消费方靠它把进度归到
+ * 各自的卡片上；缺了它只能退回「找最后一个 running 的 spawn_agent」，并发时所有
+ * 进度会堆到同一张卡片（token / 耗时 / 工具数互相覆盖）。
+ * 必填而非可选：runner 在 progress() 调用处拿得到 sessionId，传 undefined 等于
+ * 把这个 bug 静默延续下去。
+ */
 export type SubagentProgressEvent =
-  | { kind: 'start'; subagentType: string; description: string }
-  | { kind: 'tool'; name: string }
-  | { kind: 'tool_end'; name: string; isError: boolean }
-  | { kind: 'error'; message: string }
+  | { kind: 'start'; id: string; subagentType: string; description: string }
+  | { kind: 'tool'; id: string; name: string }
+  | { kind: 'tool_end'; id: string; name: string; isError: boolean }
+  | { kind: 'error'; id: string; message: string }
   /** 累计计费 token（runner 已逐轮累加，消费者只赋值不加法）。 */
-  | { kind: 'usage'; tokens: number }
+  | { kind: 'usage'; id: string; tokens: number }
   /**
    * 终态。除 isError 外的字段是给程序消费方的（stream-json 外部脚本、TUI 统计）：
    * - summary：子 agent 产出的结论文本，对外消费方最想要的东西——没有它，外部只知道
@@ -111,6 +119,7 @@ export type SubagentProgressEvent =
    */
   | {
       kind: 'end';
+      id: string;
       isError: boolean;
       summary?: string;
       toolUses?: number;

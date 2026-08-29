@@ -220,9 +220,12 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): RunSubagentFn {
     const extConfig = EXTERNAL_AGENTS[req.subagentType];
     if (extConfig !== undefined) {
       const cwd = req.cwd ?? deps.cwd;
-      deps.onEvent?.(req.id ?? req.subagentType, { kind: 'start', subagentType: req.subagentType, description: req.description ?? req.prompt.slice(0, 60) });
+      // 外部 CLI 分支没有内部会话，id 用调用方给的 req.id（与内部 sessionId 同义：
+      // 都是「这次派生的唯一标识」，消费方靠它归属进度）。缺省退回类型名。
+      const extId = req.id ?? req.subagentType;
+      deps.onEvent?.(extId, { kind: 'start', id: extId, subagentType: req.subagentType, description: req.description ?? req.prompt.slice(0, 60) });
       const result = await runExternalAgent(extConfig, req.prompt, cwd, req.signal);
-      deps.onEvent?.(req.id ?? req.subagentType, { kind: 'end', isError: result.isError, summary: result.summary, toolUses: 0, durationMs: 0 });
+      deps.onEvent?.(extId, { kind: 'end', id: extId, isError: result.isError, summary: result.summary, toolUses: 0, durationMs: 0 });
       return result;
     }
 
@@ -449,7 +452,7 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): RunSubagentFn {
         req.description !== undefined && req.description !== ''
           ? req.description
           : req.prompt.replace(/\s+/g, ' ').slice(0, 60);
-      progress({ kind: 'start', subagentType: agentDef.name, description: displayDesc });
+      progress({ kind: 'start', id: sessionId, subagentType: agentDef.name, description: displayDesc });
 
       let hadError = false;
       let aborted = false;
@@ -490,16 +493,16 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): RunSubagentFn {
         })) {
           if (ev.type === 'tool_start') {
             toolUses += 1;
-            progress({ kind: 'tool', name: ev.name });
+            progress({ kind: 'tool', id: sessionId, name: ev.name });
           }
           else if (ev.type === 'tool_end') {
-            progress({ kind: 'tool_end', name: ev.name, isError: ev.isError });
+            progress({ kind: 'tool_end', id: sessionId, name: ev.name, isError: ev.isError });
             persist(); // 每个工具回合结束落一次盘：崩溃时盘上保留到最近回合
           }
-          else if (ev.type === 'error') progress({ kind: 'error', message: ev.message });
+          else if (ev.type === 'error') progress({ kind: 'error', id: sessionId, message: ev.message });
           else if (ev.type === 'usage' && ev.billedDelta !== undefined) {
             tokensUsed += ev.billedDelta;
-            progress({ kind: 'usage', tokens: tokensUsed });
+            progress({ kind: 'usage', id: sessionId, tokens: tokensUsed });
           }
           if (ev.type === 'error') {
             hadError = true;
@@ -546,21 +549,21 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): RunSubagentFn {
         subSession.status = 'aborted';
         persist();
         const abortedText = '子 agent 已被中断。';
-        progress({ kind: 'end', isError: true, summary: abortedText, ...endStats() });
+        progress({ kind: 'end', id: sessionId, isError: true, summary: abortedText, ...endStats() });
         return { summary: abortedText, isError: true, sessionId };
       }
       if (summary === '') {
         subSession.status = 'error';
         persist();
         const failed = hadError ? '子 agent 执行出错，未产出结果。' : '子 agent 未产出可用结果。';
-        progress({ kind: 'end', isError: true, summary: failed, ...endStats() });
+        progress({ kind: 'end', id: sessionId, isError: true, summary: failed, ...endStats() });
         return { summary: failed, isError: true, cause: lastCause, sessionId };
       }
       subSession.status = hadError ? 'error' : 'done';
       // 模板配 standby: true 时进待命（30 分钟无活动自动归档），否则一次性用完即归档
       if (agentDef.standby === true) subSession.standby = true;
       persist();
-      progress({ kind: 'end', isError: hadError, summary, ...endStats() });
+      progress({ kind: 'end', id: sessionId, isError: hadError, summary, ...endStats() });
       return { summary: summary + modelNotice, isError: hadError, cause: hadError ? lastCause : undefined, sessionId };
     } catch (e) {
       // 未捕获异常（如 provider 层抛出）：同样写终态落盘，保住已有历史
@@ -571,6 +574,7 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): RunSubagentFn {
       // 而不发终态的实现，会让只监听终态的消费方直接挂起。幂等由 endSent 保证。
       progress({
         kind: 'end',
+        id: sessionId,
         isError: true,
         summary: e instanceof Error ? `子 agent 异常中止：${e.message}` : '子 agent 异常中止。',
         toolUses,
