@@ -50,6 +50,12 @@ export type DisplayItem =
       /** 子 agent 终态统计：工具调用次数与墙钟耗时（end 事件带回）。 */
       subagentToolUses?: number;
       subagentDurationMs?: number;
+      /**
+       * 本回合同时运行中的 spawn_agent 数（PiChat 按 start/end 事件维护后广播给所有卡片）。
+       * 达到 SUBAGENT_FOLD_THRESHOLD 时该卡片折成一行摘要——Transcript 不反向扫块
+       * 取这个数（O(N)/帧，且与 prefixCache 的冻结前提冲突），由事件源广播。
+       */
+      subagentParallel?: number;
     }
   | {
       kind: 'note';

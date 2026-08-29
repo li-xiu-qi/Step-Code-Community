@@ -1009,16 +1009,38 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
    * 未命中不静默丢弃——落到 updateLastWhere 兜底一次并记日志，避免 id 链路断了又退化成
    * 「进度凭空消失」（两者症状不同，别用一个掩盖另一个）。
    */
+  /**
+   * 并行状态广播：头部计数 + 逐卡片并行数，一次推给 Transcript。
+   *
+   * 两个方法职责不同（前者管头部提示行且不递增 structVer，后者管卡片形态且必须递增），
+   * 但触发点完全相同——都是「运行中集合变了」。合成一个方法调用，避免将来只改一处
+   * 导致头部与卡片形态不一致（那种不一致极难自查：头部说 3 个，卡片还全展开着）。
+   */
+  private broadcastSubagentParallel(): void {
+    const n = this.runningSubagentIds.size;
+    this.transcript.setRunningSubagents(n);
+    this.transcript.setSubagentParallel(n);
+  }
+
+  /**
+   * 把子 agent 进度写进属于它的那张 spawn_agent 卡片。
+   *
+   * 按 ev.id（= tool_use id，runner 在 runTurn 的工具边界由 tu.id 注入）精确归属。
+   * 旧实现用 updateLastWhere 找「最后一个运行中的 spawn_agent」作近似：并行时所有
+   * 子 agent 的 token/耗时/工具数互相覆盖，只剩一张卡片在动，其余看起来像卡死。
+   * 未命中不静默丢弃——落到 updateLastWhere 兜底一次并记日志，避免 id 链路断了又退化成
+   * 「进度凭空消失」（两者症状不同，别用一个掩盖另一个）。
+   */
   private applySubagentProgress(ev: SubagentProgressEvent): void {
     // 运行中 id 集合：头部计数用 Set 而非裸 ++/--——同一 id 的 end 只应减一次
     // （abort 与正常 return 都会走补发点，runner 的 endSent 幂等挡住 runner 侧重复，
     // 但外部 CLI 分支的兜底路径与事件乱序仍可能让消费方收到重复 end）。
     if (ev.kind === 'start') {
       this.runningSubagentIds.add(ev.id);
-      this.transcript.setRunningSubagents(this.runningSubagentIds.size);
+      this.broadcastSubagentParallel();
     } else if (ev.kind === 'end' || ev.kind === 'error') {
       if (this.runningSubagentIds.delete(ev.id)) {
-        this.transcript.setRunningSubagents(this.runningSubagentIds.size);
+        this.broadcastSubagentParallel();
       }
     }
     const patch = (
@@ -1780,7 +1802,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
         // 头部计数一并归零：卡片已从屏幕消失，残留「并行运行 N 个」会指向不存在的东西。
         // 回合若仍在跑，后续 start/end 事件会把计数重新填回来，不会丢。
         this.runningSubagentIds.clear();
-        this.transcript.setRunningSubagents(0);
+        this.broadcastSubagentParallel();
         this.tui.invalidate();
         this.tui.renderNow(true);
         return;
@@ -4253,7 +4275,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       // 而实际一个都没在跑。中断时 end 事件可能没发全，靠此处兜底而非靠计数自减。
       if (this.runningSubagentIds.size > 0) {
         this.runningSubagentIds.clear();
-        this.transcript.setRunningSubagents(0);
+        this.broadcastSubagentParallel();
       }
       // 收尾兜底：残留的思考必须在本回合内落块。
       //

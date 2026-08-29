@@ -178,6 +178,29 @@ export class Transcript implements Component {
   }
 
   /**
+   * 把并行数广播给所有 spawn_agent 卡片（卡片据此决定是否折成一行）。
+   *
+   * 与 {@link setRunningSubagents} 的分工：后者只管头部那行计数，本方法管卡片形态。
+   * 二者由 PiChat 在同一个事件点一起调，但职责分开——头部计数是全局提示，
+   * 卡片折叠是逐卡片形态决策，将来可能想只开其中一个。
+   *
+   * 递增 structVer：这是结构性变化（卡片从 5 行变 1 行），前缀必须重算，
+   * 与 setRunningSubagents 的「不递增」正相反。两者常被一起调用，别合并。
+   */
+  setSubagentParallel(n: number): void {
+    const next = Math.max(0, n);
+    if (next === this.runningSubagents) return;
+    this.runningSubagents = next;
+    for (let i = 0; i < this.blocks.length; i++) {
+      const it = this.blocks[i]!.getItem();
+      if (it.kind === 'tool' && it.name === 'spawn_agent') {
+        this.blocks[i]!.setItem({ ...it, subagentParallel: next } as DisplayItem);
+      }
+    }
+    this.structVer++;
+  }
+
+  /**
    * 逐回合折叠旧块为摘要（OOM 第二道防线，设计文档 `前端设计-pi版/20260818-Transcript逐回合折叠与块释放设计.md`）。
    *
    * 与 {@link trim} 的区别：trim 是删行（触发全屏重绘+清 scrollback，见文件头注释，仅 2000 轮安全阀用）；
