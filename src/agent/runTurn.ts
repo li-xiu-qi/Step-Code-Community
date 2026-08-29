@@ -254,7 +254,10 @@ export async function* runTurn(
   let loopDetector = createThinkingLoopDetector();
   // 最终兜底：think-only 恢复（low 档）也失败后，关闭思考（thinking: null）+ 强制输出提示，最后试一次。
   let retriedFinal = false;
-  for (let attempt = 1; attempt <= RETRY_MAX_ATTEMPTS; attempt++) {
+  // 循环上限取两类错误的最大值：429 的上限（5）高于普通错误（3），写死 3 会让
+  // 体内 maxRetries 算出的 5 永远走不到，表现为 429 重试次数与声明不符。
+  const MAX_STREAM_ATTEMPTS = Math.max(RETRY_MAX_ATTEMPTS, RETRY_MAX_429_ATTEMPTS);
+  for (let attempt = 1; attempt <= MAX_STREAM_ATTEMPTS; attempt++) {
     /**
      * 本次尝试是否已流出**正文**（text_delta）。它是重试禁令的唯一判据：
      * 正文已经进了用户屏幕，重试会让同一段话出现两遍。
@@ -444,6 +447,17 @@ export async function* runTurn(
                 // 中断：thinking 与注入消息已落盘（中止前轮已落定），正文未成不落盘，直接 aborted。
                 if (signal?.aborted) return { stopReason: 'aborted' };
                 const recoverMsg = await recoverStream.finalMessage();
+                // 恢复成功（拿到了正文或工具调用）：即时落盘为独立 assistant 消息，回合结束。
+                // 这里原本缺了这个判断——无论恢复成功与否都往下走兜底，导致恢复成功后
+                // 仍多发一次「关思考」请求（实测 4 次而非 3 次），且下方成功落盘代码成了死代码。
+                if (!isEmptyResponse(recoverMsg)) {
+                  // 注入恢复成功：恢复正文即时落盘为独立 assistant 消息（thinking 已单独落盘，
+                  // 二者不合并——保留「前轮只思考、后轮直接作答」的轨迹分界，供 resume 与排查）。
+                  messages.push(stored({ role: 'assistant', content: recoverMsg.content }, { kind: 'assistant' }));
+                  final = recoverMsg;
+                  skipFinalPush = true; // 已即时落盘，跳过统一 push
+                  break;
+                }
                 // 注入恢复后仍耗尽：最终兜底——关闭思考（thinking: null）+ 强制输出提示，
                 // 这是最后的手段。类似网络断开重连：策略不同就再试一次。
                 if (!retriedFinal) {

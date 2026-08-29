@@ -1,6 +1,6 @@
 import AjvModule from 'ajv';
 import type { ValidateFunction } from 'ajv';
-import type { QuickJSHandle } from 'quickjs-emscripten';
+import type { QuickJSHandle, VmCallResult } from 'quickjs-emscripten';
 import type { RunSubagentFn, SpawnSubagentRequest } from '../subagent/types.js';
 import type { WorkflowStepEvent } from '../events.js';
 import { Journal } from './journal.js';
@@ -312,7 +312,20 @@ export async function runDynamicWorkflow(opts: RunDynamicWorkflowOptions): Promi
 
     // 用户脚本包成 async 函数体执行（脚本以 return <值> 收尾）。
     const wrapped = `(async () => {\n${opts.script}\n})()`;
-    const evalResult = await sandbox.eval(wrapped);
+    // sandbox.eval 在语法错误等非中断错误时抛 Error（不返回 error 字段），
+    // 需要在这里接住并补 stack，否则会被下方通用 catch 归成「内部错误」而丢失栈。
+    let evalResult: VmCallResult<QuickJSHandle>;
+    try {
+      evalResult = await sandbox.eval(wrapped);
+    } catch (e) {
+      throw new DynamicWorkflowError(`dynamic_workflow 脚本执行失败：${(e as Error).message}`, {
+        runId,
+        journalPath: journal.filePath,
+        scriptPath,
+        agentsUsed,
+        stack: (e as Error).stack,
+      });
+    }
     if (evalResult.error !== undefined) {
       const err = dumpError(sandbox, evalResult.error);
       throw new DynamicWorkflowError(`dynamic_workflow 脚本执行失败：${err.message}`, {

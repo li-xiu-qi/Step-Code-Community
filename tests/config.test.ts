@@ -169,6 +169,7 @@ describe('resolveSubagentLimits', () => {
       maxSteps: 100,
       maxConcurrent: 4,
       retention: { deleteWithParent: true, maxSessions: 0, ttlDays: 0 },
+      timeoutS: 0,
     });
   });
 
@@ -178,6 +179,7 @@ describe('resolveSubagentLimits', () => {
       maxSteps: 1000,
       maxConcurrent: 16,
       retention: { deleteWithParent: true, maxSessions: 0, ttlDays: 0 },
+      timeoutS: 0,
     });
   });
 
@@ -187,6 +189,7 @@ describe('resolveSubagentLimits', () => {
       maxSteps: 1,
       maxConcurrent: 1,
       retention: { deleteWithParent: true, maxSessions: 0, ttlDays: 0 },
+      timeoutS: 0,
     });
   });
 
@@ -200,12 +203,14 @@ describe('resolveSubagentLimits', () => {
       maxSteps: 100,
       maxConcurrent: 4,
       retention: { deleteWithParent: true, maxSessions: 0, ttlDays: 0 },
+      timeoutS: 0,
     });
     expect(resolveSubagentLimits('not-object')).toEqual({
       maxDepth: 1,
       maxSteps: 100,
       maxConcurrent: 4,
       retention: { deleteWithParent: true, maxSessions: 0, ttlDays: 0 },
+      timeoutS: 0,
     });
   });
 });
@@ -242,33 +247,34 @@ describe('resolveSubagentRetention（[subagent.retention] 留存策略）', () =
 
 describe('resolveCompactionConfig', () => {
   it('缺省 → 默认值', () => {
-    expect(resolveCompactionConfig(undefined)).toEqual({ triggerRatio: 0.85, reservedTokens: 32000 });
+    // 只锁被此用例覆盖的字段；新增字段由「全字段快照」用例负责，避免加字段即红
+    expect(resolveCompactionConfig(undefined)).toMatchObject({ triggerRatio: 0.85, reservedTokens: 32000 });
   });
 
   it('越界 → clamp（上限）', () => {
-    expect(resolveCompactionConfig({ trigger_ratio: 2, reserved_tokens: 9_999_999 })).toEqual({
+    expect(resolveCompactionConfig({ trigger_ratio: 2, reserved_tokens: 9_999_999 })).toMatchObject({
       triggerRatio: 0.99,
       reservedTokens: 500000,
     });
   });
 
   it('越界 → clamp（下限）', () => {
-    expect(resolveCompactionConfig({ trigger_ratio: 0.1, reserved_tokens: -5 })).toEqual({
+    expect(resolveCompactionConfig({ trigger_ratio: 0.1, reserved_tokens: -5 })).toMatchObject({
       triggerRatio: 0.5,
       reservedTokens: 0,
     });
   });
 
   it('非法类型 / 非对象 → 默认值', () => {
-    expect(resolveCompactionConfig('x')).toEqual({ triggerRatio: 0.85, reservedTokens: 32000 });
-    expect(resolveCompactionConfig({ trigger_ratio: 'a' })).toEqual({
+    expect(resolveCompactionConfig('x')).toMatchObject({ triggerRatio: 0.85, reservedTokens: 32000 });
+    expect(resolveCompactionConfig({ trigger_ratio: 'a' })).toMatchObject({
       triggerRatio: 0.85,
       reservedTokens: 32000,
     });
   });
 
   it('配置 model → 进结果对象', () => {
-    expect(resolveCompactionConfig({ model: 'step-flash' })).toEqual({
+    expect(resolveCompactionConfig({ model: 'step-flash' })).toMatchObject({
       triggerRatio: 0.85,
       reservedTokens: 32000,
       model: 'step-flash',
@@ -279,6 +285,16 @@ describe('resolveCompactionConfig', () => {
     const cfg = resolveCompactionConfig({ trigger_ratio: 0.9 });
     expect('model' in cfg).toBe(false);
     expect(cfg.model).toBeUndefined();
+  });
+
+  it('全字段快照：新增字段必须在此显式登记（防止静默加字段无人知晓）', () => {
+    expect(resolveCompactionConfig(undefined)).toEqual({
+      triggerRatio: 0.85,
+      reservedTokens: 32000,
+      preserveThinking: false,
+      blockRatio: 0.93,
+      maxCompactionPerTurn: Infinity,
+    });
   });
 
   it('model 为空串 / 非字符串 → 视为未配置', () => {
@@ -416,7 +432,9 @@ describe('resolveModelEntry（别名展开合并）', () => {
 
   it('不改原对象', () => {
     const cfg = baseConfig({ big: { model: 'test-model-x', maxTokens: 65536 } });
-    const before = JSON.parse(JSON.stringify(cfg));
+    // 用 structuredClone 而非 JSON 往返：compaction 默认值 maxCompactionPerTurn 是 Infinity，
+    // JSON.stringify 会把它变成 null，克隆体和原件必然不等，测的就不再是「是否被改动」。
+    const before = structuredClone(cfg);
     const merged = resolveModelEntry(cfg, 'big');
     expect(merged).not.toBe(cfg);
     expect(cfg).toEqual(before);

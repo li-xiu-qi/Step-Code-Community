@@ -97,7 +97,10 @@ describe('runTurn thinking 事件与历史', () => {
       runAgent({ provider, system: 'sys', ctx: { cwd: process.cwd() }, messages }),
     );
 
-    expect(events.slice(0, 2)).toEqual([
+    // attempt_start 是每次模型响应前的边界标记（供 PreOutput 撤回本次残文），恒为事件流首条；
+    // thinking 事件从它之后开始。
+    expect(events[0]!.type).toBe('attempt_start');
+    expect(events.slice(1, 3)).toEqual([
       { type: 'thinking_start' },
       { type: 'thinking_delta', text: '需要读文件' },
     ]);
