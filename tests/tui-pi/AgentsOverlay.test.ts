@@ -100,6 +100,34 @@ describe('④ AgentsOverlay render + handleInput', () => {
     expect(onBrowse).toHaveBeenCalledWith('r1'); // 第一条 = running
   });
 
+  it('提供了 onHandoff 时 Enter 走它而不是 onBrowse', () => {
+    const onBrowse = vi.fn();
+    const onHandoff = vi.fn();
+    const overlay = new AgentsOverlay({
+      getAgents: () => agents,
+      onBrowse,
+      onHandoff,
+      requestRender: () => {},
+      onClose: () => {},
+    });
+    overlay.handleInput('\r');
+    // 接管对话优先：同面板两种入口，Enter 语义随调用方而变
+    expect(onHandoff).toHaveBeenCalledWith('r1');
+    expect(onBrowse).not.toHaveBeenCalled();
+  });
+
+  it('未提供 onHandoff 时 Enter 仍走 onBrowse（/agents 只读语义不变）', () => {
+    const onBrowse = vi.fn();
+    const overlay = new AgentsOverlay({
+      getAgents: () => agents,
+      onBrowse,
+      requestRender: () => {},
+      onClose: () => {},
+    });
+    overlay.handleInput('\r');
+    expect(onBrowse).toHaveBeenCalledWith('r1');
+  });
+
   it('Esc 调 onClose', () => {
     const onClose = vi.fn();
     const overlay = new AgentsOverlay({

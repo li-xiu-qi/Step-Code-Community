@@ -931,6 +931,50 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
   }
 
   /**
+   * 无参 `/handoff` 的选择器：列出待命中的子 agent，选中即接管对话。
+   *
+   * 复用 AgentsOverlay 但 Enter 语义换成 handoff——面板是同一个，动作不同。
+   * 只列 standby 的会话：一次性子 agent 跑完即归档，列出来也没法续聊。
+   */
+  private openHandoffPicker(): void {
+    if (this.promptActive) return;
+    const sessionId = this.session.id;
+    const standby = this.deps.subagentStore
+      .list(this.deps.ctx.cwd)
+      .filter((m) => m.parentId === sessionId && m.standby === true);
+    if (standby.length === 0) {
+      this.push({ kind: 'note', text: '没有待命中的子 agent。子 agent 需在模板里配 standby: true 才会跑完进待命，否则一次性用完即归档。' });
+      return;
+    }
+    if (this.currentRunSubagent === undefined) {
+      this.push({ kind: 'error', text: t('cmd.handoff.busy') });
+      return;
+    }
+    const overlay = new AgentsOverlay({
+      getAgents: () => standby,
+      onBrowse: () => {},
+      onHandoff: (id) => {
+        handle.hide();
+        this.overlayNeedsTick = false;
+        this.tui.setFocus(this.editor);
+        // 选中即激活：之后普通输入直接发给它，不必再敲 /handoff <id>
+        void this.runHandoff(id);
+      },
+      requestRender: () => this.tui.requestRender(),
+      onClose: () => {
+        handle.hide();
+        this.overlayNeedsTick = false;
+        this.tui.setFocus(this.editor);
+        this.tui.requestRender();
+      },
+    });
+    const handle = this.tui.showOverlay(overlay, { width: '90%', maxHeight: '80%', anchor: 'center' });
+    handle.focus();
+    this.overlayNeedsTick = true;
+    this.tui.requestRender();
+  }
+
+  /**
    * 把子 agent 进度写进最近一条运行中的 spawn_agent 条目。
    *
    * 只找「运行中」的那条：同一轮可能并行派多个子 agent，但 runner 的 onEvent 不带
@@ -2109,7 +2153,9 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       return;
     }
     if (id === '') {
-      this.push({ kind: 'note', text: '用法：/handoff <子agent-id> [追加指令] · /handoff back（返回上一层） · /handoff main（回主会话）\n示例：/handoff sub-01 继续写第三部分' });
+      // 无参时列出待命中的子 agent 让用户选。让用户复制 sub-01a7f3 这种 id 去敲，
+      // 比直接说「让那个 agent 继续」还麻烦——选择器才是对的入口。
+      this.openHandoffPicker();
       return;
     }
     if (this.currentRunSubagent === undefined) {
