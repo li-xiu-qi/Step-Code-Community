@@ -348,6 +348,10 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): RunSubagentFn {
         // 磁盘不可写等场景：静默降级为纯内存运行
       }
     };
+    // 派发标识：runTurn 工具边界注入的 tu.id，缺省退回 resume 标记或计数器。
+    // 它同时是进度事件的 id（下方所有 progress 都用它）——UI 卡片按 tool_use id 索引，
+    // 事件必须同源才能归属。子会话自身的持久化 id 是 sessionId，两者刻意分离：
+    // sessionId 进磁盘与 resume 协议，sid 只服务本次派发的 UI 路由。
     const sid = req.id ?? (resumeId !== undefined ? `re-${resumeId.slice(0, 8)}` : String(deps.sessionCounter.spawned));
     // 终态幂等：`end` 至多发一次。catch 分支要兜底补发（保证消费方一定收到终态），
     // 但正常 return 路径已发过 end 后若落盘等环节再抛，会走到同一个补发点——
@@ -452,7 +456,7 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): RunSubagentFn {
         req.description !== undefined && req.description !== ''
           ? req.description
           : req.prompt.replace(/\s+/g, ' ').slice(0, 60);
-      progress({ kind: 'start', id: sessionId, subagentType: agentDef.name, description: displayDesc });
+      progress({ kind: 'start', id: sid, subagentType: agentDef.name, description: displayDesc });
 
       let hadError = false;
       let aborted = false;
@@ -493,16 +497,16 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): RunSubagentFn {
         })) {
           if (ev.type === 'tool_start') {
             toolUses += 1;
-            progress({ kind: 'tool', id: sessionId, name: ev.name });
+            progress({ kind: 'tool', id: sid, name: ev.name });
           }
           else if (ev.type === 'tool_end') {
-            progress({ kind: 'tool_end', id: sessionId, name: ev.name, isError: ev.isError });
+            progress({ kind: 'tool_end', id: sid, name: ev.name, isError: ev.isError });
             persist(); // 每个工具回合结束落一次盘：崩溃时盘上保留到最近回合
           }
-          else if (ev.type === 'error') progress({ kind: 'error', id: sessionId, message: ev.message });
+          else if (ev.type === 'error') progress({ kind: 'error', id: sid, message: ev.message });
           else if (ev.type === 'usage' && ev.billedDelta !== undefined) {
             tokensUsed += ev.billedDelta;
-            progress({ kind: 'usage', id: sessionId, tokens: tokensUsed });
+            progress({ kind: 'usage', id: sid, tokens: tokensUsed });
           }
           if (ev.type === 'error') {
             hadError = true;
@@ -549,21 +553,21 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): RunSubagentFn {
         subSession.status = 'aborted';
         persist();
         const abortedText = '子 agent 已被中断。';
-        progress({ kind: 'end', id: sessionId, isError: true, summary: abortedText, ...endStats() });
+        progress({ kind: 'end', id: sid, isError: true, summary: abortedText, ...endStats() });
         return { summary: abortedText, isError: true, sessionId };
       }
       if (summary === '') {
         subSession.status = 'error';
         persist();
         const failed = hadError ? '子 agent 执行出错，未产出结果。' : '子 agent 未产出可用结果。';
-        progress({ kind: 'end', id: sessionId, isError: true, summary: failed, ...endStats() });
+        progress({ kind: 'end', id: sid, isError: true, summary: failed, ...endStats() });
         return { summary: failed, isError: true, cause: lastCause, sessionId };
       }
       subSession.status = hadError ? 'error' : 'done';
       // 模板配 standby: true 时进待命（30 分钟无活动自动归档），否则一次性用完即归档
       if (agentDef.standby === true) subSession.standby = true;
       persist();
-      progress({ kind: 'end', id: sessionId, isError: hadError, summary, ...endStats() });
+      progress({ kind: 'end', id: sid, isError: hadError, summary, ...endStats() });
       return { summary: summary + modelNotice, isError: hadError, cause: hadError ? lastCause : undefined, sessionId };
     } catch (e) {
       // 未捕获异常（如 provider 层抛出）：同样写终态落盘，保住已有历史

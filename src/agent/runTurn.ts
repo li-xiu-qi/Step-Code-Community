@@ -713,7 +713,15 @@ export async function* runTurn(
         }
         // 每任务独立 try/catch 转 is_error：单个工具异常不影响兄弟工具
         try {
-          let result = await executeTool(p.tu.name, p.tu.input, ctx);
+          // spawn_agent 要把 tool_use id 线程化传进 runner：runner 的 onEvent 用 req.id 作进度
+          // 事件 key，缺省退回计数器/类型名，并行时多个子 agent 撞同一个 id（外部 CLI 分支
+          // 更严重，全撞成 'claude-code'），消费方无从归属。UI 归属的是卡片，卡片 id 就是
+          // tu.id，两者必须同源。只在工具调用边界注入，runner 内部不透传。
+          const taskCtx: ToolContext =
+            p.tu.name === 'spawn_agent' && ctx.runSubagent !== undefined
+              ? { ...ctx, runSubagent: (req) => ctx.runSubagent!({ ...req, id: p.tu.id }) }
+              : ctx;
+          let result = await executeTool(p.tu.name, p.tu.input, taskCtx);
           result = await resolveFinalizeResult(hooks, { id: p.tu.id, name: p.tu.name, input: p.tu.input }, result);
           // 兜底长度上限：这一处赋值同时决定 tool_end 事件（→ items）与 makeToolResult（→ history），
           // 单点拦截覆盖三处副本，且界面与模型看到的是同一份内容。放在 hook 之后：hook 先见全文。

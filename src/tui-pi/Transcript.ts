@@ -117,6 +117,26 @@ export class Transcript implements Component {
     }
   }
 
+  /**
+   * 按卡片 id 原地更新（子 agent 进度归属用）。返回是否命中。
+   *
+   * 与 {@link updateLastWhere} 的区别：那个找「最后一个运行中的 spawn_agent」作近似，并行时
+   * 多个子 agent 的进度全堆到同一张卡片（token/耗时/工具数互相覆盖）。这里按 tool_use id
+   * 精确定位——runner 的 onEvent key 与 tool_start 的 id 已统一到 tu.id，同源才可归属。
+   */
+  updateById(id: string, next: (item: DisplayItem) => DisplayItem): boolean {
+    for (let i = this.blocks.length - 1; i >= 0; i--) {
+      const b = this.blocks[i]!;
+      const it = b.getItem();
+      if (it.kind === 'tool' && it.id === id) {
+        b.setItem(next(it));
+        if (i !== this.blocks.length - 1) this.structVer++;
+        return true;
+      }
+    }
+    return false;
+  }
+
   /** 找到最后一个满足条件的块并更新（工具状态回填用）。返回是否命中。 */
   updateLastWhere(pred: (item: DisplayItem) => boolean, next: (item: DisplayItem) => DisplayItem): boolean {
     for (let i = this.blocks.length - 1; i >= 0; i--) {
