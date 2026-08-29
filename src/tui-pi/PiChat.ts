@@ -3197,6 +3197,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
         cwd: this.session.cwd,
         sessionId: this.session.id,
         model: this.model,
+        subagentStore: this.deps.subagentStore,
       });
       this.push({
         kind: 'note',

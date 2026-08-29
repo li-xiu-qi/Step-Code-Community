@@ -37,6 +37,11 @@ export interface ExportDebugBundleOptions {
   dataDir?: string;
   /** 脱敏级别，缺省 vendor。 */
   level?: RedactLevel;
+  /** 子 agent 会话存储。传入则把该工作目录下所有子 agent 的全量日志一并打进 zip。 */
+  subagentStore?: {
+    list(cwd: string): { id: string; agentType?: string }[];
+    loadFull(cwd: string, id: string): unknown[];
+  };
 }
 
 export interface ExportDebugBundleResult {
@@ -121,8 +126,22 @@ export async function exportDebugBundle(opts: ExportDebugBundleOptions): Promise
     included.push(`session/${sessionId}.wire.jsonl`);
   }
 
-  // 2) 配置文件：按 key 名确定性脱敏后纳入（可能含 api_key）。
-  // vendor 级别：再跑一轮路径脱敏。
+  // 2) 子 agent 全量日志：把该工作目录下所有子 agent 的 full.jsonl 一并打进 zip。
+  // vendor 级别：逐行脱敏路径。
+  if (opts.subagentStore !== undefined) {
+    const subagents = opts.subagentStore.list(cwd);
+    for (const meta of subagents) {
+      const messages = opts.subagentStore.loadFull(cwd, meta.id);
+      if (messages.length === 0) continue;
+      const lines = messages.map((m) => JSON.stringify(m));
+      let content = lines.join('\n');
+      if (isVendor) content = redactPaths(content);
+      zip.addFile(`subagent/${meta.id}.full.jsonl`, Buffer.from(content, 'utf8'));
+      included.push(`subagent/${meta.id}.full.jsonl`);
+    }
+  }
+
+  // 3) 配置文件：按 key 名确定性脱敏后纳入（可能含 api_key）。
   const configPath = join(dataDir, 'config.toml');
   if (existsSync(configPath)) {
     let content = redactToml(readFileSync(configPath, 'utf8'));
