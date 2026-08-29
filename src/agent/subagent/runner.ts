@@ -253,6 +253,8 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): RunSubagentFn {
         agentType: agentDef.name,
         depth: sourceSnap.depth ?? 0,
         parentId: forkId,
+        // 用户显式另起一条线：这个动作本身就是「我知道我在开新分支」的声明，可直连。
+        owner: 'user',
       });
       sessionId = subSession.id;
       // 复制源会话的历史消息（浅拷贝，不共享数组引用）
@@ -322,6 +324,8 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): RunSubagentFn {
         // parentId 精确化：嵌套派生时 runner 经 req.parentSessionId 把自己的子会话 id 传给下一层，
         // 缺省回退主会话 id（顶层派生）
         parentId: req.parentSessionId ?? deps.parentSessionId,
+        // 主 agent 编排产物：用户只能看不能接管。要直连得自己 fork 一条。
+        owner: 'agent',
       });
       sessionId = subSession.id;
       if (!deps.subagentStore.acquireLock(deps.cwd, sessionId)) {

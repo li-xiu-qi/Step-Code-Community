@@ -15,6 +15,18 @@ import {
 } from '../agent/wirelog.js';
 import { AttachmentStore, isStepref } from './attachments.js';
 
+/**
+ * 子会话归属：决定用户能否直接向它输入。
+ *
+ * - `agent`：主 agent 编排产物（spawn_agent 拉起的）。用户在 /agents 与 /handoff 里
+ *   只能看，不能接管——那是主 agent 工作流的中间产物，闯进去改方向会让主 agent
+ *   后续读到的历史不是它自己安排的那段工作。
+ * - `user`：用户显式另起的（fork 分支）。可以直连输入。
+ *
+ * 旧快照无此字段时按 `agent` 处理（默认锁死，不主动放开）。
+ */
+export type SubagentOwner = 'agent' | 'user';
+
 export interface SessionMeta {
   id: string;
   cwd: string;
@@ -43,6 +55,12 @@ export interface SessionMeta {
    * 30 分钟无活动（以 updatedAt 判定）自动转归档。
    */
   standby?: boolean;
+  /**
+   * 归属：决定用户能否直连输入。仅子 agent 会话填写。
+   * `agent` = 主 agent 编排产物，只读；`user` = 用户显式另起，可接管。
+   * 缺省按 `agent`（默认锁死）。
+   */
+  owner?: SubagentOwner;
   /** 子会话终态（仅子 agent 会话填写：父进程仍活着时子会话可能已终态；主会话不填）。 */
   status?: 'running' | 'done' | 'error' | 'aborted';
   /**

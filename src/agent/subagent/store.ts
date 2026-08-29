@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { type StoredMessage } from '../message.js';
-import { deriveTitle, type SessionData, type SessionMeta, type SessionStore } from '../../session/store.js';
+import { deriveTitle, type SessionData, type SessionMeta, type SessionStore, type SubagentOwner } from '../../session/store.js';
 
 /**
  * 活跃锁内容（格式冻结）：pid + 启动时间戳。
@@ -145,6 +145,9 @@ export class SubagentStore {
             agentType: data.agentType,
             status: data.status,
             standby: data.standby,
+            // 漏了会让索引重建后 owner 丢失，isUserOwned 恒 false——
+            // 所有用户自己的子会话都被锁死，且只在索引过期后才暴露
+            owner: data.owner,
           });
         } catch {
           // 跳过损坏的快照文件
@@ -204,7 +207,7 @@ export class SubagentStore {
   /** 新建一个子会话（尚未落盘）：id 为 UUID，状态 running。 */
   create(
     cwd: string,
-    init: { model: string; agentType: string; depth: number; parentId?: string },
+    init: { model: string; agentType: string; depth: number; parentId?: string; owner?: SubagentOwner },
   ): SessionData {
     const now = new Date().toISOString();
     return {
@@ -219,6 +222,7 @@ export class SubagentStore {
       depth: init.depth,
       agentType: init.agentType,
       status: 'running',
+      owner: init.owner ?? 'agent',
     };
   }
 
@@ -256,6 +260,7 @@ export class SubagentStore {
       agentType: toWrite.agentType,
       status: toWrite.status,
       standby: toWrite.standby,
+      owner: toWrite.owner,
     });
   }
 
@@ -332,6 +337,21 @@ export class SubagentStore {
 
   /** 待命默认 TTL：30 分钟无活动自动归档。 */
   static readonly STANDBY_TTL_MS = 30 * 60 * 1000;
+
+  /**
+   * 该子会话是否允许用户直连输入。
+   *
+   * 主 agent 编排产物（owner === 'agent'）默认锁死：那是主 agent 工作流的中间产物，
+   * 闯进去改方向会让主 agent 后续读到的历史不是它自己安排的那段工作。
+   * 只有用户显式 fork 出来的（owner === 'user'）可接管。
+   *
+   * 缺省按 'agent'：旧快照无此字段，默认锁死比默认放开安全——放开的后果是
+   * 用户无意间改写主 agent 正在依赖的中间产物，且事后难以察觉。
+   */
+  isUserOwned(cwd: string, id: string): boolean {
+    const meta = this.list(cwd).find((m) => m.id === id);
+    return meta?.owner === 'user';
+  }
 
   /**
    * 归档超时的待命会话：standby=true 且 updatedAt 超过 TTL 的，把 standby 置 false。

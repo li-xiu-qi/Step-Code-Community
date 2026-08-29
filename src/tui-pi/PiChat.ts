@@ -953,9 +953,15 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     }
     const standby = this.deps.subagentStore
       .list(this.deps.ctx.cwd)
-      .filter((m) => m.parentId === sessionId && m.standby === true);
+      // 只列用户自己的：主 agent 编排产物选了也会被拦，列出来纯属误导
+      .filter((m) => m.parentId === sessionId && m.standby === true && m.owner === 'user');
     if (standby.length === 0) {
-      this.push({ kind: 'note', text: '没有待命中的子 agent。子 agent 需在模板里配 standby: true 才会跑完进待命，否则一次性用完即归档。' });
+      this.push({
+        kind: 'note',
+        text:
+          '没有可直接接管的子 agent。主 agent 派生的子会话是它的编排产物，只能看不能接管；' +
+          '要直接对话，先 /fork <id> 复制一条属于你的会话。',
+      });
       return;
     }
     if (this.currentRunSubagent === undefined) {
@@ -2172,6 +2178,18 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     }
     if (this.currentRunSubagent === undefined) {
       this.push({ kind: 'error', text: t('cmd.handoff.busy') });
+      return;
+    }
+    // 归属拦截：主 agent 编排产物只读。那是它工作流的中间产物，闯进去改方向会让
+    // 主 agent 后续读到的历史不是它自己安排的那段工作。要直连先自己 fork 一条——
+    // 那个动作本身就是「我知道我在另起一条线」的声明。
+    if (!this.deps.subagentStore.isUserOwned(this.deps.ctx.cwd, id)) {
+      this.push({
+        kind: 'note',
+        text:
+          `子 agent ${id} 是主 agent 的编排产物，只能看不能接管。` +
+          `要直接对话，先 /fork ${id} 复制一条属于你的会话（历史全量带走），再 /handoff 那条。`,
+      });
       return;
     }
     const instruction = parts.slice(1).join(' ');
