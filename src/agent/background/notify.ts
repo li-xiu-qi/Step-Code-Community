@@ -1,4 +1,5 @@
 import { stored, type StoredMessage } from '../message.js';
+import { notifyDedupKeyFromOrigin } from '../wirelog.js';
 import type { BackgroundTask, LostTask } from './manager.js';
 
 /** 通知里给模型看的输出尾部兜底预览上限（任务未落盘 output.log 时才用，防止长输出无谓占上下文）。 */
@@ -108,4 +109,69 @@ export type NotifyRoute = 'enqueue' | 'submit';
 
 export function decideNotifyRoute(busy: boolean): NotifyRoute {
   return busy ? 'enqueue' : 'submit';
+}
+
+/**
+ * 把多条终态通知合成为一条批量通知消息。
+ *
+ * 为什么需要：旧实现逐条提交，N 条通知 = N 次模型调用。3 天会话 resume 后补投 98 条
+ * = 98 个回合，每个回合模型都可能起新后台任务，新任务 settle 又往队列里加——队列
+ * 自我生长，表现为 resume 后 queue 滚雪球。合成一条后通知之间不再隔着模型回合。
+ *
+ * 单条时原样返回（不套 batch 信封）：那本来就是一条，套壳只会让日志更难读。
+ *
+ * origin 语义：能确定唯一 taskId/notificationId 时如实记（单条合成仍是 1），多条时
+ * 留空。逐条身份不靠 origin 承载，靠调用方逐条落盘的 delivered 事件与幂等键。
+ */
+export function mergeSettleMessages(messages: readonly StoredMessage[]): StoredMessage {
+  if (messages.length === 0) throw new Error('mergeSettleMessages: 空列表无法合成');
+  const first = messages[0]!;
+  if (messages.length === 1) return first;
+  const bodies = messages.map((m) => (typeof m.message.content === 'string' ? m.message.content : ''));
+  const taskIds = messages
+    .map((m) => m.origin.taskId)
+    .filter((t): t is string => t !== undefined);
+  const notificationIds = messages
+    .map((m) => m.origin.notificationId)
+    .filter((n): n is string => n !== undefined);
+  const content =
+    `<notification-batch count="${messages.length}" task_count="${taskIds.length}">\n` +
+    bodies.join('\n\n') +
+    '\n</notification-batch>';
+  return stored(
+    { role: 'user', content },
+    {
+      kind: 'background_task',
+      taskId: taskIds.length === 1 ? taskIds[0] : undefined,
+      notificationId: notificationIds.length === 1 ? notificationIds[0] : undefined,
+      agentId: first.origin.agentId,
+      startsPromptTurn: true,
+    },
+  );
+}
+
+/**
+ * 批量通知的 delivered 事件：逐条落盘，返回需要写的 wire 事件载荷。
+ *
+ * 合成消息只有一条，但补投去重键是单条的（`task:<taskId>:<status>`）。不逐条落盘的话，
+ * 下次 resume 对账会把这批重新投一遍——正是「resume 后 queue 暴涨」的另一半成因。
+ *
+ * alreadyWritten 由调用方维护（PiChat.deliveredWritten），避免重复写同一键。
+ */
+export function pendingBatchDeliveredEvents(
+  messages: readonly StoredMessage[],
+  alreadyWritten: ReadonlySet<string>,
+): { taskId: string; status: string; notificationId: string }[] {
+  const out: { taskId: string; status: string; notificationId: string }[] = [];
+  for (const m of messages) {
+    const o = m.origin;
+    if (o.notificationId === undefined) continue;
+    if (alreadyWritten.has(notifyDedupKeyFromOrigin(o.taskId, o.notificationId))) continue;
+    out.push({
+      taskId: o.taskId ?? '',
+      status: /^task:.+:([a-z]+)$/.exec(o.notificationId)?.[1] ?? '',
+      notificationId: o.notificationId,
+    });
+  }
+  return out;
 }

@@ -18,7 +18,7 @@ import { stored, type StoredMessage } from '../agent/message.js';
 import { navigateHistory, initialNavState } from '../session/inputHistory.js';
 import { notifyDedupKeyFromOrigin, pendingDeliveredEvents } from '../agent/wirelog.js';
 
-import { buildSettleMessage, decideNotifyRoute } from '../agent/background/notify.js';
+import { buildSettleMessage, decideNotifyRoute, mergeSettleMessages, pendingBatchDeliveredEvents } from '../agent/background/notify.js';
 import { startHeapWatch } from './heapWatch.js';
 import { logDebug } from '../utils/logger.js';
 import { emitTerminalNotification } from '../agent/background/terminal-notify.js';
@@ -373,7 +373,19 @@ export class PiChat {
   private planMode = false;
   /** 进 plan 模式前的权限模式，批准计划后恢复。 */
   private prePlanMode: PermissionMode | null = null;
+  /**
+   * 用户输入待发队列（FIFO）。真人敲的每一句、busy 时排队的斜杠命令、steer 留言。
+   * 与 notifyQueue 分开是因为优先级不同：用户输入是显式授权，必须逐条按序发出，
+   * 合并会打乱语义与权限节奏；且 Esc 取回队尾时取到的必须永远是自己的话。
+   */
   private queue: string[] = [];
+  /** 系统注入待发队列（后台任务通知）。批量投递：用户队列空时一次性全部交给模型。 */
+  private notifyQueue: string[] = [];
+
+  /** 队列长度（状态栏与常驻面板显示）：用户队列 + 通知队列之和。 */
+  private get queueLen(): number {
+    return this.queue.length + this.notifyQueue.length;
+  }
   private controller: AbortController | null = null;
   private streamBuffer: StreamBuffer;
   /** 自定义命令注册表（.step-code/commands/*.md 加载）。 */
@@ -818,11 +830,13 @@ export class PiChat {
       maxContextSize: this.maxContextSize,
       planMode: this.planMode,
       busy: this.busy,
-      queueLen: this.queue.length,
+      queueLen: this.queueLen,
       backgroundCount: running.length,
     });
     this.syncGoalBadge();
-    // 常驻面板跟状态同步：todos 由工具改、queue 由排队改，busy 态影响队列取回提示
+    // 常驻面板跟状态同步：todos 由工具改、queue 由排队改，busy 态影响队列取回提示。
+    // 只显示用户队列：通知是给模型的 XML 信封，展开给用户看只会得到一堆标签。
+    // 通知数量走状态栏 queueLen（与 backgroundCount 并列），不占面板。
     this.chrome.setTodos(this.todos.items);
     this.chrome.setQueue(this.queue);
     this.chrome.setBusy(this.busy);
@@ -1141,12 +1155,15 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
   }
 
   /**
-   * 队列变更的唯一出口：改内存 → 落 wire 事件 → 刷状态栏与常驻面板。
+   * 用户队列变更的唯一出口：改内存 → 落 wire 事件 → 刷状态栏与常驻面板。
    *
-   * 不允许各处直接改 `this.queue`：变更点有五处（busy 时排队、排队的斜杠命令、后台
-   * 通知补投、Esc 取回时清空、回合末消费剩余），任一处漏落盘就会出现「界面显示 N 条、
-   * 重启后变 M 条」。走 wire 事件而不是只等 persist 的理由见 wirelog 里 queue.update
-   * 的说明：排队发生在 busy 期间，而 persist 集中在回合边界。
+   * 不允许各处直接改 `this.queue`：变更点（busy 时排队、排队的斜杠命令、Esc 取回时清空、
+   * 回合末消费剩余），任一处漏落盘就会出现「界面显示 N 条、重启后变 M 条」。走 wire 事件
+   * 而不是只等 persist 的理由见 wirelog 里 queue.update 的说明：排队发生在 busy 期间，
+   * 而 persist 集中在回合边界。
+   *
+   * 通知队列不走这里（见 updateNotifyQueue）：它不进持久化的 session.queue，也不该让
+   * 用户的队列计数被系统通知撑大——但状态栏仍要显示总量，所以两边都要刷 syncStatus。
    */
   private updateQueue(next: readonly string[]): void {
     this.queue = [...next];
@@ -1155,6 +1172,18 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       ts: new Date().toISOString(),
       queue: next.length > 0 ? [...next] : undefined,
     });
+    this.syncStatus();
+  }
+
+  /**
+   * 通知队列变更出口：只刷内存与状态栏，不落 wire、不进 session.queue。
+   *
+   * 通知由运行时动态生成（onBackgroundSettle / reconcileBackground），其 origin 元数据
+   * （notifyPrepared）不落盘，跨会话没有意义；持久化后的补投去重靠 session.notificationBodies
+   * 而不是 queue.update 事件，所以这里不需要 wire 轨迹。
+   */
+  private updateNotifyQueue(next: readonly string[]): void {
+    this.notifyQueue = [...next];
     this.syncStatus();
   }
 
@@ -1253,14 +1282,15 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
    */
   /**
    * ↑ 取回队列尾部一条进输入框编辑（busy + 空输入时 ChatEditor.onUpArrow 调用）。
-   * pop 队尾（发送从头部 shift 消费，编辑从尾部 pop 取回，两方向不冲突）；
-   * 系统合成注入不给取回（原位放回，不跨过它往前翻，FIFO 顺序不能被打乱）；
-   * 取回成功返回 true，队列空或全是系统注入返回 false（让 ↑ 下传）。
+   * pop 队尾（发送从头部 shift 消费，编辑从尾部 pop 取回，两方向不冲突）。
+   *
+   * 只看用户队列：通知走独立队列，与用户输入物理隔离后这里不再需要 notifyPrepared
+   * 反查。旧实现二者混在一个 queue 里，必须靠「正文是不是通知」来跳过系统注入。
+   * 取回成功返回 true，队列空返回 false（让 ↑ 下传）。
    */
   private recallQueuedOne(): boolean {
     if (!this.busy || this.editor.getText() !== '' || this.queue.length === 0) return false;
     const recalled = this.queue[this.queue.length - 1]!;
-    if (this.notifyPrepared.has(recalled)) return false; // 系统注入不取回
     this.updateQueue(this.queue.slice(0, -1));
     this.editor.setText(recalled);
     return true;
@@ -1276,43 +1306,43 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       this.abortTurn();
       return true;
     }
-    if (this.queue.length > 0) {
-      // 系统合成注入（后台通知信封 / cron prompt / skill 正文）不进输入框草稿：正文是给
-      // 模型看的 XML，用户既不该编辑也读不懂，灌进去只会得到一段标签。这些条目随队列一起
-      // 丢弃（与本分支的清空语义一致），但单独报数——静默消失比丢弃更糟。
-      const dropped = this.queue.filter((s) => this.notifyPrepared.has(s));
-      const drafts = this.queue.filter((s) => !this.notifyPrepared.has(s));
-      // 被丢弃的通知不再补投，所以在此显式落盘 delivered 事件（丢弃即送达）——它们的消息
-      // 本体永远不会进 history，走不到 persist 的统一补写，不落盘就会在下次对账时重复投递。
-      for (const text of dropped) {
-        const o = this.notifyPrepared.get(text)?.origin;
-        if (o?.kind !== 'background_task' || o.notificationId === undefined) continue;
-        const key = notifyDedupKeyFromOrigin(o.taskId, o.notificationId);
-        if (this.deliveredWritten.has(key)) continue;
-        this.deliveredWritten.add(key);
-        this.appendWire({
-          type: 'background.notify_delivered',
-          ts: new Date().toISOString(),
-          taskId: o.taskId ?? '',
-          status: /^task:.+:([a-z]+)$/.exec(o.notificationId)?.[1] ?? '',
-          notificationId: o.notificationId,
-        });
-      }
-      this.updateQueue([]);
-      this.notifyPrepared.clear();
-      const cur = this.editor.getText();
-      const merged = drafts.join('\n');
-      if (merged !== '') this.editor.setText(cur === '' ? merged : `${cur}\n${merged}`);
-      this.push({
-        kind: 'note',
-        text:
-          dropped.length > 0
-            ? `已把排队消息取回输入框（另丢弃 ${dropped.length} 条系统注入）`
-            : '已把排队消息取回输入框',
+    // 用户队列与通知队列分别清空，二者语义不同：用户草稿倒回输入框，通知丢弃（即送达）。
+    // 旧实现二者混在一个 queue 里，靠 notifyPrepared.has 反查区分；现在物理隔离，直接按队列取。
+    if (this.queue.length > 0 || this.notifyQueue.length > 0) {
+      const drafts = [...this.queue];
+      const droppedBodies = [...this.notifyQueue];
+    // 被丢弃的通知不再补投，所以在此显式落盘 delivered 事件（丢弃即送达）——它们的消息
+    // 本体永远不会进 history，走不到 persist 的统一补写，不落盘就会在下次对账时重复投递。
+    for (const body of droppedBodies) {
+      const o = this.notifyPrepared.get(body)?.origin;
+      if (o?.kind !== 'background_task' || o.notificationId === undefined) continue;
+      const key = notifyDedupKeyFromOrigin(o.taskId, o.notificationId);
+      if (this.deliveredWritten.has(key)) continue;
+      this.deliveredWritten.add(key);
+      this.appendWire({
+        type: 'background.notify_delivered',
+        ts: new Date().toISOString(),
+        taskId: o.taskId ?? '',
+        status: /^task:.+:([a-z]+)$/.exec(o.notificationId)?.[1] ?? '',
+        notificationId: o.notificationId,
       });
-      this.syncStatus();
-      return true;
     }
+    this.updateQueue([]);
+    this.updateNotifyQueue([]);
+    for (const body of droppedBodies) this.notifyPrepared.delete(body);
+    const cur = this.editor.getText();
+    const merged = drafts.join('\n');
+    if (merged !== '') this.editor.setText(cur === '' ? merged : `${cur}\n${merged}`);
+    this.push({
+      kind: 'note',
+      text:
+        droppedBodies.length > 0
+          ? `已把排队消息取回输入框（另丢弃 ${droppedBodies.length} 条系统注入）`
+          : '已把排队消息取回输入框',
+    });
+    this.syncStatus();
+    return true;
+  }
     // 队列空 + 输入框空 + 有可回退的 user 消息：双击 Esc 回退编辑上一条
     if (this.editor.getText() === '' && computeBacktrack(this.history) !== null) {
       // 中断冷静期：刚按 Esc/Ctrl+C 中断完回合的 1s 内，连按 Esc 多半是「确认停了没」，
@@ -3167,6 +3197,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     // 队列不跨会话：与 fork 同理，排队内容属于上一个会话的现场（已由开头 persist 保住）。
     // 直接赋值不走 updateQueue，避免给新会话日志记一条凭空的「清空」。
     this.queue = [];
+    this.notifyQueue = [];
     this.notifyPrepared.clear();
     this.rebindBackground();
     // cron 与 compactionModelOverride 都是内存态、跨会话无意义：不重载 cron，旧会话任务会在新会话
@@ -3232,6 +3263,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     // 直接赋值不走 updateQueue——此刻日志已是副本的，落一条 queue.update 等于在副本
     // 历史上凭空记一次「清空」。
     this.queue = [];
+    this.notifyQueue = [];
     this.notifyPrepared.clear();
     // 旧后台管理器的在途任务属于源会话：先整体终止并断开结算回调，防止 settle 回灌到 fork 会话。
     const oldBg = this.background;
@@ -3332,24 +3364,25 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       });
     }
 
-    // 去重：队列里已有的通知正文不再补投。persist() 过滤器会把通知从 queue 中移走，
-    // 所以 existingKeys 同时要覆盖 notifyPrepared 中已存在但未落盘的运行时通知，
-    // 以及已持久化到 session.notificationBodies 的通知（防止 resume 后反复补投）。
+    // 去重：通知队列里已有的正文不再补投。去重键同时覆盖三处——notifyQueue（待投）、
+    // notifyPrepared 中已存在但未落盘的运行时通知，以及已持久化到 session.notificationBodies
+    // 的通知（防止 resume 后反复补投）。
     const existingKeys = new Set([
-      ...this.queue,
+      ...this.notifyQueue,
       ...this.notifyPrepared.keys(),
       ...persistedHashes,
     ]);
     for (const task of result.redeliver) {
       const msg = buildSettleMessage(task, { startsPromptTurn: true });
       const body = typeof msg.message.content === 'string' ? msg.message.content : '';
-      if (existingKeys.has(body)) continue; // 队列中已有，跳过
+      if (existingKeys.has(body)) continue; // 已有，跳过
       this.notifyPrepared.set(body, msg);
       redelivered.push(body);
     }
-    // 补投通知进入发送队列：由 finishTurn → runTurn 投递给模型，让模型知道任务结果。
+    // 补投通知进 notifyQueue（不与用户输入共享队列）：由 finishTurn 批量投给模型。
     // 这是 resume 场景下通知闭环的关键：通知不仅展示给用户，也要让模型看到。
-    if (redelivered.length > 0) this.updateQueue([...this.queue, ...redelivered]);
+    // 批量投递让 resume 后 N 条补投 = 1 个回合，而不是 N 个回合。
+    if (redelivered.length > 0) this.updateNotifyQueue([...this.notifyQueue, ...redelivered]);
   }
 
   /** 后台任务管理器换绑当前会话（任务落盘目录随会话 id 走）。 */
@@ -3413,29 +3446,35 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     // notifyOnComplete=false 只提示不注入。待投递队列要清掉，否则回合边界 flush 又注进去了
     if (this.deps.config.background?.notifyOnComplete === false) {
       this.background.drainSettled();
+      this.updateNotifyQueue([]);
       return;
     }
+    // 收集本批终态通知，按路由分流。
+    //
+    // idle（submit）：本回合已结束，直接开一个新回合投这批通知。批量在 submitNotificationBatch
+    //   里合成一条，不在这里合成——idle 路径下批次可能只有一条，合成逻辑统一放一处。
+    // busy（enqueue）：本轮还在跑，通知不能此刻直投。进 notifyQueue 由 finishTurn 批量投。
+    //   旧实现逐条 push 进 queue，与用户输入抢槽位，且 N 条 = N 个回合。
+    const settledList = this.background.drainSettled();
+    const bodies: string[] = [];
+    for (const settled of settledList) {
+      const msg = buildSettleMessage(settled, { startsPromptTurn: decideNotifyRoute(this.busy) === 'submit' });
+      const body = typeof msg.message.content === 'string' ? msg.message.content : '';
+      this.notifyPrepared.set(body, msg);
+      bodies.push(body);
+    }
+    if (bodies.length === 0) return;
     if (decideNotifyRoute(this.busy) === 'submit') {
-      for (const settled of this.background.drainSettled()) {
-        const msg = buildSettleMessage(settled, { startsPromptTurn: true });
-        const body = typeof msg.message.content === 'string' ? msg.message.content : '';
-        // silent：通知正文是给模型看的 XML 信封，不能显示成用户气泡，那等于系统冒充用户
-        // 说了一段话。用户侧可见性由上面那条 note 承担（人读格式）。
-        void this.runTurn(body, { silent: true, prepared: msg });
-      }
+      this.updateNotifyQueue([]);
+      const preparedList = bodies
+        .map((b) => this.notifyPrepared.get(b))
+        .filter((m): m is StoredMessage => m !== undefined);
+      for (const b of bodies) this.notifyPrepared.delete(b);
+      // void 而非 await：onBackgroundSettle 是 settle 回调（同步签名），不能挂 async。
+      // 批量合成与落盘都在 submitNotificationBatch 内同步完成，只有模型调用是异步的。
+      if (preparedList.length > 0) void this.submitNotificationBatch(preparedList);
     } else {
-      // busy：本轮还在跑，settled 通知不能此刻直投，会与当前回合交错。
-      // 注入待发队列，由 finishTurn 在回合边界逐条补发，兑现「回合边界 flush」。
-      // 此前此分支为空，通知滞留 pendingSettled，只能等下次 resume 的 reconcile 批量补投，
-      // 表现为待发队列突然暴涨（debug 实测：settle 时间跨 3 天的任务一次性补投 155 条）。
-      const bodies: string[] = [];
-      for (const settled of this.background.drainSettled()) {
-        const msg = buildSettleMessage(settled, { startsPromptTurn: true });
-        const body = typeof msg.message.content === 'string' ? msg.message.content : '';
-        this.notifyPrepared.set(body, msg);
-        bodies.push(body);
-      }
-      if (bodies.length > 0) this.updateQueue([...this.queue, ...bodies]);
+      this.updateNotifyQueue([...this.notifyQueue, ...bodies]);
     }
   }
 
@@ -3578,6 +3617,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       continuation: this.continuation,
       goalActive,
       queue: this.queue,
+      notifyQueue: this.notifyQueue,
       hasPendingPrompt: this.promptActive,
     });
     this.updateQueue(plan.queueRemainder);
@@ -3590,14 +3630,23 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       const text = plan.text ?? '';
       // 队列里可能混着排队的斜杠命令（busyRoute 判为 queue 的那些）
       if (text.startsWith('/')) await this.handleSlash(text);
-      else {
-        // 后台通知补投：取回带幂等键的原消息，并按 silent 走（正文是给模型看的 XML 信封）
-        const prepared = this.notifyPrepared.get(text);
-        if (prepared !== undefined) {
-          this.notifyPrepared.delete(text);
-          await this.runTurn(text, { silent: true, prepared });
-        } else await this.dispatchText(text);
-      }
+      else await this.dispatchText(text);
+      return;
+    }
+    if (plan.action === 'submit-notify') {
+      // 批量投通知：N 条终态通知合成一条提交，而不是 N 次模型调用。
+      // 旧实现逐条发，3 天会话 resume 后 98 条补投 = 98 个回合，且每个回合模型都可能起新
+      // 后台任务、新任务 settle 又往队列里加——队列自我生长，表现为 resume 后 queue 滚雪球。
+      //
+      // 逐条身份的保留：delivered 事件仍按 notificationId 逐条落盘（补投去重要的是那个键），
+      // 只是提交时机合并，模型的 undo / 压缩边界按整批算。
+      const bodies = plan.notifyBatch;
+      const preparedList = bodies
+        .map((b) => this.notifyPrepared.get(b))
+        .filter((m): m is StoredMessage => m !== undefined);
+      for (const b of bodies) this.notifyPrepared.delete(b);
+      this.updateNotifyQueue([]);
+      if (preparedList.length > 0) await this.submitNotificationBatch(preparedList);
       return;
     }
     // submit-continuation：goal 仍 active 时把 steer 留言拼进注入文本；
@@ -3612,6 +3661,34 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       text = assembleGoalInject(this.goal, raw, this.steers.splice(0));
     }
     await this.runTurn(text ?? raw, { silent: true });
+  }
+
+  /**
+   * 批量投递后台任务终态通知：N 条合成一条提交给模型，而不是 N 次模型调用。
+   *
+   * 为什么合成一条：旧实现逐条发，3 天会话 resume 后 98 条补投 = 98 个回合。每个回合模型
+   * 都会回应，回应又可能起新后台任务，新任务 settle 又往队列里加——队列自我生长。
+   * 合成一条后，通知之间不再隔着模型回合，队列也没有了自激的土壤。
+   *
+   * 合成与 delivered 事件都在纯函数里（mergeSettleMessages / pendingBatchDeliveredEvents），
+   * 可单测；这里只落副作用。逐条身份靠 delivered 事件与幂等键保留，与合成时机无关。
+   */
+  private async submitNotificationBatch(preparedList: readonly StoredMessage[]): Promise<void> {
+    if (preparedList.length === 0) return;
+    const merged = mergeSettleMessages(preparedList);
+    for (const ev of pendingBatchDeliveredEvents(preparedList, this.deliveredWritten)) {
+      const key = notifyDedupKeyFromOrigin(ev.taskId, ev.notificationId);
+      this.deliveredWritten.add(key);
+      this.appendWire({
+        type: 'background.notify_delivered',
+        ts: new Date().toISOString(),
+        taskId: ev.taskId,
+        status: ev.status,
+        notificationId: ev.notificationId,
+      });
+    }
+    const body = typeof merged.message.content === 'string' ? merged.message.content : '';
+    await this.runTurn(body, { silent: true, prepared: merged });
   }
 
   // ---------------------------------------------------------------- 模型与会话切换
@@ -3713,6 +3790,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     const restoredQueue = [...(data.queue ?? [])];
     // 过滤通知条目：同构造函数恢复路径的考虑——通知元数据不落盘，resume 后会退化为纯文本。
     this.queue = PiChat.filterUserMessages(restoredQueue);
+    this.notifyQueue = [];
     this.notifyPrepared.clear();
     // goal 跟着目标会话恢复：从 GoalStore 按目标 sessionId 加载最近的活跃 goal（已完成的不恢复）。
     const targetGoal = this.deps.goalStore
@@ -4509,7 +4587,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
           // updateLastWhere 每次只收尾最后一个匹配项，循环到没有成形卡为止
         }
         // steer 残留倒进队列头部：中断后按队列机制续发，用户留言不凭空消失
-        if (this.steers.length > 0) this.queue.unshift(...this.steers.splice(0));
+        if (this.steers.length > 0) this.updateQueue([...this.steers.splice(0), ...this.queue]);
         // 去重：连续 abort 只推一条通知（末尾已存在 abort 通知则跳过），避免队列消耗过程中
         // 每条消息触发一次通知形成瀑布（实测 61 条队列 → 61 条通知刷屏）。
         // 队列剩余数由状态栏 queue:N 实时反映，转录区只需提示「发生了中断」，不须逐条计数。
@@ -4518,7 +4596,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
         if (!isDuplicateAbort) {
           this.transcript.push({
             kind: 'note',
-            text: this.queue.length > 0 ? `已中断，队列中 ${this.queue.length} 条将继续发送` : '已中断',
+            text: this.queueLen > 0 ? `已中断，队列中 ${this.queueLen} 条将继续发送` : '已中断',
             boundary: true,
           });
         }

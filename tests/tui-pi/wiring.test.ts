@@ -359,8 +359,12 @@ describe('PiChat 接线：busy ↑ 取回排队单条', () => {
     wired(piChat, 'this.queue.length === 0', '队列非空闸门');
   });
 
-  it('recallQueuedOne 跳过系统合成注入（notifyPrepared）', () => {
-    wired(piChat, 'this.notifyPrepared.has(recalled)', '系统注入判定');
+  it('recallQueuedOne 只看用户队列（通知走独立 notifyQueue，无需反查）', () => {
+    wired(piChat, 'private notifyQueue: string[] = []', '通知队列字段存在');
+    wired(piChat, 'this.queue[this.queue.length - 1]!', '从用户队列尾部取回');
+    // 旧实现靠 notifyPrepared.has(recalled) 反查跳过系统注入；双队列拆分后通知不在
+    // this.queue 里，这道反查已无对象可判。断言它不存在，防止回归成混合队列。
+    expect(piChat.includes('this.notifyPrepared.has(recalled)')).toBe(false);
   });
 
   it('ChromePanels 队列预览分 busy/idle 两种取回提示', () => {
