@@ -86,6 +86,17 @@ export function renderWelcome(data: WelcomeData, width: number): string[] {
  */
 const CTRL_B_TOOLS = new Set(['bash', 'spawn_agent', 'dynamic_workflow']);
 
+/**
+ * 并行子 agent 卡片折叠阈值：同时运行中的 spawn_agent 达到此数时，每张卡片折成一行。
+ *
+ * 取 3 而非 2：两张卡片共 10 行，终端（常见 40 行）装得下，完整信息比省空间有用；
+ * 三张 15 行开始挤。也不做「始终折叠」——`max_concurrent` 默认 4，用户日常常只跑一两个，
+ * 单任务时折叠是纯粹的信息损失。
+ *
+ * 阈值由 PiChat 经 setSubagentParallel 写入卡片字段（Transcript 不反向扫描块：O(N)/帧）。
+ */
+export const SUBAGENT_FOLD_THRESHOLD = 3;
+
 /** 工具入参的单行摘要（折叠态标题行与 Ctrl+O 条目标题共用）。字段顺序即优先级。 */
 export function summarizeInput(input: unknown): string {
   if (input === null || typeof input !== 'object') return '';
@@ -414,6 +425,17 @@ export class ItemBlock implements Component {
       } else {
         out.push(c.dim(`    ↳ ${wf.phases.length} 个阶段`));
       }
+    }
+
+    // 并行折叠：同时运行中的 spawn_agent 达到阈值时，本卡片只出一行摘要。
+    // 信息没有丢——头部有总数，Ctrl+O 全屏查看器走 renderExpanded 仍是完整形态（含子工具列表）。
+    // 只折运行中的：终态卡片本来就只有 3 行（子工具已折叠成计数），再折省不了多少，
+    // 反而让用户回看时看不到哪个子 agent 用了哪些工具。
+    if (it.name === 'spawn_agent' && it.status === 'running' && (it.subagentParallel ?? 0) >= SUBAGENT_FOLD_THRESHOLD) {
+      const label = [it.subagentType, it.description].filter((x) => x !== undefined).join(' · ');
+      const cur = it.subagentToolEvents?.filter((e) => e.status === 'running').at(-1);
+      const one = [label, subagentStats(it), cur !== undefined ? `${cur.name}` : ''].filter((x) => x !== '').join(' · ');
+      return clamp([`${mark} ${c.toolName(it.name)}${one !== '' ? c.dim(` ${one}`) : ''}`]);
     }
 
     // 子 agent 进度：统计段 + 嵌套工具事件（运行中显示最近 3 条，完成后折叠计数），直接挂在卡片上
