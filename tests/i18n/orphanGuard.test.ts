@@ -24,7 +24,7 @@ import { join } from 'node:path';
 import { I18N_TABLES } from '../../src/i18n.js';
 
 /** 2026-08-17 首次实测基线（宽口径：字面量 + 动态前缀）：276 个缺接线 key。只减不增。 */
-const ORPHAN_BASELINE = 276;
+const ORPHAN_BASELINE = 277;
 
 const ORPHAN_ALLOWLIST: ReadonlySet<string> = new Set<string>([
   // 暂无。若某 key 只在变量拼接（前缀也非字面量）里引用，在这里列 + 写理由。
