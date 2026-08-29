@@ -24,7 +24,7 @@ import { listDirTool } from './listDir.js';
 import { readFileTool } from './readFile.js';
 import { readMediaTool } from './readMedia.js';
 import { spawnAgentTool } from './spawnAgent.js';
-import { subagentListTool, subagentKillTool, subagentStatusTool, subagentTraceTool } from './subagentControl.js';
+import { subagentListTool, subagentKillTool, subagentStatusTool, subagentTraceTool, subagentTraceExportTool } from './subagentControl.js';
 import { sessionInboxTool, sessionListTool, sessionSendTool } from './sessionSend.js';
 import { skillTool } from './skill.js';
 import { skillSearchTool } from './skillSearch.js';
@@ -55,6 +55,7 @@ const ALL_TOOLS: ToolDef<any>[] = [
   subagentKillTool,
   subagentStatusTool,
   subagentTraceTool,
+  subagentTraceExportTool,
   sessionSendTool,
   sessionListTool,
   sessionInboxTool,

@@ -1,4 +1,7 @@
 import { z } from 'zod';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { isAbsolute, join } from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
 import { fail, ok, type ToolDef, type ToolResult } from './types.js';
 import type { SubagentDeleteResult } from '../agent/subagent/store.js';
@@ -116,8 +119,9 @@ const traceSchema = z.object({
     .describe('只返回指定角色的消息。留空返回全部。'),
 });
 
-/** 提取消息文本内容（兼容 string 和 block array 两种形态）。 */
-function extractText(content: Anthropic.MessageParam['content']): string {
+/** 提取消息文本内容（兼容 string 和 block array 两种形态）。导出器与 subagent_trace 共用，
+ *  避免两处格式化逻辑漂移后导出内容与屏显内容不一致。 */
+export function extractText(content: Anthropic.MessageParam['content']): string {
   if (typeof content === 'string') return content;
   const parts: string[] = [];
   for (const block of content) {
@@ -213,5 +217,107 @@ export const subagentStatusTool: ToolDef<z.infer<typeof statusSchema>> = {
       `锁文件:      ${isRunning ? '活跃（进程存活）' : '无/已释放'}`,
     ];
     return ok(lines.join('\n'));
+  },
+};
+
+// ─── subagent_trace_export ───────────────────────────────────────────────────
+
+const traceExportSchema = z.object({
+  id: z.string().describe('要导出的子 agent 会话 id。从 subagent_list 获取。'),
+  /** 导出目录。缺省 ~/.step-code/traces/。相对路径按 cwd 解析。 */
+  outDir: z.string().optional().describe('导出目录，缺省 ~/.step-code/traces/'),
+  /** 是否同时产出人读的 .md。缺省 true——复盘时人要看，脚本要读 jsonl，两者都要。 */
+  withMarkdown: z.boolean().optional().describe('是否同时导出人读的 Markdown，缺省 true'),
+});
+
+/** 时间戳后缀：与 debugBundle 同一格式，保证同目录下按名排序即时间序。 */
+function traceStamp(now: Date): string {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return (
+    `${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}` +
+    `${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}`
+  );
+}
+
+/**
+ * 把子 agent 的完整 trace 落盘。
+ *
+ * 与 subagent_trace 的分工：后者把历史灌进对话上下文（受 50 条上限约束，防上下文爆炸），
+ * 本工具落盘不受限——测评对比需要全量 trace，截断会丢掉关键轮次。
+ *
+ * 双格式：.jsonl 一行一条消息（与 SubagentStore 存储格式一致，可被脚本回读），
+ * .md 供人读。工具使用场景是 A/B 对比两个模型在同一任务上的产出，人和脚本都要消费。
+ */
+export const subagentTraceExportTool: ToolDef<z.infer<typeof traceExportSchema>> = {
+  name: 'subagent_trace_export',
+  description:
+    '把一个子 agent 会话的完整消息历史导出为文件（.jsonl 供程序读取 + .md 供人阅读）。' +
+    '与 subagent_trace 的区别：那条受 50 条上限约束防上下文爆炸，本工具落盘不受限，适合留存全量 trace 做复盘或对比。',
+  schema: traceExportSchema,
+  access: () => ({ kind: 'none' }),
+  async execute(input, ctx) {
+    if (ctx.subagentStore === undefined) return fail('当前上下文不支持子 agent 管理。');
+    const snap = ctx.subagentStore.loadSnapshot(ctx.cwd, input.id);
+    if (snap === null) return fail(`子 agent 会话 ${input.id} 不存在。用 subagent_list 确认 id。`);
+    const all = ctx.subagentStore.loadFull(ctx.cwd, input.id);
+    if (all.length === 0) return fail(`子 agent 会话 ${input.id} 没有消息记录。`);
+
+    const outDir =
+      input.outDir !== undefined && input.outDir !== ''
+        ? isAbsolute(input.outDir)
+          ? input.outDir
+          : join(ctx.cwd, input.outDir)
+        : join(homedir(), '.step-code', 'traces');
+    const base = `${snap.agentType ?? 'subagent'}-${input.id.slice(0, 8)}-${traceStamp(new Date())}`;
+
+    try {
+      mkdirSync(outDir, { recursive: true });
+    } catch (e) {
+      return fail(`无法创建导出目录 ${outDir}：${(e as Error).message}`);
+    }
+
+    const jsonlPath = join(outDir, `${base}.jsonl`);
+    const lines = all.map((m) =>
+      JSON.stringify({ ts: m.ts, id: m.id, origin: m.origin, message: m.message }),
+    );
+    try {
+      writeFileSync(jsonlPath, lines.join('\n') + '\n', 'utf8');
+    } catch (e) {
+      return fail(`写入 ${jsonlPath} 失败：${(e as Error).message}`);
+    }
+
+    const written = [jsonlPath];
+    if (input.withMarkdown !== false) {
+      const mdPath = join(outDir, `${base}.md`);
+      const head = [
+        `# 子 agent trace：${snap.agentType ?? '未知角色'}（${input.id}）`,
+        '',
+        `- 消息数：${all.length}`,
+        `- 创建：${snap.createdAt}`,
+        `- 更新：${snap.updatedAt}`,
+        `- 父会话：${snap.parentId ?? '无（顶层派生）'}`,
+        `- 深度：${snap.depth}`,
+        snap.title !== undefined ? `- 标题：${snap.title}` : '',
+        '',
+        '---',
+        '',
+      ]
+        .filter((l) => l !== '')
+        .join('\n');
+      const body = all
+        .map((m, i) => {
+          const text = extractText(m.message.content).trim();
+          return `## [${i + 1}] ${m.message.role}（${m.ts}）\n\n${text === '' ? '（空）' : text}`;
+        })
+        .join('\n\n');
+      try {
+        writeFileSync(mdPath, head + body + '\n', 'utf8');
+        written.push(mdPath);
+      } catch {
+        // md 是附加产物，写失败不影响 jsonl 已落盘这一事实
+      }
+    }
+
+    return ok(`已导出 ${all.length} 条消息：\n${written.map((p) => `- ${p}`).join('\n')}`);
   },
 };
