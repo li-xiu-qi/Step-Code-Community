@@ -222,9 +222,10 @@ describe('runner 消费 usage 事件（计费口径累计上抛）', () => {
     const r = await run({ subagentType: 'general', prompt: '干活', depth: 0 });
     expect(r.isError).toBe(false);
     // 第 1 轮 100+10=110（cache_read 不计入）；第 2 轮 200+20=220 → 累计 330
+    // 用 objectContaining：id 由 runner 填入，这里只验计费口径，不为 id 取值
     expect(events.filter((e) => e.kind === 'usage')).toEqual([
-      { kind: 'usage', tokens: 110 },
-      { kind: 'usage', tokens: 330 },
+      expect.objectContaining({ kind: 'usage', tokens: 110 }),
+      expect.objectContaining({ kind: 'usage', tokens: 330 }),
     ]);
   });
 
@@ -248,8 +249,8 @@ describe('runner 消费 usage 事件（计费口径累计上抛）', () => {
     expect(r.summary).toBe(LONG);
     // 追加轮（55 + 110 = 165）接着首轮累计，不重置
     expect(events.filter((e) => e.kind === 'usage')).toEqual([
-      { kind: 'usage', tokens: 55 },
-      { kind: 'usage', tokens: 165 },
+      expect.objectContaining({ kind: 'usage', tokens: 55 }),
+      expect.objectContaining({ kind: 'usage', tokens: 165 }),
     ]);
   });
 
@@ -312,11 +313,13 @@ describe('start 事件的显示描述（短标签优先，防长 prompt 挤掉�
     const { provider } = makeFakeProvider([{ textChunks: [], finalContent: [textBlock(LONG)] }]);
     const run = createSubagentRunner(deps(provider, (_id, e) => events.push(e)));
     await run({ subagentType: 'general', prompt: '背景：很长很长的任务描述', depth: 0, description: '实施 /reload 命令' });
-    expect(events.find((e) => e.kind === 'start')).toEqual({
-      kind: 'start',
-      subagentType: 'general',
-      description: '实施 /reload 命令',
-    });
+    expect(events.find((e) => e.kind === 'start')).toEqual(
+      expect.objectContaining({
+        kind: 'start',
+        subagentType: 'general',
+        description: '实施 /reload 命令',
+      }),
+    );
   });
 
   it('req 无 description → 退回 prompt 截断且压平换行', async () => {
@@ -325,7 +328,9 @@ describe('start 事件的显示描述（短标签优先，防长 prompt 挤掉�
     const run = createSubagentRunner(deps(provider, (_id, e) => events.push(e)));
     await run({ subagentType: 'general', prompt: '第一行\n第二行\r\n第三行', depth: 0 });
     const start = events.find((e) => e.kind === 'start');
-    expect(start).toEqual({ kind: 'start', subagentType: 'general', description: '第一行 第二行 第三行' });
+    expect(start).toEqual(
+      expect.objectContaining({ kind: 'start', subagentType: 'general', description: '第一行 第二行 第三行' }),
+    );
   });
 });
 
