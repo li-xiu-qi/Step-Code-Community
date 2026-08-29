@@ -46,7 +46,15 @@ export class PickerOverlay implements Component {
   private readonly onKey?: (data: string, selected: SelectItem | null) => boolean;
   private readonly hint: string;
   /** 标题下方的说明行。与底部 hint 分开：hint 承担操作键提示，subtitle 放业务说明。 */
-  private readonly subtitle?: string;
+  private subtitle?: string;
+  /**
+   * 选中项变化回调（↑↓/jk/过滤后触发）。
+   *
+   * 用途是「详情随选中项变」的面板（如 /agents 要看当前子会话的消息数与耗时）：
+   * subtitle 是构造时定死的，单靠它表达不了随选项变化的内容，故暴露这个钩子，
+   * 消费方在回调里调 setSubtitle() 更新。未设置则不做额外重渲。
+   */
+  private readonly onSelectionChange?: (item: SelectItem | null) => void;
   private readonly maxVisible: number;
   /** Shift+Enter 确认（如模型选择器的「仅本会话生效」）；不设则 shift+enter 走普通确认。 */
   private readonly onShiftSelect?: (item: SelectItem) => void;
@@ -68,6 +76,11 @@ export class PickerOverlay implements Component {
     maxVisible?: number;
     hint?: string;
     subtitle?: string;
+    /**
+     * 选中项变化回调。面板要展示「随选中项变化的详情」时提供，配合 setSubtitle 使用。
+     * 注意：↑↓ 移动时每次触发，回调里不要做重活（查库/拼长文本），否则光标移动会卡。
+     */
+    onSelectionChange?: (item: SelectItem | null) => void;
     requestRender: () => void;
     onSelect: (item: SelectItem) => void;
     onCancel: () => void;
@@ -83,6 +96,7 @@ export class PickerOverlay implements Component {
     this.allItems = [...opts.items];
     this.hint = opts.hint ?? t('picker.hint.default');
     this.subtitle = opts.subtitle;
+    this.onSelectionChange = opts.onSelectionChange;
     this.requestRender = opts.requestRender;
     this.onSelectItem = opts.onSelect;
     this.onCancel = opts.onCancel;
@@ -123,7 +137,9 @@ export class PickerOverlay implements Component {
     this.list.setFilter('');
     this.filteredCount = candidates.length;
     this.selIdx = 0;
-    this.requestRender();
+    // 过滤后选中项可能整个换掉（旧选中项被过滤没了），必须通知消费方更新详情。
+    // 空候选时传 null，消费方据此清空详情行。
+    this.notifySelection();
   }
 
   private buildList(items: SelectItem[]): SelectList {
@@ -134,8 +150,28 @@ export class PickerOverlay implements Component {
       // 同步选中索引：SelectList 内部改了索引，我们也要知道（用于 ↑↓ 钳制）
       const idx = items.indexOf(item);
       if (idx >= 0) this.selIdx = idx;
+      this.notifySelection();
     };
     return list;
+  }
+
+  /**
+   * 把当前选中项推给消费方。
+   *
+   * 单独抽出来是因为 SelectList 的 onSelectionChange **只在点击/Enter 时触发**，
+   * ↑↓ 走的是我们外层拦截 + setSelectedIndex，那条路不会回调（实测确认）。
+   * 所以 ↑↓、过滤重建、点击三条路径都要显式调它，否则消费方看到的详情会停在旧项上。
+   */
+  private notifySelection(): void {
+    const item = this.filteredCount > 0 ? (this.list.getSelectedItem() ?? null) : null;
+    this.onSelectionChange?.(item);
+    this.requestRender();
+  }
+
+  /** 供消费方在 onSelectionChange 回调里更新随选项变化的详情行。 */
+  setSubtitle(text: string | undefined): void {
+    this.subtitle = text;
+    this.requestRender();
   }
 
   invalidate(): void {
@@ -214,8 +250,10 @@ export class PickerOverlay implements Component {
         const next = Math.max(0, Math.min(this.selIdx + delta, this.filteredCount - 1));
         if (next !== this.selIdx) {
           this.selIdx = next;
+          // setSelectedIndex 不触发 SelectList 的 onSelectionChange（那是点击专用），
+          // 故这里显式通知，否则详情行会停在旧选中项上。
           this.list.setSelectedIndex(this.selIdx);
-          this.requestRender();
+          this.notifySelection();
         }
       }
       return;
@@ -305,6 +343,40 @@ export function sessionItems(metas: readonly SessionMeta[], now = Date.now(), cu
 }
 
 /**
+ * `/agents` 候选项：状态标记 + 角色 + 层级缩进。
+ *
+ * 与 sessionItems 的分工：那个面向主会话（人类用户的历史），这个面向子 agent
+ * （编排产物与待命会话）。子 agent 的辨认维度不同——角色和状态比标题重要，
+ * 且多层嵌套要靠缩进看出谱系。运行中永远排最前，靠调用方先过 sortAgents。
+ *
+ * 层级缩进用每层 2 空格而非 tree 连接线：缩进本身就是「这是下层的」信号，
+ * 连接线在只读列表里只会增加视觉噪音（选中高亮会盖住 ├─ 的左半）。
+ */
+export function agentItems(agents: readonly SessionMeta[], now = Date.now()): SelectItem[] {
+  const mark = (a: SessionMeta): string => {
+    switch (a.status) {
+      case 'running': return c.warn('●');
+      case 'done': return c.ok('✓');
+      case 'error': return c.error('✗');
+      case 'aborted': return c.dim('○');
+      default: return c.dim('·');
+    }
+  };
+  return agents.map((a) => {
+    const depth = a.depth ?? 0;
+    const indent = depth > 0 ? '  '.repeat(depth) : '';
+    const type = c.accent(a.agentType ?? 'general');
+    const label = a.name ?? a.title ?? a.preview?.slice(0, 40) ?? a.id.slice(0, 8);
+    const owner = a.owner === 'user' ? c.ok('可接管') : c.dim('只读');
+    return {
+      value: a.id,
+      label: `${indent}${mark(a)} ${type} ${label}`,
+      description: `${owner} · ${relativeTime(a.updatedAt, now)} · ${t('sessionPicker.count', { count: a.messageCount })} · ${a.id.slice(0, 8)}`,
+    };
+  });
+}
+
+/**
  * 模型选择器候选项：按渠道分组（同渠道的别名连续排列，渠道按配置首现顺序），
  * 描述里带真实 id 与窗口大小。当前生效的别名标一个「当前」。
  * channel 传入且非 'all' 时只留该渠道条目（渠道 tab 的结构性预过滤）。
@@ -383,6 +455,12 @@ export function showPicker(
     hint?: string;
     /** 标题下方的说明行；业务说明走这里，别塞进 hint（那会顶掉操作键提示）。 */
     subtitle?: string;
+    /**
+     * 选中项变化回调（↑↓/jk/点击/过滤后触发）。供「详情随选中项变」的面板使用，
+     * 回调里拿到的 overlay 可调 setSubtitle() 更新详情行。
+     * ↑↓ 每次移动都触发，回调里别做重活。
+     */
+    onSelectionChange?: (item: SelectItem | null, overlay: PickerOverlay) => void;
     onKey?: (data: string, selected: SelectItem | null, overlay: PickerOverlay) => boolean;
     /** Shift+Enter 确认入口（模型选择器「仅本会话生效」）。 */
     onShiftSelect?: (value: string) => void;
@@ -416,6 +494,11 @@ export function showPicker(
       items: opts.items,
       hint: opts.hint,
       subtitle: opts.subtitle,
+      onSelectionChange: opts.onSelectionChange === undefined
+        ? undefined
+        : (item) => {
+            if (overlay !== undefined) opts.onSelectionChange!(item, overlay);
+          },
       requestRender: () => tui.requestRender(),
       onSelect: (item) => finish(item.value),
       onCancel: () => finish(null),
