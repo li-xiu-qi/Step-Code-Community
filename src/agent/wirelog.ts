@@ -179,12 +179,26 @@ export type WireEvent =
       task: BackgroundTask;
     }
   | {
-      /** 一条终态通知已投递进会话历史（「已送达」集合的持久化形态，重放时回填）。 */
+      /** 一条跨会话消息已投递进会话历史（「已送达」集合的持久化形态，重放时回填）。 */
       type: 'background.notify_delivered';
       ts: string;
       taskId: string;
       status: string;
       notificationId: string;
+    }
+  | {
+      /**
+       * 跨会话消息被消费后向投递方回执（审计用，不参与重放状态迁移）。
+       *
+       * 记这条是为了让「我发的消息对方到底读没读」可事后查：messageId 是原消息，
+       * receiptId 是回执，to 是投递方会话。跨会话交接断了时能定位断在哪一环。
+       */
+      type: 'session.queue_receipt';
+      ts: string;
+      messageId: string;
+      receiptId: string;
+      /** 回执的去向（原消息的投递方）。 */
+      to: string;
     }
   | {
       /**

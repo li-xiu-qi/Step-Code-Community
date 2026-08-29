@@ -31,14 +31,17 @@ const inboxSchema = z.object({
 /** 查看当前会话的跨 session 待收件箱（未消费消息），不消费。 */
 export const sessionInboxTool: ToolDef<z.infer<typeof inboxSchema>> = {
   name: 'session_inbox',
-  description: '查看当前会话的跨会话待收件箱：列出别的会话投递来、尚未被本条 run 消费的消息。',
+  description: '查看当前会话的跨会话待收件箱（审计用）。注意：跨会话消息会在本轮 run 启动时自动 drain 进历史，模型无需主动查也能看到；且你投出的消息在对方读取后会自动回执到你的收件箱。本工具只在需要核对「谁在何时投了什么、哪些还没被读」时用。',
   schema: inboxSchema,
   async execute(_input, ctx) {
     if (ctx.sessionQueue === undefined) return fail('当前上下文不支持跨会话收件箱。');
     const sid = ctx.sessionId ?? '';
     const pending = ctx.sessionQueue.peek(sid);
     if (pending.length === 0) return ok('收件箱为空，没有待处理的跨会话消息。');
-    const lines = pending.map((m) => `[${m.createdAt}] 来自 ${m.from}\n${m.text}`);
+    const lines = pending.map((m) => {
+      const tag = m.kind === 'receipt' ? '（已读回执）' : '';
+      return `[${m.createdAt}]${tag} 来自 ${m.from}\n${m.text}`;
+    });
     return ok(lines.join('\n\n---\n\n'));
   },
 };
