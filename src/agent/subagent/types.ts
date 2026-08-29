@@ -21,6 +21,13 @@ export interface AgentDefinition {
   disabledSkills?: string[];
   /** system prompt（markdown 定义时取正文）。 */
   systemPrompt: string;
+  /**
+   * 跑完后是否进待命（standby）而非直接归档。
+   * standby = 出现在 /agents 列表和 subagentListing 里，主控可以主动 handoff，用户可以 /handoff 切换进去。
+   * 默认 false（一次性，跑完即归档）。模板配 `standby: true` 标记为待命。
+   * 待命不占并发槽位，只占列表可见性；30 分钟无活动自动转归档。
+   */
+  standby?: boolean;
 }
 
 /** 子 agent 派生请求。 */

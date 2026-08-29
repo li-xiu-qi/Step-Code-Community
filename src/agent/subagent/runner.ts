@@ -553,6 +553,8 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): RunSubagentFn {
         return { summary: failed, isError: true, cause: lastCause, sessionId };
       }
       subSession.status = hadError ? 'error' : 'done';
+      // 模板配 standby: true 时进待命（30 分钟无活动自动归档），否则一次性用完即归档
+      if (agentDef.standby === true) subSession.standby = true;
       persist();
       progress({ kind: 'end', isError: hadError, summary, ...endStats() });
       return { summary: summary + modelNotice, isError: hadError, cause: hadError ? lastCause : undefined, sessionId };
