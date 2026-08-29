@@ -45,6 +45,12 @@ export class Transcript implements Component {
   /** 被折叠的块数累计（turn 内裁剪产生）。 */
   private foldedBlocks = 0;
   /**
+   * 并行子 agent 计数（头部显示，非折叠提示）。由消费方按 start/end 事件维护——Transcript
+   * 自己不扫描块（那是 O(N)/帧，且与 prefixCache 的冻结前提冲突）。
+   * 只记运行中数：终态数从卡片上看得见，头部要回答的是「还有几个在跑」。
+   */
+  private runningSubagents = 0;
+  /**
    * 结构版本号：块数组发生结构性变化（push/reset/折叠/裁剪）时自增；尾块的内容变更不递增。
    * 与 prefixCache 配套——render 时据此判断「非尾块的冻结前缀是否仍有效」。尾块是流式追加与
    * 工具状态回填的唯一热变更目标，它的变化不该让前缀缓存每帧失效，否则冻结形同虚设。
@@ -156,6 +162,22 @@ export class Transcript implements Component {
   }
 
   /**
+   * 设置并行子 agent 的运行中计数（头部显示用）。消费方按 start/end 事件驱动：
+   * start +1、end -1，下限钳到 0（防止事件乱序或重复 end 把计数压成负数）。
+   * 不递增 structVer——计数是每帧热变更，递增会让前缀缓存每帧失效，冻结即失效。
+   */
+  setRunningSubagents(n: number): void {
+    const next = Math.max(0, n);
+    if (next === this.runningSubagents) return;
+    this.runningSubagents = next;
+  }
+
+  /** 当前运行中的子 agent 数（测试与消费方自查用）。 */
+  runningSubagentCount(): number {
+    return this.runningSubagents;
+  }
+
+  /**
    * 逐回合折叠旧块为摘要（OOM 第二道防线，设计文档 `前端设计-pi版/20260818-Transcript逐回合折叠与块释放设计.md`）。
    *
    * 与 {@link trim} 的区别：trim 是删行（触发全屏重绘+清 scrollback，见文件头注释，仅 2000 轮安全阀用）；
@@ -263,6 +285,18 @@ export class Transcript implements Component {
     }
     if (this.foldedBlocks > 0) {
       head.push(truncateToWidth(c.dim(`· 本轮 ${this.foldedBlocks} 个条目已折叠`), width));
+    }
+    // 并行子 agent 头部计数：≥2 才显示。单个时不显示——一张卡片自己会说，多一行是噪音。
+    // 与 foldedTurns/foldedBlocks 同属 head，但它们触发的是结构变化（structVer++），
+    // 计数是每帧热变更，故独立于前缀缓存、每帧重算（成本 1 行，与现有 head 同档）。
+    if (this.runningSubagents >= 2) {
+      head.push(
+        truncateToWidth(
+          c.dim(`· 并行运行 ${this.runningSubagents} 个子 agent`),
+          width,
+        ),
+        '',
+      );
     }
 
     const lastIdx = this.blocks.length - 1;
