@@ -74,7 +74,9 @@ describe('runAgent', () => {
     const events = await collect(
       runAgent(baseOpts(provider, [sm({ role: 'user', content: 'hi' })], ac.signal)),
     );
-    expect(events).toEqual([{ type: 'aborted' }]);
+    // attempt_start 是每次模型响应前的边界标记（供 PreOutput 撤回本次残文），
+    // 它在 runTurn 之前 yield，所以预先中止时也会出现；要锁的是不调 provider。
+    expect(events.filter((e) => e.type !== 'attempt_start')).toEqual([{ type: 'aborted' }]);
     expect(streamCalls()).toBe(0);
   });
 

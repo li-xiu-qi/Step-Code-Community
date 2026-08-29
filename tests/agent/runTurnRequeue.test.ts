@@ -5,6 +5,7 @@ import type { AgentEvent } from '../../src/agent/events.js';
 import { runAgent } from '../../src/agent/loop.js';
 import { stored, type StoredMessage } from '../../src/agent/message.js';
 import { subagentRequeueDelay, SUBAGENT_REQUEUE_MAX } from '../../src/agent/runTurn.js';
+import { RETRY_MAX_429_ATTEMPTS } from '../../src/provider/retry.js';
 import type { ToolContext } from '../../src/tools/types.js';
 import { collect, makeFakeProvider, textBlock, toolUseBlock } from '../helpers/fakeProvider.js';
 
@@ -217,14 +218,13 @@ describe('runTurn 错误码 → 建议用户动作文案', () => {
   });
 
   it('429 重试耗尽 → error 事件附限流持续的建议', async () => {
-    const { provider, streamCalls } = makeFakeProvider([
-      { throw: rateLimitErr() },
-      { throw: rateLimitErr() },
-      { throw: rateLimitErr() },
-    ]);
+    // 429 的重试上限是 RETRY_MAX_429_ATTEMPTS（5 次），不是普通错误的 3 次。
+    // 只喂 3 个会走进 final === undefined 分支，只发 turn.incomplete、丢掉限流建议，
+    // 测不到 advice 拼接。喂满 5 次才命中「重试耗尽带建议」这条路径。
+    const { provider, streamCalls } = makeFakeProvider(Array.from({ length: RETRY_MAX_429_ATTEMPTS }, () => ({ throw: rateLimitErr() })));
     const events = await collect(runAgent(base(provider, [sm('hi')])));
     const err = events.find((e) => e.type === 'error') as { type: 'error'; message: string } | undefined;
-    expect(streamCalls()).toBe(3); // 重试循环先扛过一轮
+    expect(streamCalls()).toBe(RETRY_MAX_429_ATTEMPTS);
     expect(err?.message).toContain('限流持续');
   }, 15000);
 

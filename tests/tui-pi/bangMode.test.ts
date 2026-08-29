@@ -41,7 +41,10 @@ describe('! bash 输入模式接线', () => {
 
   it('bash 命令不进提示词历史（历史隔离）', () => {
     const submit = piChat.slice(piChat.indexOf('private async onSubmit'), piChat.indexOf('private async dispatchText'));
-    expect(submit).toContain('if (!isBang) this.editor.addToHistory(text)');
+    expect(submit).toContain("const isBang = text.startsWith('!') && text.length > 1;");
+    expect(submit).toContain('if (!isBang) {');
+    expect(submit).toContain('this.editor.addToHistory(text);');
+    expect(submit).toContain('this.promptHistory.push(text);');
   });
 
   it('执行复用 bashTool.execute 且注入带标签的上下文', () => {

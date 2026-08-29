@@ -141,17 +141,21 @@ export class DynamicWorkflowSandbox {
         throw new SandboxInterrupt(this.interruptReason);
       }
       // 非中断错误：序列化错误信息后抛出让 runner 处理
+      // 注意：序列化与 throw 必须在同一个 try 里完成，但 throw 出的对象不能被本块的
+      // catch 捕获——否则 errHandle 二次 dispose 会抛 Lifetime not alive，把真正的
+      // SyntaxError 覆盖成「内部错误：Lifetime not alive」（实测复现）。
+      let msg: string;
       try {
         const dumped = this.context.dump(errHandle);
-        errHandle.dispose();
-        const msg = typeof dumped === 'object' && dumped !== null
+        msg = typeof dumped === 'object' && dumped !== null
           ? `${(dumped as { name?: string; message?: string }).name ?? 'Error'}: ${(dumped as { message?: string }).message ?? String(dumped)}`
           : String(dumped);
-        throw new Error(msg);
       } catch (e) {
+        msg = `QuickJS eval error in ${filename}: ${(e as Error).message}`;
+      } finally {
         errHandle.dispose();
-        throw new Error(`QuickJS eval error in ${filename}: ${(e as Error).message}`);
       }
+      throw new Error(msg);
     }
     return result;
   }
