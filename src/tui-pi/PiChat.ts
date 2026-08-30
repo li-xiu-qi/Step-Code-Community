@@ -236,13 +236,16 @@ const ABORT_COOLDOWN_MS = 1000;
  * Ctrl+Home/Ctrl+End 与 pi-tui 的 tui.editor.lineStart/lineEnd 同键，全局层先于
  * focused component 处理，等于沿用原来的劫持语义。
  *
- * Ctrl+↓ 半屏滚动故意不在这里：pi-tui 的 halfPageDown 按 viewportHeight 算，
- * ChatEditor 按 terminal.rows 算，两者不等价，移过去会改变滚动距离。
+ * Ctrl+↓ 半屏滚动也在此表。pi-tui 的 halfPageDown 按 viewportHeight/2 算，与 PageUp/PageDown
+ * 同源（都是 viewportHeight − 常量）；原先 ChatEditor 按 terminal.rows/2 算，含 chrome，
+ * 于是两个翻页键口径不一致。差值随状态变（空闲约 1 行，忙碌带 chrome/activity 时约 5 行），
+ * 方向是向行业标准靠拢：vim/less/浏览器都按可视区算。
  */
 export const VIEWPORT_KEYBINDINGS: KeybindingsConfig = {
   'tui.altScreen.top': ['ctrl+home'],
   'tui.altScreen.bottom': ['ctrl+end'],
   'tui.altScreen.previousPrompt': ['ctrl+shift+up', 'ctrl+up'],
+  'tui.altScreen.halfPageDown': ['ctrl+down'],
 };
 
 export class PiChat {
