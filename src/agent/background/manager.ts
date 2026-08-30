@@ -80,6 +80,13 @@ interface Internal extends BackgroundTask {
   monitorTimer?: NodeJS.Timeout;
 }
 
+/** 一次待投递的 Monitor 流式事件（投递契约见 buildStreamMessage）。 */
+export interface StreamEvent {
+  taskId: string;
+  body: string;
+  description: string;
+}
+
 /** 后台任务管理器选项。 */
 export interface BackgroundManagerOptions {
   /** 后台任务超时秒数：>0 时启动即武装，到期先 SIGTERM 后 SIGKILL；0/缺省 = 不限。 */
@@ -98,6 +105,8 @@ export interface BackgroundManagerOptions {
    * 用于不支持流式通道的宿主（-p 模式等）。
    */
   onStream?: (taskId: string, text: string, description: string) => void;
+  /** 流式事件投递闸门：返回 false 时该批不入待投递队列（仍在磁盘累积，task_output 可查）。 */
+  onStreamFilter?: (taskId: string, text: string, description: string) => boolean;
   /**
    * 任务持久化目录（<sessionDir>.tasks）：配置后每个任务落盘 <tasksDir>/<id>/meta.json +
    * output.log，内存态降级为非权威。缺省 = 纯内存（进程退出任务全丢，resume 无法对账）。
@@ -122,10 +131,49 @@ export interface BackgroundManagerOptions {
 }
 
 const MAX_OUTPUT_BYTES = 64 * 1024; // 内存只留 64KB 尾部
+/**
+ * Monitor 流式事件待投递队列的字符预算。
+ *
+ * 为什么按字符而不按批次数：队列的最终去向是模型上下文，而上下文是按字符计费的。
+ * 200 批 × 3000 字符 = 600KB，一次 step 边界注入就能把上下文打爆——批次数是间接指标，
+ * 字符数才是真正要守住的东西。32KB ≈ 10 批，够模型看清「这段时间发生了什么」，
+ * 又不至于挤掉它自己的推理空间。
+ *
+ * 为什么要有上限：step 边界是唯一的消费点。模型正在跑一个 5 分钟的工具调用时，
+ * 200ms 一批的 monitor 无人 drain，会一直堆到工具返回——那一刻全部灌进上下文。
+ * 更常见的是用户起了 monitor 然后不发新指令，事件无人消费，队列无限生长。
+ *
+ * 满时丢最旧的一批：监控语境下「最近发生了什么」比「最早发生了什么」有价值，
+ * 且每批只是 3000 字符内的摘要，全文仍在磁盘 output.log，task_output 随时可查。
+ */
+const STREAM_QUEUE_MAX_CHARS = 32 * 1024;
 /** output.log 磁盘上限缺省值（32 MB）。 */
 const DEFAULT_MAX_OUTPUT_FILE_BYTES = 32 * 1024 * 1024;
 /** SIGTERM 后的宽限期（ms），未退出再 SIGKILL 强杀。 */
 const KILL_GRACE_MS = 2000;
+
+/**
+ * 往待投递队列里加一批事件，超预算时从队首丢最旧的一批。
+ *
+ * 抽成纯函数是为了可测：内联在 flushMonitor 里时，那段 while 循环只能靠真机灌 8 分钟
+ * 才碰得到一次，等于没有测试。预算按字符而不是批次数，理由见 STREAM_QUEUE_MAX_CHARS。
+ *
+ * 返回同一数组的引用（原地修改），调用方直接持有即可。
+ */
+export function enqueueStreamEvent(
+  queue: StreamEvent[],
+  event: StreamEvent,
+  maxChars: number,
+): StreamEvent[] {
+  queue.push(event);
+  let chars = 0;
+  for (const ev of queue) chars += ev.body.length;
+  while (queue.length > 1 && chars > maxChars) {
+    const dropped = queue.shift();
+    if (dropped !== undefined) chars -= dropped.body.length;
+  }
+  return queue;
+}
 
 /** 起流式监听任务时的选项（Monitor 专用）。 */
 export interface MonitorStartOpts {
@@ -183,6 +231,8 @@ export class BackgroundManager {
   private readonly options: BackgroundManagerOptions;
   /** 已终态、待投递给会话的任务（runAgent 回合边界 drain 注入；抑制通知的任务不入队）。 */
   private readonly pendingSettled: BackgroundTask[] = [];
+  /** Monitor 流式事件待投递队列：由 runAgent 的 step 边界 drain（priority:"next" 语义）。 */
+  private readonly pendingStream: StreamEvent[] = [];
   /** 等待任务终态的 resolve 回调（waitFor 用，settle 时唤醒）。 */
   private readonly waiters = new Map<string, (task: BackgroundTask) => void>();
 
@@ -627,7 +677,21 @@ export class BackgroundManager {
     if (task.batcher === undefined) return;
     const body = task.batcher.flush(force);
     if (body === null) return;
-    this.options.onStream?.(task.id, body, task.monitorDescription ?? task.command);
+    const description = task.monitorDescription ?? task.command;
+    // 宿主 UI 先消费（转录区展示），与是否投给模型无关——用户要看得到。
+    this.options.onStream?.(task.id, body, description);
+    // 闸门：噪声批次不进待投递队列。磁盘 output.log 照常累积，task_output 事后仍可查全文。
+    if (this.options.onStreamFilter !== undefined && !this.options.onStreamFilter(task.id, body, description)) {
+      return;
+    }
+    // 入待投递队列而非直接注入：消费方是 runAgent 的 step 边界（drainStreamEvents），
+    // 语义对应 claude code 的 `priority:"next"`——在两个工具调用之间读取，不打断
+    // 正在执行的工具。直接在这里注入会逼出一个模型回合，200ms 一批等于每 200ms 烧一次
+    // prompt cache，与 settle 通知走 step 边界的既有设计一致。
+    // 队列本身有字符预算（STREAM_QUEUE_MAX_CHARS）：长时间刷屏时保住最近的事件而非无限堆积。
+    // 超预算丢最旧：见 enqueueStreamEvent 注释。批量注入会把整个队列一次性灌进
+    // 模型上下文，预算必须按字符守，不是按条数。
+    enqueueStreamEvent(this.pendingStream, { taskId: task.id, body, description }, STREAM_QUEUE_MAX_CHARS);
   }
 
   /** 武装后台超时：到期终止（先 SIGTERM，宽限期后未退出补 SIGKILL）。taskTimeoutS<=0 时不武装。 */
@@ -725,6 +789,19 @@ export class BackgroundManager {
   /** 取走全部待投递的终态任务（清空队列），供 runAgent 回合边界注入或组合根兜底投递。 */
   drainSettled(): BackgroundTask[] {
     return this.pendingSettled.splice(0);
+  }
+
+  /**
+   * 取走全部待投递的 Monitor 流式事件（清空队列），供 runAgent step 边界注入。
+   *
+   * 与 drainSettled 同一条路径的原因：两者都是「系统事实的实时陈述」，都不该打断正在
+   * 执行的工具。settle 通知走的是回合边界（drainSettled 在 loop.ts 每个 iter 开头），
+   * 流式事件同样在那里 drain 即可——一个 monitor 跑几分钟只会产生十几批，回合边界
+   * 足够密，不需要第三条队列。新建独立队列的唯一差别是「每批唤醒一个回合」，那正是
+   * 设计文档 3.5 里说的「流式事件要即时」，但即时在这里的代价是 200ms 一次模型调用。
+   */
+  drainStreamEvents(): StreamEvent[] {
+    return this.pendingStream.splice(0);
   }
 
   /**
@@ -895,6 +972,11 @@ export class BackgroundManager {
   shutdown(): void {
     this.options.onSettle = undefined;
     this.options.onSettleEvent = undefined;
+    // 流式两个回调同样置空：onStream 驱动宿主 UI，onStreamFilter 决定是否入投递队列。
+    // 留着的后果与 onSettle 同源——旧 monitor 继续 flush，事件经捕获的宿主 this 回灌新会话。
+    this.options.onStream = undefined;
+    this.options.onStreamFilter = undefined;
+    this.pendingStream.length = 0;
     for (const t of this.tasks.values()) {
       if (t.status === 'running') this.stop(t.id); // kill proc + onStop 中止 async + settle（回调已空，零回灌）
     }

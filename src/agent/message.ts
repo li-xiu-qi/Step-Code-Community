@@ -8,6 +8,8 @@ import type Anthropic from '@anthropic-ai/sdk';
  * - compaction_summary：full 压缩产出的摘要（wire 里是普通文本，storage 层可识别）
  * - injection：注入的 system-reminder（append-only，压缩后可重注入）
  * - background_task：后台任务终态通知（由通知子系统经 buildSettleMessage 产生）
+ * - monitor_stream：Monitor 监听任务的实时事件（由 buildStreamMessage 产生，与终态
+ *   同形不同 type——`task.monitor_stream`，模型据此区分「这件事发生了」与「任务结束了」）
  *
  * `user_verbatim` 与 `user` 的分工：前者是压缩产物、不是真人这一轮的输入。
  * 因此它**不**参与轮次计数（turns.ts）与回退编辑（backtrack.ts）——那两处按 `kind === 'user'`
@@ -23,7 +25,8 @@ export type MessageOriginKind =
   | 'tool'
   | 'compaction_summary'
   | 'injection'
-  | 'background_task';
+  | 'background_task'
+  | 'monitor_stream';
 
 /**
  * 结构化 origin：kind 是判别字段，其余为按需携带的载荷。
