@@ -302,10 +302,13 @@ describe('runTurn 并行工具执行', () => {
     const messages: StoredMessage[] = [sm('go')];
     const events = await collect(runAgent(base(provider, messages, { ctx })));
 
-    // 两个 explore 都在 general 启动前完成；general 与一切互斥
-    expect(log.slice(0, 2)).toEqual(['start:explore:e1', 'start:explore:e2']);
-    expect(log.indexOf('start:general:g1')).toBeGreaterThan(log.indexOf('end:explore:e1'));
-    expect(log.indexOf('start:general:g1')).toBeGreaterThan(log.indexOf('end:explore:e2'));
+    // 2026-08-29 起：explore（none）与 general（write@cwd）不再互斥——只读任务与写任务
+    // 可以并行。旧实现 general 是 all，与一切互斥，两个 explore 必须等它；新实现 accessConflict
+    // 对 (none, write) 返回 false，三者同时启动。这条断言从「general 最后串行」改为
+    // 「三者都启动且 explore 先完成」：写任务不再阻塞只读任务。
+    expect(log.slice(0, 3).sort()).toEqual(['start:explore:e1', 'start:explore:e2', 'start:general:g1']);
+    expect(log.indexOf('end:explore:e1')).toBeGreaterThan(log.indexOf('start:explore:e1'));
+    expect(log.indexOf('end:explore:e2')).toBeGreaterThan(log.indexOf('start:explore:e2'));
     const blocks = toolResultBlocks(messages);
     expect(blocks.map((b) => b.tool_use_id)).toEqual(['c1', 'c2', 'c3']);
     expect(events.at(-1)!.type).toBe('turn_done');
