@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { SubagentResult } from '../agent/subagent/types.js';
 import { subagentParallelKind } from './subagentAccess.js';
 import { fail, ok, type ToolContext, type ToolDef } from './types.js';
+import { resolvePath } from './fsutil.js';
 
 const schema = z.object({
   description: z
@@ -43,6 +44,14 @@ const schema = z.object({
     .string()
     .optional()
     .describe('覆盖子 agent 的模型（别名或裸 id）。优先级高于 agent 模板定义的 model，仅当次派生生效。留空则用模板默认值。'),
+  scope: z
+    .array(z.string())
+    .optional()
+    .describe(
+      '本子 agent 预期会读写的文件或目录路径（相对 cwd 或绝对路径）。用于并行冲突判定：' +
+        '同一轮派出的多个子 agent，scope 互不重叠的可并行执行，重叠的串行。有写权限的模板建议显式声明，' +
+        '不声明则按整个 cwd 保守串行。只读子 agent（如 explore）无需声明。',
+    ),
 });
 
 /**
@@ -85,19 +94,29 @@ export const spawnAgentTool: ToolDef<z.infer<typeof schema>> = {
     '\n' +
     '返回串带子会话 id，需要在它已有工作基础上继续时用 resume=<id> 续跑（不新建会话、不占派生配额）。\n' +
     '如需带着历史上下文但独立推进新会话（源会话不受影响），用 fork=<id>（新建会话，历史全量复制）。\n' +
-    '一次要并行几个独立子任务，在同一轮里发多个 spawn_agent（全为只读 explore 时并行执行）；带依赖的多阶段编排或大批量同构 fan-out 改用 dynamic_workflow 工具。',
+    '一次要并行几个独立子任务，在同一轮里发多个 spawn_agent，并用 scope 声明各自的目标路径；scope 互不重叠的会并行执行，重叠或未声明的串行。带依赖的多阶段编排或大批量同构 fan-out 改用 dynamic_workflow 工具。',
   schema,
-  // 子 agent 的并行能力按模板 tools 声明推断：只读模板（无写工具）可并行，
-  // 其余（未声明 tools = 拥有全部工具，或声明了写工具）必须串行。
-  //
-  // 只读用 {kind:'none'} 而非 {kind:'read', path}：none 与任何 access 不冲突，
-  // 两个只读子 agent 天然可并行。若用 read 并填 cwd，pathOverlap 对相等路径
-  // 返回 true，同 cwd 的只读任务反而互相排斥——并行依旧不成立。
-  // 只读子 agent 已被模板 tools 限制为不可写，all 冲突无法触发，用 none 是安全的。
-  access: (input, ctx) =>
-    subagentParallelKind(ctx.cwd, input.subagent_type ?? 'general') === 'read'
-      ? { kind: 'none' }
-      : { kind: 'all' },
+  // 并行判据按「写的是不是同一个地方」而非「有没有写权限」：
+  // - 只读模板（tools 不含写工具）→ {kind:'none'}，与任何 access 不冲突，多个只读
+  //   子 agent 天然并行。不用 {kind:'read', path} 是因为若填 cwd，pathOverlap 对相等
+  //   路径返回 true，同 cwd 的只读任务反而互相排斥。只读 agent 已被模板限制为不可写，
+  //   用 none 是安全的。
+  // - 有写工具的模板 → {kind:'write'}，路径取入参 scope（模型显式声明的目标路径）。
+  //   同轮派出的多个写 agent，scope 不重叠的并行，重叠或未声明的串行。未声明时退化
+  //   为整个 cwd 保守串行——不知道会写哪里，就不猜。
+  access: (input, ctx) => {
+    if (subagentParallelKind(ctx.cwd, input.subagent_type ?? 'general') !== 'read') {
+      const scope = input.scope ?? [];
+      if (scope.length > 0) {
+        // 多个路径时取第一个作为 access 锚点：冲突判定是两两比较，锚点不重叠即放行。
+        // 同一 agent 声明多个互不重叠的 scope 时，与另一 agent 的逐个比较仍正确。
+        return { kind: 'write', path: resolvePath(ctx.cwd, scope[0]!) };
+      }
+      // 未声明 scope：不知道会写哪里，按整个 cwd 保守串行。
+      return { kind: 'write', path: resolvePath(ctx.cwd, '.') };
+    }
+    return { kind: 'none' };
+  },
   async execute(input, ctx) {
     if (ctx.runSubagent === undefined) {
       return fail('当前上下文不支持派生子 agent（子 agent 内不能再派生）。请自己完成该任务。');

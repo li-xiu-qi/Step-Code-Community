@@ -17,8 +17,13 @@ function pathOverlap(a: string, b: string): boolean {
 
 /**
  * 冲突判定：任一边 all 必冲突（最高优先级，all 连 none 也不放行——
- * general 子 agent / bash 必须与只读任务互斥）；none 与其余不冲突；
+ * bash 等副作用不可判定的工具必须与只读任务互斥）；none 与其余不冲突；
  * read-read 不冲突；其余（至少一边 write）仅当路径相等或前缀重叠时冲突。
+ *
+ * write-write 同路径才冲突：两个 agent 都改同一个文件/目录才会互相覆盖。
+ * 改不同文件的写任务默认放行——并行是常态，冲突是例外（2026-08-29 按用户判断调整：
+ * 低概率冲突可接受，不必等到「完全不可能冲突」才并行）。路径拿不到（缺省 cwd）时
+ * 两者同为 cwd，pathOverlap 判等返回 true，退化为保守串行，符合「新工具忘了声明就安全」的总原则。
  */
 export function accessConflict(a: ToolAccess, b: ToolAccess): boolean {
   if (a.kind === 'all' || b.kind === 'all') return true;

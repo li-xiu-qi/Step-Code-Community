@@ -63,4 +63,67 @@ describe('spawn_agent 并行调度（access 视角）', () => {
     expect(accessConflict({ kind: 'none' }, { kind: 'all' })).toBe(true);
     expect(accessConflict({ kind: 'all' }, { kind: 'all' })).toBe(true);
   });
+
+  // ─────────────────────────────────────────────────────────────────
+  // scope 判定（2026-08-29）：并行判据从「有没有写权限」改为「写的是不是同一个地方」。
+  // 旧实现凡有写工具一律 {kind:'all'} 必串行，导致同项目改不同文件的 agent 也只能排队。
+  // ─────────────────────────────────────────────────────────────────
+
+  it('accessConflict：write 不同路径不冲突（并行的基础）', () => {
+    expect(accessConflict({ kind: 'write', path: '/p/src/a.ts' }, { kind: 'write', path: '/p/src/b.ts' })).toBe(false);
+    // 同文件才冲突
+    expect(accessConflict({ kind: 'write', path: '/p/src/a.ts' }, { kind: 'write', path: '/p/src/a.ts' })).toBe(true);
+    // 父子目录重叠也算冲突（一个改目录、一个改目录里的文件）
+    expect(accessConflict({ kind: 'write', path: '/p/src' }, { kind: 'write', path: '/p/src/a.ts' })).toBe(true);
+    // 前缀相似但非目录边界不算重叠（/p/src 与 /p/src2 是兄弟）
+    expect(accessConflict({ kind: 'write', path: '/p/src' }, { kind: 'write', path: '/p/src2' })).toBe(false);
+    // read 与 write 同路径冲突（读时文件可能正在被写，保守互斥——这是既有行为，
+    // 2026-08-29 不改：本次只放宽 write-write，不动 read-write）
+    expect(accessConflict({ kind: 'read', path: '/p/a.ts' }, { kind: 'write', path: '/p/a.ts' })).toBe(true);
+    // read 与 write 不同路径不冲突
+    expect(accessConflict({ kind: 'read', path: '/p/a.ts' }, { kind: 'write', path: '/p/b.ts' })).toBe(false);
+  });
+
+  it('scope 不重叠的两个写 agent 并行；重叠的串行', async () => {
+    const events: string[] = [];
+    const t0 = Date.now();
+    const mk = (tag: string, path: string) => ({
+      access: { kind: 'write', path } as const,
+      needsSubagentSlot: true,
+      run: async () => {
+        events.push(`start:${tag}:${Date.now() - t0}`);
+        await sleep(80);
+        events.push(`end:${tag}:${Date.now() - t0}`);
+      },
+    });
+    // 两个 agent 改不同文件 → 应并行（启动间隔远小于各自耗时）
+    const sched = new ToolScheduler(
+      [mk('a', '/p/src/a.ts'), mk('b', '/p/src/b.ts')],
+      { maxSubagentConcurrent: 10 },
+    );
+    sched.start();
+    for (let i = 0; i < 2; i++) await sched.waitSettled(i);
+    const aStart = Number(events.find((e) => e.startsWith('start:a'))!.split(':')[2]);
+    const bStart = Number(events.find((e) => e.startsWith('start:b'))!.split(':')[2]);
+    expect(Math.abs(aStart - bStart)).toBeLessThan(40);
+
+    // 两个 agent 改同一文件 → 必须串行（后一个等前一个结束）
+    const events2: string[] = [];
+    const t1 = Date.now();
+    const mk2 = (tag: string) => ({
+      access: { kind: 'write', path: '/p/src/same.ts' } as const,
+      needsSubagentSlot: true,
+      run: async () => {
+        events2.push(`start:${tag}:${Date.now() - t1}`);
+        await sleep(80);
+        events2.push(`end:${tag}:${Date.now() - t1}`);
+      },
+    });
+    const sched2 = new ToolScheduler([mk2('x'), mk2('y')], { maxSubagentConcurrent: 10 });
+    sched2.start();
+    for (let i = 0; i < 2; i++) await sched2.waitSettled(i);
+    const xEnd = Number(events2.find((e) => e.startsWith('end:x'))!.split(':')[2]);
+    const yStart = Number(events2.find((e) => e.startsWith('start:y'))!.split(':')[2]);
+    expect(yStart).toBeGreaterThanOrEqual(xEnd);
+  });
 });

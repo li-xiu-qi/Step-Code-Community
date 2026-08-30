@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { accessConflict, type ToolAccess } from '../../src/tools/access.js';
 import { resolvePath } from '../../src/tools/fsutil.js';
@@ -81,10 +82,28 @@ describe('toolAccessOf 工具声明', () => {
     expect(toolAccessOf('web_image_search', { query: 'x' }, ctx)).toEqual({ kind: 'none' });
   });
 
-  it('spawn_agent 按 subagent_type 动态：explore=none，general（含缺省）=all', () => {
+  it('spawn_agent 按 subagent_type 动态：explore=none，general（含缺省）=write@cwd', () => {
     expect(toolAccessOf('spawn_agent', { prompt: 'p', subagent_type: 'explore' }, ctx)).toEqual({ kind: 'none' });
-    expect(toolAccessOf('spawn_agent', { prompt: 'p', subagent_type: 'general' }, ctx)).toEqual({ kind: 'all' });
-    expect(toolAccessOf('spawn_agent', { prompt: 'p' }, ctx)).toEqual({ kind: 'all' });
+    // 有写权限的模板用 write 而非 all：all 遇 all 必冲突会让两个 general 永远串行。
+    // 用 write 后冲突判定交给 pathOverlap——同 cwd 仍串行（保守），声明了不重叠 scope 则并行。
+    const expectedWrite = { kind: 'write', path: ctx.cwd };
+    expect(toolAccessOf('spawn_agent', { prompt: 'p', subagent_type: 'general' }, ctx)).toEqual(expectedWrite);
+    expect(toolAccessOf('spawn_agent', { prompt: 'p' }, ctx)).toEqual(expectedWrite);
+  });
+
+  it('spawn_agent 声明 scope 时 access 取声明路径（并行判据的基础）', () => {
+    expect(toolAccessOf('spawn_agent', { prompt: 'p', subagent_type: 'general', scope: ['src/a.ts'] }, ctx)).toEqual({
+      kind: 'write',
+      path: join(ctx.cwd, 'src/a.ts'),
+    });
+    expect(toolAccessOf('spawn_agent', { prompt: 'p', subagent_type: 'general', scope: ['src/a.ts', 'src/b.ts'] }, ctx)).toEqual({
+      kind: 'write',
+      path: join(ctx.cwd, 'src/a.ts'),
+    });
+    // 只读 agent 声明 scope 也仍是 none（它写不了，scope 无意义）
+    expect(toolAccessOf('spawn_agent', { prompt: 'p', subagent_type: 'explore', scope: ['src/a.ts'] }, ctx)).toEqual({
+      kind: 'none',
+    });
   });
 
   it('未声明的工具（bash 等）缺省 all', () => {
