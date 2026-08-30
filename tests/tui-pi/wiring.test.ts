@@ -274,6 +274,18 @@ describe('PiChat 接线：会话切换的清理与恢复', () => {
     expect(exitBlock, 'exit 里应清 spinnerTimer').toContain('this.spinnerTimer');
   });
 
+  it('spinner 帧驱动覆盖 running 子 agent 卡片（不只依赖 this.busy）', () => {
+    // 卡片上的子 agent 进度（spinner 帧、现算耗时、工具计数）由 blocks.ts 在 render 时按
+    // Date.now() 现算，本身不缺状态，缺的是没人按帧触发重绘。旧实现只在 this.busy 时转，
+    // 于是主回合 spinner 流畅、而 spawn_agent 卡片「很久才动一下」——卡片只能等子 agent
+    // 事件（token 累计到一定量才推一次）才重绘，事件稀疏时观感就是卡住。
+    //
+    // runningSubagentIds 是关键：run_in_background 的子 agent 在主回合结束后仍在跑，
+    // 此时 this.busy 已 false，但卡片还要继续转。
+    wired(piChat, 'this.runningSubagentIds.size > 0', '有 running 子 agent 时也驱动 spinner 帧');
+    wired(piChat, 'private runningSubagentIds = new Set<string>()', 'running 子 agent id 集合');
+  });
+
   it('待发队列持久化：变更走 updateQueue，两条恢复路径都接回', () => {
     wired(piChat, 'updateQueue', '队列变更统一出口');
     wired(piChat, "type: 'queue.update'", '队列 wire 事件');

@@ -773,9 +773,23 @@ export class PiChat {
       .catch(() => this.completion.setFiles([]));
     // spinner 稳帧：独立 80ms 定时器。只在忙碌且非输入态时推进帧并重渲，
     // 与下方计时器解耦，保证动画不随计时器频率抖动。promptActive 时不转（用户在输入）。
+    //
+    // 判据用「忙碌 或 有 running 子 agent 卡片」的并集：卡片上的子 agent 进度（spinner 帧、
+    // 现算耗时、工具计数）由 blocks.ts 的 spinnerFrame()/subagentStats() 在 render 时按
+    // Date.now() 现算，本身不缺状态，缺的是没人按帧触发重绘。旧实现只在 this.busy 时转，
+    // 于是出现主回合 spinner 流畅、而 spawn_agent 卡片「很久才动一下」——卡片只能等子 agent
+    // 事件（token 累计到一定量才推一次）才重绘，事件稀疏时观感就是卡住。
+    //
+    // 多个 80ms 定时器不会打爆渲染：pi-tui 的 requestRender 有 renderRequested 合并标志与
+    // 16ms 限速（MIN_RENDER_INTERVAL_MS），同一窗口内的请求会并成一次 diff。
     this.spinnerTimer = setInterval(() => {
-      if (this.busy && !this.promptActive) {
+      const hasRunningSubagent = this.runningSubagentIds.size > 0;
+      if (this.promptActive) return;
+      if (this.busy) {
         this.activity.tick();
+        this.tui.requestRender();
+      } else if (hasRunningSubagent) {
+        // 主回合已结束但子 agent 仍在跑（后台任务式 spawn）：只刷卡片，不动主 spinner。
         this.tui.requestRender();
       }
     }, 80);
