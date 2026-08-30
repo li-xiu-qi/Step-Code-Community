@@ -19,9 +19,10 @@ import { navigateHistory, initialNavState } from '../session/inputHistory.js';
 import { notifyDedupKeyFromOrigin, pendingDeliveredEvents } from '../agent/wirelog.js';
 
 import { buildSettleMessage, decideNotifyRoute, mergeSettleMessages, pendingBatchDeliveredEvents } from '../agent/background/notify.js';
-import { shouldDeliverStream } from '../agent/background/monitorStream.js';
+import { shouldDeliverStream, buildStreamMessage, mergeStreamMessages } from '../agent/background/monitorStream.js';
 import { startHeapWatch } from './heapWatch.js';
 import { logDebug } from '../utils/logger.js';
+import type { StreamEvent } from '../agent/background/manager.js';
 import { emitTerminalNotification } from '../agent/background/terminal-notify.js';
 import { decide, planModeDenyReason, type PermissionMode } from '../agent/permission/mode.js';
 import { createSubagentRunner } from '../agent/subagent/runner.js';
@@ -228,6 +229,13 @@ const SUBAGENT_EVENT_CAP = 50;
 const PRIMED_TIMEOUT_MS = 5000;
 /** 中断后的回退冷静期：中断（Esc/Ctrl+C）后这段时间内 Esc 不触发 backtrack primed。 */
 const ABORT_COOLDOWN_MS = 1000;
+/**
+ * Monitor 按信号唤醒冷却（毫秒）：同一任务两次唤醒的最小间隔。
+ *
+ * 为什么需要：一次错误爆发（比如 10 秒内 50 条 ERROR）会连续触发闸门，
+ * 30 秒冷却保证最多唤醒一次，不会退化成刷屏。心跳和进度条本来就不触发唤醒。
+ */
+const MONITOR_WAKE_COOLDOWN_MS = 30_000;
 
 /**
  * 视口滚动键位。导出只为可测——这三个键必须跨模态弹层生效，而弹层会抢走焦点，
@@ -381,6 +389,8 @@ export class PiChat {
   private activeSubagent: string | null = null;
 
   private busy = false;
+  /** Monitor 按信号唤醒冷却：taskId → 上次唤醒时间戳。防一次错误爆发反复唤醒。 */
+  private readonly monitorWakeCooldown = new Map<string, number>();
   /** 运行期可变（/model 切换会重建）：provider 与它绑定的模型 id、别名、上下文窗口。 */
   private provider: ChatProvider;
   private model: string;
@@ -3523,19 +3533,64 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
   /**
    * Monitor 流式事件到达（200ms 一批，行缓冲器合并后产出）。
    *
-   * 只做转录区展示，不在这里注入模型：注入在 runAgent 的 step 边界（loop.ts），语义对应
+   * busy 时只展示不唤醒：注入在 runAgent 的 step 边界（loop.ts），语义对应
    * claude code 的 `priority:"next"`——在两个工具调用之间读取，不打断正在执行的工具。
-   * 在这里直接注入会逼出一个模型回合，而 200ms 一批的频率下等于每 200ms 烧一次 prompt cache。
+   *
+   * idle 时按信号唤醒：闸门放行的批次（含告警词 / 进程退出）触发新回合，心跳不触发。
+   * 冷却 30 秒防一次错误爆发反复唤醒。唤醒后事件进 drainStreamEvents 队列，
+   * 由 loop.ts step 边界注入。
    *
    * 与 onBackgroundSettle 的分工：settle 是「任务结束了」（一次性，要收尾），这个是「过程中
    * 发生了某件事」（持续多批，多数不值得惊动用户）。所以 settle 响铃，这个不响。
    */
   private onMonitorStream(taskId: string, text: string, description: string): void {
-    // 首批给个带描述的头部，后续只追加正文——否则 200ms 一条「任务 x 事件」刷满转录区。
-    const lines = text.split('\n').filter((l) => l !== '');
-    const head = lines.length > 1 ? ` ${description}` : ` ${description}：${lines[0] ?? ''}`;
-    this.push({ kind: 'note', text: `[monitor ${taskId}]${head}` });
+    // 找已有的 monitor 块，没有则新建（默认折叠，显示最后一批摘要）
+    const found = this.transcript.updateMonitor(taskId, (it) => {
+      it.batches.push(text);
+      // 只保留最近 20 批，防长时间监听内存膨胀（全文在磁盘 output.log）
+      if (it.batches.length > 20) it.batches.splice(0, it.batches.length - 20);
+    });
+    if (!found) {
+      this.transcript.push({ kind: 'monitor', taskId, description, batches: [text], collapsed: true });
+    }
     this.syncStatus();
+
+    // idle 时按信号唤醒：只在闸门放行（值得投递给模型）且过了冷却期时触发
+    if (!this.busy && shouldDeliverStream(text)) {
+      const now = Date.now();
+      const last = this.monitorWakeCooldown.get(taskId) ?? 0;
+      if (now - last >= MONITOR_WAKE_COOLDOWN_MS) {
+        this.monitorWakeCooldown.set(taskId, now);
+        // 取出队列里的待投递事件，唤醒新回合。
+        // 不走 submitNotificationBatch：那里面跑 mergeSettleMessages，会把多条合成一条
+        // notification-batch 并写 background.notify_delivered——那是终态通知的去重机制，
+        // 流式事件的 notificationId 是 task:<id>:monitor_stream，套进去正则不匹配，
+        // 且 resume 对账会把这些当补投对象。直接 runTurn 更干净。
+        const events = this.background.drainStreamEvents();
+        if (events.length > 0) {
+          void this.submitMonitorStreamBatch(events);
+        }
+      }
+    }
+  }
+
+  /**
+   * 批量投递 Monitor 流式事件，唤醒新回合。
+   *
+   * 与 submitNotificationBatch 的分工：后者走终态通知的去重与合成机制
+   * （mergeSettleMessages + background.notify_delivered），流式事件不参与 resume
+   * 补投（对账按终态任务走，stream 队列不落盘），也不该合成——每条事件有独立价值。
+   * 这里直接合成一条提交，不写 delivered 事件。
+   */
+  private async submitMonitorStreamBatch(events: readonly StreamEvent[]): Promise<void> {
+    if (events.length === 0) return;
+    const msgs = events.map((ev) =>
+      buildStreamMessage(ev.taskId, ev.body, ev.description, { startsPromptTurn: true }),
+    );
+    // 单条直接发，多条合成一条：一次唤醒只占一个回合，避免 N 批 = N 次模型调用。
+    const merged = msgs.length === 1 ? msgs[0]! : mergeStreamMessages(msgs);
+    const body = typeof merged.message.content === 'string' ? merged.message.content : '';
+    await this.runTurn(body, { silent: true, prepared: merged });
   }
 
   // ---------------------------------------------------------------- 耗时命令

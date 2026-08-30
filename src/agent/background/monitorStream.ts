@@ -1,4 +1,4 @@
-import { stored } from '../message.js';
+import { stored, type StoredMessage } from '../message.js';
 
 /** XML 转义：monitor 输出是任意进程文本，进信封正文/属性前必须过一遍。 */
 function escapeXml(s: string): string {
@@ -81,4 +81,27 @@ const SIGNAL_PATTERN = /\b(error|warn(?:ing)?|fail(?:ed|ure)?|critical|fatal)\b|
 
 export function shouldDeliverStream(body: string): boolean {
   return SIGNAL_PATTERN.test(body);
+}
+
+/**
+ * 把多条 Monitor 流式事件合成为一条 storage 消息（idle 唤醒回合时用）。
+ *
+ * 为什么不走终态通知的批量合成（notify.ts mergeSettleMessages）：那条路是为 resume
+ * 补投去重服务的，每条都带 taskId/notificationId 供对账寻址，并写
+ * background.notify_delivered wire 事件。流式事件不参与 resume 补投（对账按终态任务走，
+ * stream 队列不落盘），也没有去重需求——一次唤醒就是把队列里攒的全部事件给模型看，
+ * 合成一条只是省回合数。套 notification-batch 信封反而让正文更难读。
+ *
+ * 单条时原样返回第一条（不套壳）。
+ */
+export function mergeStreamMessages(messages: readonly StoredMessage[]): StoredMessage {
+  if (messages.length === 0) throw new Error('mergeStreamMessages: 空列表无法合成');
+  const first = messages[0]!;
+  if (messages.length === 1) return first;
+  const bodies = messages.map((m) => (typeof m.message.content === 'string' ? m.message.content : ''));
+  const content =
+    `<monitor-stream-batch count="${messages.length}">\n` +
+    bodies.join('\n\n') +
+    '\n</monitor-stream-batch>';
+  return stored({ role: 'user', content }, { kind: 'monitor_stream', startsPromptTurn: true });
 }
