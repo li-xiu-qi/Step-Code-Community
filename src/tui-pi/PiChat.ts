@@ -9,7 +9,7 @@ import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Container, ProcessTerminal, TuiAltScreen, matchesKey, getKeybindings } from '@earendil-works/pi-tui';
-import type { Component, SelectItem } from '@earendil-works/pi-tui';
+import type { Component, KeybindingsConfig, SelectItem } from '@earendil-works/pi-tui';
 import type { AgentEvent, SubagentProgressEvent, WorkflowStepEvent } from '../agent/events.js';
 import type { LoopHooks } from '../agent/hooks.js';
 import { composeLoopHooks, type HookEngine } from '../agent/hooks/engine.js';
@@ -227,6 +227,23 @@ const SUBAGENT_EVENT_CAP = 50;
 const PRIMED_TIMEOUT_MS = 5000;
 /** 中断后的回退冷静期：中断（Esc/Ctrl+C）后这段时间内 Esc 不触发 backtrack primed。 */
 const ABORT_COOLDOWN_MS = 1000;
+
+/**
+ * 视口滚动键位。导出只为可测——这三个键必须跨模态弹层生效，而弹层会抢走焦点，
+ * 写在 ChatEditor 里的分支在弹层激活时一个键都收不到（2026-08-30 修）。
+ *
+ * plain Home/End 绑空数组：留给编辑器做光标导航（行首/行尾），不触发 viewport 滚动。
+ * Ctrl+Home/Ctrl+End 与 pi-tui 的 tui.editor.lineStart/lineEnd 同键，全局层先于
+ * focused component 处理，等于沿用原来的劫持语义。
+ *
+ * Ctrl+↓ 半屏滚动故意不在这里：pi-tui 的 halfPageDown 按 viewportHeight 算，
+ * ChatEditor 按 terminal.rows 算，两者不等价，移过去会改变滚动距离。
+ */
+export const VIEWPORT_KEYBINDINGS: KeybindingsConfig = {
+  'tui.altScreen.top': ['ctrl+home'],
+  'tui.altScreen.bottom': ['ctrl+end'],
+  'tui.altScreen.previousPrompt': ['ctrl+shift+up', 'ctrl+up'],
+};
 
 export class PiChat {
   private readonly deps: PiChatDeps;
@@ -506,13 +523,14 @@ export class PiChat {
       openUrl: (url) => this.handleUrlClick(url),
     });
     // Home/End 留给编辑器做光标导航（行首/行尾）。
-    // Ctrl+Home/Ctrl+End 滚 viewport 顶部/底部。
-    // 将 viewport 的 top/bottom 绑定改为空数组，彻底禁用 plain home/end 触发 viewport 滚动；
-    // Ctrl+Home/Ctrl+End 在 ChatEditor.handleInput 里直接接管。
-    getKeybindings().setUserBindings({
-      'tui.altScreen.top': [],
-      'tui.altScreen.bottom': [],
-    });
+    // Ctrl+Home/Ctrl+End 滚 viewport 顶部/底部，Ctrl+↑ 跳上一个 prompt。
+    // 这三个键必须绑在 altScreen 全局层而不是 ChatEditor 里：审批/提问等模态弹层会
+    // setFocus 抢走焦点，pi-tui 的键盘只投给 focused component，写在编辑器里的分支
+    // 在弹层激活时一个键都收不到（2026-08-30 实测：ask_user 弹出后 Ctrl+End/Ctrl+↑ 静默失效）。
+    // plain home/end 仍禁用 viewport 滚动（绑空数组），编辑器光标导航不受影响。
+    // 注意 Ctrl+Home/Ctrl+End 与 pi-tui 的 tui.editor.lineStart/lineEnd 同键，全局层
+    // 先于 focused component 处理，等于沿用原来的劫持语义。
+    getKeybindings().setUserBindings({ ...VIEWPORT_KEYBINDINGS });
     // 内容变短不清屏：开启会让每次折叠/裁剪都清一次 scrollback（实测结论第二条）
     this.tui.setClearOnShrink(false);
 
