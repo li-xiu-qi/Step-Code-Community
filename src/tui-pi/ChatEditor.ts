@@ -267,10 +267,8 @@ export class ChatEditor extends Editor {
       if (this.onDownArrow?.() === true) return;
       if (this.navigateDown?.() === true) return;
     }
-    // Ctrl+↑ / Ctrl+Home / Ctrl+End 已移到 altScreen 全局键位层（见 PiChat 构造处的
+    // Ctrl+↑ / Ctrl+Home / Ctrl+End / Ctrl+↓ 已移到 altScreen 全局键位层（见 PiChat 构造处的
     // setUserBindings）：它们要跨模态弹层生效，而弹层会抢走焦点，编辑器收不到键。
-    // Ctrl+↓ 半屏滚动仍留在这里——pi-tui 的 halfPageDown 按 viewportHeight 算，
-    // 这里按 terminal.rows 算，两者不等价，移过去会改变滚动距离。
     // 自动括号配对已移除（2026-08-29）：键入 `(` 不再自动补 `)`。
     // 粘贴路径由上方 PasteBurst 分支提前截流，两者互不影响。
     super.handleInput(data);

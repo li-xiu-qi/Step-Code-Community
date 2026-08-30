@@ -29,7 +29,7 @@ function keysOf(v: unknown): string[] {
 }
 
 describe('视口滚动键位', () => {
-  it('三个键都绑在 altScreen 全局层，不依赖编辑器持有焦点', () => {
+  it('四个键都绑在 altScreen 全局层，不依赖编辑器持有焦点', () => {
     getKeybindings().setUserBindings({ ...VIEWPORT_KEYBINDINGS });
     const r = getKeybindings().getResolvedBindings();
 
@@ -40,6 +40,8 @@ describe('视口滚动键位', () => {
     // Ctrl+↑ → 上一个 prompt（ctrl+shift+up 是 pi-tui 原默认，一并保留）
     expect(keysOf(r['tui.altScreen.previousPrompt'])).toContain('ctrl+up');
     expect(keysOf(r['tui.altScreen.previousPrompt'])).toContain('ctrl+shift+up');
+    // Ctrl+↓ → 半屏向下滚动
+    expect(keysOf(r['tui.altScreen.halfPageDown'])).toContain('ctrl+down');
   });
 
   it('plain Home/End 不触发 viewport 滚动，留给编辑器做光标导航', () => {
@@ -58,10 +60,13 @@ describe('视口滚动键位', () => {
     expect(getKeybindings().getDefinition('tui.editor.cursorLineEnd')?.defaultKeys).toContain('ctrl+end');
   });
 
-  it('Ctrl+↓ 半屏滚动不在此表（pi-tui 与编辑器的行数口径不一致）', () => {
-    // pi-tui 的 halfPageDown 按 viewportHeight/2 算，ChatEditor 按 terminal.rows/2 算。
-    // 后者更大（含 chrome），移过去会让滚动距离变短，属行为变更而非等价搬迁。
+  it('Ctrl+↓ 半屏滚动按可视区算，与 PageUp/PageDown 同口径', () => {
+    getKeybindings().setUserBindings({ ...VIEWPORT_KEYBINDINGS });
+    // pi-tui 的 halfPageDown 按 viewportHeight/2 算，PageUp/PageDown 按 viewportHeight − overlap
+    // 算，两者同源。原先 ChatEditor 按 terminal.rows/2 算（含 chrome），于是两个翻页键口径不一致。
+    // 差值随状态变：空闲约 1 行，忙碌带 chrome/activity 时约 5 行。方向是向行业标准靠拢。
+    // 这条单独存在是为了防止有人将来以「口径不同」为由又把它挪回编辑器层。
     const r = getKeybindings().getResolvedBindings();
-    expect(keysOf(r['tui.altScreen.halfPageDown'])).toEqual([]);
+    expect(keysOf(r['tui.altScreen.halfPageDown'])).toContain('ctrl+down');
   });
 });
