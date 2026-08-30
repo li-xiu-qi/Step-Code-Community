@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type Anthropic from '@anthropic-ai/sdk';
 import { askUserTool } from './askUser.js';
 import { bashTool } from './bash.js';
+import { monitorTool } from './monitor.js';
 import { cronCreateTool, cronDeleteTool, cronListTool } from './cron.js';
 import { dynamicWorkflowTool } from './dynamicWorkflow.js';
 import { editFileTool } from './edit.js';
@@ -47,6 +48,7 @@ const ALL_TOOLS: ToolDef<any>[] = [
   globTool,
   grepTool,
   bashTool,
+  monitorTool,
   webSearchTool,
   webFetchTool,
   imageSearchTool,

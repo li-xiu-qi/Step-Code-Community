@@ -80,6 +80,23 @@ describe('bash 前台超时自动转后台', () => {
     mgr.stop(tasks[0]!.id);
   });
 
+  it('截断输出必须带【未完成】标记，防止被读成「零命中」', async () => {
+    // 回归点：2026-08-30 一次全库 grep 超时转后台，拿到「分隔符 + 空区块」的截断输出，
+    // 被当成「搜过了，库里没有」并据此下结论。截断输出与零命中在视觉上无法区分，
+    // 所以工具层必须显式声明这不是完整结果。
+    const mgr = new BackgroundManager();
+    const r = await bashTool.execute(
+      { command: 'echo before; sleep 5', timeout: 1 },
+      { cwd: process.cwd(), background: mgr },
+    );
+    expect(r.content).toContain('【未完成】');
+    expect(r.content).toContain('截断输出');
+    expect(r.content).toContain('不要据此判定');
+    const id = mgr.list()[0]!.id;
+    expect(r.content).toContain(`task_output ${id}`);
+    mgr.stop(id);
+  });
+
   it('配置关闭（bashAutoBackgroundOnTimeout=false）时维持超时即杀', async () => {
     const mgr = new BackgroundManager();
     const r = await bashTool.execute(
