@@ -3,6 +3,7 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, write
 import { join } from 'node:path';
 import { notifyDedupKey } from '../wirelog.js';
 import { notificationIdFor } from './notify.js';
+import { createMonitorBatcher, MONITOR_FLUSH_MS } from './monitorBatcher.js';
 
 /** 后台任务状态。 */
 export type TaskStatus = 'running' | 'completed' | 'failed' | 'killed';
@@ -66,6 +67,17 @@ interface Internal extends BackgroundTask {
   onStop?: () => void;
   /** 输出是否经 takeOver 流式落盘（区分进程类与 async 类：后者终态时一次性写入 output.log）。 */
   streamed?: boolean;
+  /**
+   * 流式监听任务（Monitor）：stdout 按行切分、200ms 窗口内合并为一批事件经 onStream 投递。
+   * 与普通后台任务共用进程管理，差别只在输出消费方式——普通任务累积到 settle 时一次性发，
+   * Monitor 运行中持续发多批。存活期由 timeout 或 persistent 决定。
+   */
+  monitor?: boolean;
+  /** Monitor 的描述（显示在事件通知里）。 */
+  monitorDescription?: string;
+  /** Monitor 的行缓冲器与 flush 定时器（仅 monitor 任务存在）。 */
+  batcher?: ReturnType<typeof createMonitorBatcher>;
+  monitorTimer?: NodeJS.Timeout;
 }
 
 /** 后台任务管理器选项。 */
@@ -79,6 +91,13 @@ export interface BackgroundManagerOptions {
    * 含被抑制通知的任务（task_stop 亲手杀的）——审计与重放要的是「到达终态」这个事实，与是否通知无关。
    */
   onSettleEvent?: (t: BackgroundTask) => void;
+  /**
+   * 流式监听事件（Monitor）：stdout 按行切分、200ms 窗口内合并后调用。
+   * 与 onSettle 的区别：onSettle 终态一次性，这个运行中持续多批。
+   * 不设则 Monitor 退化为普通后台任务（输出照常累积，但不推事件），
+   * 用于不支持流式通道的宿主（-p 模式等）。
+   */
+  onStream?: (taskId: string, text: string, description: string) => void;
   /**
    * 任务持久化目录（<sessionDir>.tasks）：配置后每个任务落盘 <tasksDir>/<id>/meta.json +
    * output.log，内存态降级为非权威。缺省 = 纯内存（进程退出任务全丢，resume 无法对账）。
@@ -107,6 +126,18 @@ const MAX_OUTPUT_BYTES = 64 * 1024; // 内存只留 64KB 尾部
 const DEFAULT_MAX_OUTPUT_FILE_BYTES = 32 * 1024 * 1024;
 /** SIGTERM 后的宽限期（ms），未退出再 SIGKILL 强杀。 */
 const KILL_GRACE_MS = 2000;
+
+/** 起流式监听任务时的选项（Monitor 专用）。 */
+export interface MonitorStartOpts {
+  monitor?: boolean;
+  /** 显示在事件通知里的描述。 */
+  monitorDescription?: string;
+  /**
+   * 监听超时（秒）。<=0 或省略 = 不武装，活到命令退出或 task_stop。
+   * 普通后台任务不走这里（用全局 taskTimeoutS），只有 monitor 显式给。
+   */
+  timeoutS?: number;
+}
 
 /**
  * 终止进程及其整棵子树（best-effort，不抛错）。
@@ -350,7 +381,13 @@ export class BackgroundManager {
   }
 
   /** 起一个后台进程。超并发上限抛错。返回 task id。 */
-  start(command: string, shellCmd: string, shellArgs: string[], cwd: string): string {
+  start(
+    command: string,
+    shellCmd: string,
+    shellArgs: string[],
+    cwd: string,
+    opts?: MonitorStartOpts,
+  ): string {
     if (shellCmd === '') {
       throw new Error('无可用 shell 解释器，无法启动后台命令（Windows 上请安装 Git Bash 或设置 STEP_SHELL_PATH）。');
     }
@@ -366,14 +403,14 @@ export class BackgroundManager {
       // Windows 不需要 detached（杀树靠 taskkill /T），且要避免新 console 窗口问题。
       detached: process.platform !== 'win32',
     });
-    return this.adopt(command, proc, '');
+    return this.adopt(command, proc, '', opts);
   }
 
   /**
    * 收养一个已在运行的进程为后台任务（前台超时转后台用）。
    * initialOutput 为收养前已收集的部分输出；收养后输出继续追加、后台超时重新武装。
    */
-  adopt(command: string, proc: ChildProcess, initialOutput: string): string {
+  adopt(command: string, proc: ChildProcess, initialOutput: string, opts?: MonitorStartOpts): string {
     if (this.activeCount() >= this.maxRunning) {
       throw new Error(`后台任务已达上限（${this.maxRunning}），请先等待或停止部分任务。`);
     }
@@ -390,11 +427,17 @@ export class BackgroundManager {
           ? initialOutput.slice(initialOutput.length - MAX_OUTPUT_BYTES)
           : initialOutput,
       proc,
+      monitor: opts?.monitor === true,
+      monitorDescription: opts?.monitorDescription,
     };
     this.tasks.set(id, task);
     this.initPersistence(task);
     this.takeOver(task, proc);
-    this.armTimeout(task);
+    // Monitor 的超时由调用方经 timeoutS 显式给：它默认要活到会话结束（persistent），
+    // 不能用后台任务默认超时去砍。persistent 场景 timeoutS<=0 = 不武装，靠 task_stop 收。
+    const monS = opts?.monitor === true ? opts?.timeoutS : undefined;
+    if (monS === undefined) this.armTimeout(task);
+    else if (monS > 0) this.armTimeoutFor(task, monS);
     return id;
   }
 
@@ -497,6 +540,14 @@ export class BackgroundManager {
       .map((t) => this.toPublic(t));
   }
 
+  /**
+   * 宿主是否接了流式事件通道。工具据此决定起 monitor 还是报错退化——
+   * 不接时输出照常累积（task_output 可查），只是中途不推事件。
+   */
+  supportsStream(): boolean {
+    return this.options.onStream !== undefined;
+  }
+
   /** 任务是否已脱离前台（已转后台 / 不存在 / 已终态均视为脱离，调用方据此不误杀进程）。 */
   isDetached(id: string): boolean {
     const t = this.tasks.get(id);
@@ -521,6 +572,11 @@ export class BackgroundManager {
       }
       // 磁盘 output.log 是权威全量，内存只是尾部
       this.persistOutputChunk(task, text);
+      // 流式监听：额外按行切分喂给缓冲器，到点合成一批推事件。
+      // 与上面的累积互不影响——累积供 task_output 事后查，缓冲供实时推。
+      if (task.monitor === true && this.options.onStream !== undefined) {
+        this.feedMonitor(task, text);
+      }
     };
     proc.stdout?.on('data', append);
     proc.stderr?.on('data', append);
@@ -530,6 +586,7 @@ export class BackgroundManager {
         task.endedAt = new Date().toISOString();
         task.output += `\n[进程错误：${err.message}]`;
       }
+      if (task.monitor === true) this.flushMonitor(task, true);
       this.settle(task);
     });
     proc.on('close', (code) => {
@@ -539,8 +596,38 @@ export class BackgroundManager {
         task.exitCode = code ?? undefined;
         task.endedAt = new Date().toISOString();
       }
+      // 退出前把残余半行也发出去：进程最后一行常常不带换行符
+      if (task.monitor === true) this.flushMonitor(task, true);
       this.settle(task);
     });
+  }
+
+  /**
+   * 喂一块输出给 Monitor 缓冲器，并（在需要时）起一个 200ms 后的 flush。
+   * 定时器只在从无到有时起：已有窗口在跑就不重置，避免高频 push 让 flush 永远不来。
+   */
+  private feedMonitor(task: Internal, text: string): void {
+    if (task.batcher === undefined) task.batcher = createMonitorBatcher();
+    const started = task.batcher.push(text);
+    if (started && task.monitorTimer === undefined) {
+      task.monitorTimer = setTimeout(() => {
+        task.monitorTimer = undefined;
+        this.flushMonitor(task, false);
+      }, MONITOR_FLUSH_MS);
+      task.monitorTimer.unref?.();
+    }
+  }
+
+  /** flush 一批 Monitor 事件并投递。force 用于进程退出/被杀，把残余半行也发出去。 */
+  private flushMonitor(task: Internal, force: boolean): void {
+    if (task.monitorTimer !== undefined) {
+      clearTimeout(task.monitorTimer);
+      task.monitorTimer = undefined;
+    }
+    if (task.batcher === undefined) return;
+    const body = task.batcher.flush(force);
+    if (body === null) return;
+    this.options.onStream?.(task.id, body, task.monitorDescription ?? task.command);
   }
 
   /** 武装后台超时：到期终止（先 SIGTERM，宽限期后未退出补 SIGKILL）。taskTimeoutS<=0 时不武装。 */
@@ -551,6 +638,14 @@ export class BackgroundManager {
       this.terminate(task, `后台任务超时（${s}s），已终止`);
     }, s * 1000);
     // 不阻止进程退出（非交互模式下遗留定时器不应挂住进程）
+    task.timer.unref?.();
+  }
+
+  /** 用显式秒数武装超时（Monitor 用：它的默认预期是活到会话结束，不能用全局默认值砍）。 */
+  private armTimeoutFor(task: Internal, seconds: number): void {
+    task.timer = setTimeout(() => {
+      this.terminate(task, `监听超时（${seconds}s），已终止`);
+    }, seconds * 1000);
     task.timer.unref?.();
   }
 
@@ -575,6 +670,8 @@ export class BackgroundManager {
     force.unref?.();
     task.status = 'killed';
     task.endedAt = new Date().toISOString();
+    // 终止前把残余输出发出去：被 kill 的监听任务，死前最后一行往往是关键信息
+    if (task.monitor === true) this.flushMonitor(task, true);
     this.settle(task);
   }
 

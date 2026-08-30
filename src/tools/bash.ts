@@ -224,13 +224,18 @@ function runForeground(
         if (settled || reason === 'terminal') return;
         const snap = collector.snapshot();
         const partial = snap.text === '' ? '（暂无输出）' : truncateOutput(snap, canDelegate);
+        // 空结果的两种解释：命令跑完了没输出，还是命令没跑完被截断。
+        // 走到这里说明命令仍在后台运行（close 路径不会到达），退出码未知，
+        // 所以一律标记未完成——这是唯一能挡住「拿截断输出当已完成检索」的地方。
         const lead =
           reason === 'detached'
             ? `命令已转为后台任务 ${id} 继续运行，不再阻塞当前回合。`
             : `命令超过前台超时（${timeoutSec}s），已转为后台任务 ${id} 继续运行，不再阻塞当前回合。`;
+        const verdict =
+          `\n【未完成】以上是截断输出，不是完整结果。退出码未知，命令仍在后台运行。不要据此判定任何「不存在 / 零命中 / 已清零」——截断输出与零命中在视觉上无法区分。完整结果用 task_output ${id} 或 task_wait ${id} 取。`;
         finish(
           ok(
-            `${lead}任务到达终态时你会收到完成通知；也可用 task_list 查看状态、task_output 看输出、task_stop 终止。\n\n已收集的部分输出：\n${partial}`,
+            `${lead}${verdict}任务到达终态时你会收到完成通知；也可用 task_list 查看状态、task_output 看输出、task_stop 终止。\n\n已收集的部分输出：\n${partial}`,
           ),
         );
       });
@@ -254,7 +259,7 @@ function runForeground(
 export const bashTool: ToolDef<z.infer<typeof schema>> = {
   name: 'bash',
   description:
-    '执行一条 shell 命令并返回合并后的 stdout+stderr。用场景：运行脚本、安装依赖、git 操作、构建、测试。不用场景：交互式程序（vim/python REPL）——用 run_in_background=true。超时默认 60s，上限 300s。',
+    '执行一条 shell 命令并返回合并后的 stdout+stderr。用场景：运行脚本、安装依赖、git 操作、构建、测试。不用场景：交互式程序（vim/python REPL）——用 run_in_background=true。超时默认 60s，上限 300s。耗时未知的遍历类命令（全库 grep -r / find / du）要么显式给 timeout，要么直接 run_in_background=true 再 task_wait，不要用默认 60s 赌它能跑完——赌输会拿到截断输出，而截断输出与「零命中」在视觉上无法区分。',
   schema,
   async execute(input, ctx) {
     const shell = resolveShell();
