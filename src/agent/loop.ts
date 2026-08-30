@@ -21,6 +21,7 @@ import type { AgentEvent } from './events.js';
 import { type LoopHooks, resolveContinuation } from './hooks.js';
 import { type StoredMessage, stored } from './message.js';
 import { buildSettleMessage } from './background/notify.js';
+import { buildStreamMessage } from './background/monitorStream.js';
 import { crossedLocalMidnight, formatLocalNow } from './nowContext.js';
 import type { WireEvent } from './wirelog.js';
 import { runTurn } from './runTurn.js';
@@ -384,6 +385,14 @@ export async function* runAgent(opts: RunAgentOptions): AsyncGenerator<AgentEven
         // delivered 事件不在此落盘：消息本体要等回合末 persist 才落盘，事件先写会留下
         // 「事件在、消息不在」的崩溃窗口——对账误判已送达，通知丢失（待办 #17）。
         // 统一由 persist 与消息本体同刻补写；消息带 background_task origin，补写可寻址。
+      }
+    }
+    // Monitor 流式事件：与终态通知同一条 step 边界注入路径（startsPromptTurn=false），
+    // 语义对应 claude code 的 priority:"next"——在两个工具调用之间读取，不打断正在执行的工具。
+    // 不在 flush 时直接注入：那会逼出一个模型回合，200ms 一批等于每 200ms 烧一次 prompt cache。
+    if (opts.injectBackgroundNotifications === true && ctx.background !== undefined) {
+      for (const ev of ctx.background.drainStreamEvents()) {
+        messages.push(buildStreamMessage(ev.taskId, ev.body, ev.description, { startsPromptTurn: false }));
       }
     }
     // 用户主动插队（Ctrl+S）：step 边界取走共享数组注入，模型本回合即可见。

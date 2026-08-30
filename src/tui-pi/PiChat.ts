@@ -19,6 +19,7 @@ import { navigateHistory, initialNavState } from '../session/inputHistory.js';
 import { notifyDedupKeyFromOrigin, pendingDeliveredEvents } from '../agent/wirelog.js';
 
 import { buildSettleMessage, decideNotifyRoute, mergeSettleMessages, pendingBatchDeliveredEvents } from '../agent/background/notify.js';
+import { shouldDeliverStream } from '../agent/background/monitorStream.js';
 import { startHeapWatch } from './heapWatch.js';
 import { logDebug } from '../utils/logger.js';
 import { emitTerminalNotification } from '../agent/background/terminal-notify.js';
@@ -3430,6 +3431,10 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       tasksDir: this.deps.store.tasksDirFor(this.session.cwd, this.session.id),
       onSettleEvent: (task) => this.appendWire({ type: 'background.task_settle', ts: new Date().toISOString(), task }),
       onSettle: (task) => this.onBackgroundSettle(task),
+      // Monitor 流式事件：UI 侧只展示（转录区一条 note），是否投给模型由 onStreamFilter 闸门决定。
+      // 展示与投递分开是因为两者消费规则不同——用户始终要看得到，模型只在值得时看。
+      onStream: (taskId, text, description) => this.onMonitorStream(taskId, text, description),
+      onStreamFilter: (_taskId, text) => shouldDeliverStream(text),
     });
     // 旧管理器的在途任务属于上个会话，必须先整体终止并断开结算回调，否则它们 settle 时
     // 回调经捕获的 this 回灌到新会话（污染转录 / 误报通知 / 注入模型上下文），与 cron
@@ -3513,6 +3518,24 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     } else {
       this.updateNotifyQueue([...this.notifyQueue, ...bodies]);
     }
+  }
+
+  /**
+   * Monitor 流式事件到达（200ms 一批，行缓冲器合并后产出）。
+   *
+   * 只做转录区展示，不在这里注入模型：注入在 runAgent 的 step 边界（loop.ts），语义对应
+   * claude code 的 `priority:"next"`——在两个工具调用之间读取，不打断正在执行的工具。
+   * 在这里直接注入会逼出一个模型回合，而 200ms 一批的频率下等于每 200ms 烧一次 prompt cache。
+   *
+   * 与 onBackgroundSettle 的分工：settle 是「任务结束了」（一次性，要收尾），这个是「过程中
+   * 发生了某件事」（持续多批，多数不值得惊动用户）。所以 settle 响铃，这个不响。
+   */
+  private onMonitorStream(taskId: string, text: string, description: string): void {
+    // 首批给个带描述的头部，后续只追加正文——否则 200ms 一条「任务 x 事件」刷满转录区。
+    const lines = text.split('\n').filter((l) => l !== '');
+    const head = lines.length > 1 ? ` ${description}` : ` ${description}：${lines[0] ?? ''}`;
+    this.push({ kind: 'note', text: `[monitor ${taskId}]${head}` });
+    this.syncStatus();
   }
 
   // ---------------------------------------------------------------- 耗时命令
