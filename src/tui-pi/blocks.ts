@@ -307,12 +307,18 @@ export class ItemBlock implements Component {
    * 渲染一条展开内容（查看器复用）：去掉主界面的折叠提示，全文铺开。
    * 与 render 路径共用同一个 Markdown 实例没必要——查看器是低频操作，新建一个即可。
    */
-  static renderExpanded(item: Extract<DisplayItem, { kind: 'tool' | 'thinking' }>, width: number): string[] {
+  static renderExpanded(item: Extract<DisplayItem, { kind: 'tool' | 'thinking' | 'monitor' }>, width: number): string[] {
     if (item.kind === 'thinking') {
       const md = new Markdown(item.text, 0, 0, thinkingMarkdownTheme, undefined, { transform: markdownTransform });
       // 压灰同主界面：查看器里也不该出现半灰半白
       const w = Math.max(1, width - 2);
       return dimAll(md.render(w).map((l) => truncateToWidth(l, w)));
+    }
+    if (item.kind === 'monitor') {
+      // Monitor 区块展开：显示全部批次，每批之间空行分隔
+      const w = Math.max(1, width - 2);
+      const text = item.batches.join('\n\n');
+      return wrap(text, w).map((l) => c.dim(l));
     }
     return renderToolExpanded(item, width);
   }
@@ -381,6 +387,25 @@ export class ItemBlock implements Component {
         // 逐回合折叠的摘要占位：一行 dim，告知更早的块已被折成摘要释放内存。
         // 正文/user/assistant 不折叠（用户最常回看），只有 tool/thinking 等旧块进摘要。
         return [...hanging(wrap(c.dim(`↳ 折叠了 ${it.count} 个旧块（更早的轮次，仍在历史中）`), width - 2), c.dim('· '), 2), ''];
+      case 'monitor': {
+        // Monitor 监听区块：折叠时显示最后一批摘要 + 批次计数，展开时显示全部批次。
+        const total = it.batches.length;
+        const last = it.batches[total - 1] ?? '';
+        const lastLines = last.split('\n').filter((l) => l !== '');
+        const summary = lastLines.length > 0 ? lastLines[lastLines.length - 1]! : '';
+        const head = c.dim(
+          it.collapsed
+            ? `◈ monitor ${it.taskId}（${total} 批）${summary ? `：${summary}` : ''}（Ctrl+O 展开）`
+            : `◈ monitor ${it.taskId}（${total} 批，已展开）`,
+        );
+        if (it.collapsed) {
+          return [...hanging(wrap(head, width - 2), c.dim('· '), 2), ''];
+        }
+        // 展开：显示全部批次，每批之间空行分隔
+        const allText = it.batches.join('\n\n');
+        const body = wrap(allText, width - 4).map((l) => c.dim(l));
+        return [...hanging([head, ...body], c.dim('· '), 2), ''];
+      }
       case 'cron':
         // cron prompt 可能很长（几百字符），必须先 wrap 再逐行着色。
         // 原来直接 `c.accent(prompt)` 整段当一行返回，992 字符 > 67 列终端宽度

@@ -58,8 +58,19 @@ export type DisplayItem =
       subagentParallel?: number;
     }
   | {
-      kind: 'note';
-      text: string;
+      /**
+       * Monitor 监听区块：一个 monitor 任务对应一块，实时追加输出批次，可展开查看全文。
+       * 与 tool kind 的 subagentToolEvents 同形态——都是「实时追加 + 可展开」。
+       */
+      kind: 'monitor';
+      taskId: string;
+      description: string;
+      /** 已收到的输出批次（200ms 窗口合并后的文本）。 */
+      batches: string[];
+      /** 是否已折叠（默认折叠，显示最后一批摘要）。 */
+      collapsed?: boolean;
+    }
+  | { kind: 'note'; text: string;
       /**
        * 为 true 表示这是 agent 流事件（retry/notice），构成消息边界：流式正文不得越过它
        * 续接前面的 assistant（重试/新一轮的消息必须另开条目）。缺省为 UI 侧提示

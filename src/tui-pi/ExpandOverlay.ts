@@ -25,7 +25,7 @@ import { c } from './theme.js';
 import { t } from '../i18n.js';
 
 /** 把一条可展开条目渲染成纯文本行（查看器里不折叠，全文铺开）。 */
-export type EntryRenderer = (item: Extract<DisplayItem, { kind: 'tool' | 'thinking' }>, width: number) => string[];
+export type EntryRenderer = (item: Extract<DisplayItem, { kind: 'tool' | 'thinking' | 'monitor' }>, width: number) => string[];
 
 export class ExpandOverlay implements Component {
   private readonly lines: string[];

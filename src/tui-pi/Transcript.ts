@@ -89,6 +89,26 @@ export class Transcript implements Component {
     this.trim();
   }
 
+  /**
+   * 按 taskId 找到 Monitor 区块并替换其内容。
+   * 返回是否找到（找不到说明还没有这个 monitor 的块，调用方需先 push）。
+   *
+   * 反向线性扫描：最新的 monitor 事件对应的块通常在末尾附近，
+   * 而 items() 每次调用都 map 出新数组（O(N)），高频事件下不能每次全量复制。
+   */
+  updateMonitor(taskId: string, updater: (it: Extract<DisplayItem, { kind: 'monitor' }>) => void): boolean {
+    for (let i = this.blocks.length - 1; i >= 0; i--) {
+      const it = this.blocks[i]!.getItem();
+      if (it.kind === 'monitor' && it.taskId === taskId) {
+        const next = { ...it };
+        updater(next);
+        this.blocks[i]!.setItem(next);
+        return true;
+      }
+    }
+    return false;
+  }
+
   /** 整体替换（/new、/resume、历史回放）。 */
   reset(items: readonly DisplayItem[], foldedTurns = 0): void {
     this.blocks = items.map((it) => new ItemBlock(it));

@@ -16,7 +16,7 @@ export const THINKING_FOLD_LINES = 3;
 export interface ExpandableEntry {
   /** 在原 items 里的下标（查看器内定位用）。 */
   index: number;
-  item: Extract<DisplayItem, { kind: 'tool' | 'thinking' }>;
+  item: Extract<DisplayItem, { kind: 'tool' | 'thinking' | 'monitor' }>;
 }
 
 export interface TurnGroup {
@@ -40,9 +40,10 @@ function looksLikeDiff(lines: readonly string[]): boolean {
   return lines.some((l) => l.startsWith('@@') || l.startsWith('--- ') || l.startsWith('+++ '));
 }
 
-function isExpandable(item: DisplayItem): item is Extract<DisplayItem, { kind: 'tool' | 'thinking' }> {
+function isExpandable(item: DisplayItem): item is Extract<DisplayItem, { kind: 'tool' | 'thinking' | 'monitor' }> {
   if (item.kind === 'tool') return hasCollapsedResult(item);
   if (item.kind === 'thinking') return item.text.split('\n').length > THINKING_FOLD_LINES;
+  if (item.kind === 'monitor') return item.batches.length > 1;
   return false;
 }
 
@@ -93,7 +94,7 @@ export interface RenderedSection {
  */
 export function sectionsFromGroups(
   groups: TurnGroup[],
-  entryRenderer: (item: Extract<DisplayItem, { kind: 'tool' | 'thinking' }>) => string[],
+  entryRenderer: (item: Extract<DisplayItem, { kind: 'tool' | 'thinking' | 'monitor' }>) => string[],
 ): { lines: string[]; turnStarts: number[] } {
   const lines: string[] = [];
   const turnStarts: number[] = [];
@@ -101,7 +102,12 @@ export function sectionsFromGroups(
     turnStarts.push(lines.length);
     lines.push(g.userText === null ? '── 会话开始 ──' : `── ${g.userText.length > 60 ? g.userText.slice(0, 60) + '…' : g.userText} ──`);
     for (const e of g.entries) {
-      const head = e.item.kind === 'tool' ? `· ${e.item.name}` : '· thinking';
+      const head =
+        e.item.kind === 'tool'
+          ? `· ${e.item.name}`
+          : e.item.kind === 'monitor'
+            ? `· monitor ${e.item.taskId}（${e.item.batches.length} 批）`
+            : '· thinking';
       lines.push(head);
       for (const body of entryRenderer(e.item)) lines.push(body);
     }

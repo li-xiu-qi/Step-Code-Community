@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatStreamNotification, buildStreamMessage, shouldDeliverStream } from '../../src/agent/background/monitorStream.js';
+import { formatStreamNotification, buildStreamMessage, shouldDeliverStream, mergeStreamMessages } from '../../src/agent/background/monitorStream.js';
 import { enqueueStreamEvent, type StreamEvent } from '../../src/agent/background/manager.js';
 
 describe('shouldDeliverStream', () => {
@@ -62,6 +62,36 @@ describe('enqueueStreamEvent：队列字符预算', () => {
     const q: StreamEvent[] = [];
     for (let i = 0; i < 10; i++) enqueueStreamEvent(q, ev('x'.repeat(100)), 500);
     expect(q.length).toBeLessThanOrEqual(5);
+  });
+});
+
+describe('mergeStreamMessages', () => {
+  it('空列表抛错', () => {
+    expect(() => mergeStreamMessages([])).toThrow('空列表无法合成');
+  });
+
+  it('单条原样返回（不套壳）', () => {
+    const msg = buildStreamMessage('t-1', 'body', 'desc');
+    const merged = mergeStreamMessages([msg]);
+    expect(merged).toBe(msg);
+    expect(merged.message.content).toContain('<event>body</event>');
+  });
+
+  it('多条套 monitor-stream-batch 信封，不带 taskId/notificationId', () => {
+    const msgs = [
+      buildStreamMessage('t-1', 'ERROR: a', 'd'),
+      buildStreamMessage('t-1', 'ERROR: b', 'd'),
+    ];
+    const merged = mergeStreamMessages(msgs);
+    const content = typeof merged.message.content === 'string' ? merged.message.content : '';
+    expect(content).toContain('<monitor-stream-batch count="2">');
+    expect(content).toContain('ERROR: a');
+    expect(content).toContain('ERROR: b');
+    // 不参与 resume 补投去重：taskId 与 notificationId 都留空
+    expect(merged.origin.taskId).toBeUndefined();
+    expect(merged.origin.notificationId).toBeUndefined();
+    expect(merged.origin.kind).toBe('monitor_stream');
+    expect(merged.origin.startsPromptTurn).toBe(true);
   });
 });
 
