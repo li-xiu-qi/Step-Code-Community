@@ -948,13 +948,7 @@ async function runPrint(prompt: string): Promise<void> {
       // 持久化失败不影响输出
     }
   }
-  const subCtx: ToolContext = {
-    ...ctx,
-    depth: 0,
-    todos: todosStore,
-    background,
-    subagentMaxConcurrent: config.subagent.maxConcurrent,
-    runSubagent: createSubagentRunner({
+  const { run: runSubagent } = createSubagentRunner({
       provider,
       cwd,
       apiKey: config.apiKey,
@@ -995,7 +989,14 @@ async function runPrint(prompt: string): Promise<void> {
         const line = subagentTextLine(ev);
         if (line !== null) process.stderr.write(line);
       },
-    }),
+    });
+  const subCtx: ToolContext = {
+    ...ctx,
+    depth: 0,
+    todos: todosStore,
+    background,
+    subagentMaxConcurrent: config.subagent.maxConcurrent,
+    runSubagent,
     // 跨 session 队列：供 session_send / session_inbox 工具读写；未注入时工具返回不支持。
     sessionQueue,
   };

@@ -108,7 +108,7 @@ const deps = (
 describe('createSubagentRunner', () => {
   it('深度已达上限 → 拒绝且不调用 provider', async () => {
     const { provider, streamCalls } = makeFakeProvider([]);
-    const run = createSubagentRunner(deps(provider));
+    const { run } = createSubagentRunner(deps(provider));
     const r = await run({ subagentType: 'general', prompt: 'x', depth: 1 });
     expect(r.isError).toBe(true);
     expect(r.summary).toContain('深度上限');
@@ -119,7 +119,7 @@ describe('createSubagentRunner', () => {
     const { provider, streamCalls } = makeFakeProvider([
       { textChunks: [], finalContent: [textBlock(LONG)] },
     ]);
-    const run = createSubagentRunner(deps(provider, undefined, { maxDepth: 2 }));
+    const { run } = createSubagentRunner(deps(provider, undefined, { maxDepth: 2 }));
     const r = await run({ subagentType: 'general', prompt: 'x', depth: 1 });
     expect(r.isError).toBe(false);
     expect(streamCalls()).toBe(1);
@@ -127,7 +127,7 @@ describe('createSubagentRunner', () => {
 
   it('未知子 agent 类型 → 错误', async () => {
     const { provider, streamCalls } = makeFakeProvider([]);
-    const run = createSubagentRunner(deps(provider));
+    const { run } = createSubagentRunner(deps(provider));
     const r = await run({ subagentType: 'nope', prompt: 'x', depth: 0 });
     expect(r.isError).toBe(true);
     expect(r.summary).toContain('未知子 agent 类型');
@@ -137,7 +137,7 @@ describe('createSubagentRunner', () => {
   it('每次成功派生递增会话计数器', async () => {
     const { provider } = makeFakeProvider([{ textChunks: [], finalContent: [textBlock(LONG)] }]);
     const counter = { spawned: 0 };
-    const run = createSubagentRunner(deps(provider, undefined, { sessionCounter: counter }));
+    const { run } = createSubagentRunner(deps(provider, undefined, { sessionCounter: counter }));
     await run({ subagentType: 'general', prompt: '干活', depth: 0 });
     expect(counter.spawned).toBe(1);
   });
@@ -145,7 +145,7 @@ describe('createSubagentRunner', () => {
   it('未知类型 / 深度超限不递增计数器', async () => {
     const { provider } = makeFakeProvider([]);
     const counter = { spawned: 0 };
-    const run = createSubagentRunner(deps(provider, undefined, { sessionCounter: counter }));
+    const { run } = createSubagentRunner(deps(provider, undefined, { sessionCounter: counter }));
     await run({ subagentType: 'nope', prompt: 'x', depth: 0 });
     await run({ subagentType: 'general', prompt: 'x', depth: 1 }); // 深度超限
     expect(counter.spawned).toBe(0);
@@ -158,7 +158,7 @@ describe('createSubagentRunner', () => {
       { textChunks: [], finalContent: [textBlock(LONG)] }, // 孙 agent 返回
       { textChunks: [], finalContent: [textBlock(LONG)] }, // 子 agent 返回
     ]);
-    const run = createSubagentRunner(deps(provider, undefined, { maxDepth: 2 }));
+    const { run } = createSubagentRunner(deps(provider, undefined, { maxDepth: 2 }));
     const r = await run({ subagentType: 'general', prompt: '主任务', depth: 0 });
     expect(r.isError).toBe(false);
     expect(streamCalls()).toBeGreaterThanOrEqual(2); // 子 agent 和孙 agent 都跑了
@@ -166,7 +166,7 @@ describe('createSubagentRunner', () => {
 
   it('正常跑完 → 最后一条 assistant 文本作为摘要回灌', async () => {
     const { provider } = makeFakeProvider([{ textChunks: [], finalContent: [textBlock(LONG)] }]);
-    const run = createSubagentRunner(deps(provider));
+    const { run } = createSubagentRunner(deps(provider));
     const r = await run({ subagentType: 'general', prompt: '干活', depth: 0 });
     expect(r.isError).toBe(false);
     expect(r.summary).toBe(LONG);
@@ -178,7 +178,7 @@ describe('createSubagentRunner', () => {
     ]);
     const reg: SkillRegistry = { skills: new Map() };
     reg.skills.set('demo', parseSkillMd('---\nname: demo\ndescription: 演示技能\n---\n技能正文', '/d', { kind: 'user' })!);
-    const run = createSubagentRunner(deps(provider, undefined, { skills: reg }));
+    const { run } = createSubagentRunner(deps(provider, undefined, { skills: reg }));
     const r = await run({ subagentType: 'explore', prompt: 'x', depth: 0 });
     expect(r.isError).toBe(false);
     const p = streamParams()[0]!;
@@ -195,7 +195,7 @@ describe('createSubagentRunner', () => {
       { textChunks: [], finalContent: [toolUseBlock('c1', 'spawn_agent', { prompt: 'y', description: 'd' })] },
       { textChunks: [], finalContent: [textBlock(LONG)] },
     ]);
-    const run = createSubagentRunner(deps(provider));
+    const { run } = createSubagentRunner(deps(provider));
     const r = await run({ subagentType: 'general', prompt: '试图再派生', depth: 0 });
     // spawn_agent 被子 agent 的工具白名单拦下（allowedTools 守卫），子 agent 仍正常跑完
     expect(r.isError).toBe(false);
@@ -218,7 +218,7 @@ describe('runner 消费 usage 事件（计费口径累计上抛）', () => {
         usage: { input_tokens: 200, output_tokens: 20 } as Anthropic.Usage,
       },
     ]);
-    const run = createSubagentRunner(deps(provider, (_id, e) => events.push(e)));
+    const { run } = createSubagentRunner(deps(provider, (_id, e) => events.push(e)));
     const r = await run({ subagentType: 'general', prompt: '干活', depth: 0 });
     expect(r.isError).toBe(false);
     // 第 1 轮 100+10=110（cache_read 不计入）；第 2 轮 200+20=220 → 累计 330
@@ -243,7 +243,7 @@ describe('runner 消费 usage 事件（计费口径累计上抛）', () => {
         usage: { input_tokens: 80, output_tokens: 30 } as Anthropic.Usage,
       },
     ]);
-    const run = createSubagentRunner(deps(provider, (_id, e) => events.push(e)));
+    const { run } = createSubagentRunner(deps(provider, (_id, e) => events.push(e)));
     const r = await run({ subagentType: 'general', prompt: '干活', depth: 0 });
     expect(r.isError).toBe(false);
     expect(r.summary).toBe(LONG);
@@ -278,7 +278,7 @@ describe('runner 消费 usage 事件（计费口径累计上抛）', () => {
       ...many,
       { textChunks: [], finalContent: [textBlock(LONG)], usage }, // 收尾 end_turn
     ]);
-    const run = createSubagentRunner(
+    const { run } = createSubagentRunner(
       deps(provider, (_id, e) => events.push(e), {
         compaction: { maxContextSize: 20000, triggerRatio: 0.85, reservedTokens: 10 },
       }),
@@ -300,7 +300,7 @@ describe('runner 消费 usage 事件（计费口径累计上抛）', () => {
   it('provider 未回 usage → 不产生 usage progress（billedDelta 缺省时旧行为不变）', async () => {
     const events: SubagentProgressEvent[] = [];
     const { provider } = makeFakeProvider([{ textChunks: [], finalContent: [textBlock(LONG)] }]);
-    const run = createSubagentRunner(deps(provider, (_id, e) => events.push(e)));
+    const { run } = createSubagentRunner(deps(provider, (_id, e) => events.push(e)));
     const r = await run({ subagentType: 'general', prompt: '干活', depth: 0 });
     expect(r.isError).toBe(false);
     expect(events.filter((e) => e.kind === 'usage')).toHaveLength(0);
@@ -311,7 +311,7 @@ describe('start 事件的显示描述（短标签优先，防长 prompt 挤掉�
   it('req 带 description → start 事件用短标签，不用 prompt 截断', async () => {
     const events: SubagentProgressEvent[] = [];
     const { provider } = makeFakeProvider([{ textChunks: [], finalContent: [textBlock(LONG)] }]);
-    const run = createSubagentRunner(deps(provider, (_id, e) => events.push(e)));
+    const { run } = createSubagentRunner(deps(provider, (_id, e) => events.push(e)));
     await run({ subagentType: 'general', prompt: '背景：很长很长的任务描述', depth: 0, description: '实施 /reload 命令' });
     expect(events.find((e) => e.kind === 'start')).toEqual(
       expect.objectContaining({
@@ -325,7 +325,7 @@ describe('start 事件的显示描述（短标签优先，防长 prompt 挤掉�
   it('req 无 description → 退回 prompt 截断且压平换行', async () => {
     const events: SubagentProgressEvent[] = [];
     const { provider } = makeFakeProvider([{ textChunks: [], finalContent: [textBlock(LONG)] }]);
-    const run = createSubagentRunner(deps(provider, (_id, e) => events.push(e)));
+    const { run } = createSubagentRunner(deps(provider, (_id, e) => events.push(e)));
     await run({ subagentType: 'general', prompt: '第一行\n第二行\r\n第三行', depth: 0 });
     const start = events.find((e) => e.kind === 'start');
     expect(start).toEqual(
@@ -458,7 +458,7 @@ describe('子会话落盘（快照 + 全量日志 + 活跃锁）', () => {
   it('跑完后盘上有子会话文件：status done、meta 齐全、sessionId 回传、锁已释放', async () => {
     const { provider } = makeFakeProvider([{ textChunks: [], finalContent: [textBlock(LONG)] }]);
     const d = deps(provider);
-    const run = createSubagentRunner(d);
+    const { run } = createSubagentRunner(d);
     const r = await run({ subagentType: 'general', prompt: '干活', depth: 0 });
     expect(r.isError).toBe(false);
     expect(r.sessionId).toBeTruthy();
@@ -483,7 +483,7 @@ describe('子会话落盘（快照 + 全量日志 + 活跃锁）', () => {
   it('异常路径：provider 持续抛错 → status error 且历史完整落盘', async () => {
     const { provider } = makeFakeProvider(Array.from({ length: 10 }, () => ({ throw: new Error('boom') })));
     const d = deps(provider);
-    const run = createSubagentRunner(d);
+    const { run } = createSubagentRunner(d);
     const r = await run({ subagentType: 'general', prompt: '会失败的任务', depth: 0 });
     expect(r.isError).toBe(true);
     expect(r.sessionId).toBeTruthy();
@@ -502,7 +502,7 @@ describe('子会话落盘（快照 + 全量日志 + 活跃锁）', () => {
       Array.from({ length: 4 }, () => ({ textChunks: [], finalContent: [textBlock(LONG)] })),
     );
     const d = deps(provider);
-    const run = createSubagentRunner(d);
+    const { run } = createSubagentRunner(d);
     const prompts = ['任务一', '任务二', '任务三', '任务四'];
     const results = await Promise.all(
       prompts.map((p) => run({ subagentType: 'general', prompt: p, depth: 0 })),
@@ -723,7 +723,7 @@ describe('resume：按 id 恢复子会话', () => {
     ]);
     const counter = { spawned: 0 };
     const d = deps(provider, undefined, { sessionCounter: counter });
-    const run = createSubagentRunner(d);
+    const { run } = createSubagentRunner(d);
     const r1 = await run({ subagentType: 'general', prompt: '原始任务', depth: 0 });
     expect(r1.isError).toBe(false);
     expect(counter.spawned).toBe(1);
@@ -755,7 +755,7 @@ describe('resume：按 id 恢复子会话', () => {
     ]);
     const counter = { spawned: 0 };
     const d = deps(provider, undefined, { sessionCounter: counter });
-    const run = createSubagentRunner(d);
+    const { run } = createSubagentRunner(d);
     const r1 = await run({ subagentType: 'general', prompt: '任务', depth: 0 });
     expect(counter.spawned).toBe(1);
     // resume 放行且不增计数
@@ -767,7 +767,7 @@ describe('resume：按 id 恢复子会话', () => {
   it('目标会话不存在 → 明确报错；持活跃锁 → 拒绝且不覆写', async () => {
     const { provider } = makeFakeProvider([{ textChunks: [], finalContent: [textBlock(LONG)] }]);
     const d = deps(provider);
-    const run = createSubagentRunner(d);
+    const { run } = createSubagentRunner(d);
     const missing = await run({ subagentType: 'general', prompt: 'x', depth: 0, resume: 'no-such-id' });
     expect(missing.isError).toBe(true);
     expect(missing.summary).toContain('找不到子会话');
@@ -787,7 +787,7 @@ describe('resume：按 id 恢复子会话', () => {
   it('并发 resume 同一 id：第二个被锁拒绝，第一个正常跑完', async () => {
     const setup = makeFakeProvider([{ textChunks: [], finalContent: [textBlock(LONG)] }]);
     const d = deps(setup.provider);
-    const run = createSubagentRunner(d);
+    const { run } = createSubagentRunner(d);
     const r1 = await run({ subagentType: 'general', prompt: '底', depth: 0 });
 
     // gated provider：stream 迭代卡在 gate 上，模拟第一个 resume 正在执行
@@ -809,7 +809,7 @@ describe('resume：按 id 恢复子会话', () => {
       },
     } as unknown as ReturnType<typeof makeFakeProvider>['provider'];
     const d2 = deps(gatedProvider, undefined, { subagentStore: d.subagentStore });
-    const run2 = createSubagentRunner(d2);
+    const { run: run2 } = createSubagentRunner(d2);
 
     const p1 = run2({ subagentType: 'general', prompt: '续一', depth: 0, resume: r1.sessionId! });
     await new Promise((r) => setTimeout(r, 50)); // 等 p1 拿锁并卡在 gate
@@ -838,7 +838,7 @@ describe('resume：按 id 恢复子会话', () => {
 
     const { provider, streamParams } = makeFakeProvider([{ textChunks: [], finalContent: [textBlock(LONG)] }]);
     const d = deps(provider, undefined, { subagentStore: subStore });
-    const run = createSubagentRunner(d);
+    const { run } = createSubagentRunner(d);
     const r = await run({ subagentType: 'general', prompt: '继续', depth: 0, resume: s.id });
     expect(r.isError).toBe(false);
 
@@ -876,7 +876,7 @@ describe('resume：按 id 恢复子会话', () => {
 
     const { provider, streamParams } = makeFakeProvider([{ textChunks: [], finalContent: [textBlock(LONG)] }]);
     const d = deps(provider, undefined, { subagentStore: subStore });
-    const run = createSubagentRunner(d);
+    const { run } = createSubagentRunner(d);
     const r = await run({ subagentType: 'general', prompt: '继续', depth: 0, resume: s.id });
     expect(r.isError).toBe(false);
     const wire = JSON.stringify(streamParams()[0]!.messages);
@@ -891,7 +891,7 @@ describe('resume：按 id 恢复子会话', () => {
       { textChunks: [], finalContent: [textBlock(LONG)] }, // 子 agent 返回
     ]);
     const d = deps(provider, undefined, { maxDepth: 2 });
-    const run = createSubagentRunner(d);
+    const { run } = createSubagentRunner(d);
     const r = await run({ subagentType: 'general', prompt: '主任务', depth: 0 });
     expect(r.isError).toBe(false);
     const metas = d.subagentStore.list(d.cwd);
@@ -1265,7 +1265,7 @@ describe('前台子 agent 的转后台（Ctrl+B detach）', () => {
       releaseGate = res;
     });
     const d = deps(twoStageGatedProvider(gate));
-    const runSubagent = createSubagentRunner(d);
+    const { run: runSubagent } = createSubagentRunner(d);
     const settled: BackgroundTask[] = [];
     const mgr = new BackgroundManager(10, { onSettle: (t) => settled.push(t) });
 
@@ -1306,7 +1306,7 @@ describe('前台子 agent 的转后台（Ctrl+B detach）', () => {
       releaseGate = res;
     });
     const d = deps(twoStageGatedProvider(gate));
-    const runSubagent = createSubagentRunner(d);
+    const { run: runSubagent } = createSubagentRunner(d);
     const mgr = new BackgroundManager();
 
     const p = spawnAgentTool.execute(
@@ -1503,7 +1503,7 @@ describe('终态事件的完整性与幂等（所有退出路径都发终态事�
         throw new Error('infra down');
       },
     });
-    const run = createSubagentRunner(deps(provider, (_id, e) => events.push(e), { subagentStore: store }));
+    const { run } = createSubagentRunner(deps(provider, (_id, e) => events.push(e), { subagentStore: store }));
     await expect(run({ subagentType: 'general', prompt: '干活', depth: 0 })).rejects.toThrow('infra down');
     const ends = events.filter((e) => e.kind === 'end');
     expect(ends).toHaveLength(1);
@@ -1517,7 +1517,7 @@ describe('终态事件的完整性与幂等（所有退出路径都发终态事�
   it('正常成功路径 end 恰好一次，带 summary 与统计', async () => {
     const events: SubagentProgressEvent[] = [];
     const { provider } = makeFakeProvider([{ textChunks: [], finalContent: [textBlock(LONG)] }]);
-    const run = createSubagentRunner(deps(provider, (_id, e) => events.push(e)));
+    const { run } = createSubagentRunner(deps(provider, (_id, e) => events.push(e)));
     const r = await run({ subagentType: 'general', prompt: '干活', depth: 0 });
     expect(r.isError).toBe(false);
     const ends = events.filter((e) => e.kind === 'end');
@@ -1536,7 +1536,7 @@ describe('终态事件的完整性与幂等（所有退出路径都发终态事�
   it('provider 持续失败的错误返回路径：end 恰好一次且标记错误', async () => {
     const events: SubagentProgressEvent[] = [];
     const { provider } = makeFakeProvider(Array.from({ length: 10 }, () => ({ throw: new Error('boom') })));
-    const run = createSubagentRunner(deps(provider, (_id, e) => events.push(e)));
+    const { run } = createSubagentRunner(deps(provider, (_id, e) => events.push(e)));
     const r = await run({ subagentType: 'general', prompt: '会失败的任务', depth: 0 });
     expect(r.isError).toBe(true);
     const ends = events.filter((e) => e.kind === 'end');
@@ -1548,7 +1548,7 @@ describe('终态事件的完整性与幂等（所有退出路径都发终态事�
     const check = async (behaviors: Parameters<typeof makeFakeProvider>[0]): Promise<void> => {
       const events: SubagentProgressEvent[] = [];
       const { provider } = makeFakeProvider(behaviors);
-      const run = createSubagentRunner(deps(provider, (_id, e) => events.push(e)));
+      const { run } = createSubagentRunner(deps(provider, (_id, e) => events.push(e)));
       await run({ subagentType: 'general', prompt: 'x', depth: 0 }).catch(() => undefined);
       const kinds = events.map((e) => e.kind);
       expect(kinds[0]).toBe('start');
@@ -1564,7 +1564,7 @@ describe('终态事件的完整性与幂等（所有退出路径都发终态事�
       { textChunks: [], finalContent: [toolUseBlock('c1', 'nonexistent_tool', {})] },
       { textChunks: [], finalContent: [textBlock(LONG)] },
     ]);
-    const run = createSubagentRunner(deps(provider, (_id, e) => events.push(e)));
+    const { run } = createSubagentRunner(deps(provider, (_id, e) => events.push(e)));
     await run({ subagentType: 'general', prompt: '干活', depth: 0 });
     const end = events.find((e) => e.kind === 'end') as { toolUses?: number };
     expect(end.toolUses).toBe(1);

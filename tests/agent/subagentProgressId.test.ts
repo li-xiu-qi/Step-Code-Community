@@ -47,7 +47,7 @@ const evIds = (events: SubagentProgressEvent[]): string[] =>
 describe('子 agent 进度事件 id 链路', () => {
   it('req.id 传入 → 全部事件携带该 id（与 tool_use id 同源）', async () => {
     const events: SubagentProgressEvent[] = [];
-    const run = createSubagentRunner(deps((id, e) => { events.push(e); }));
+    const { run } = createSubagentRunner(deps((id, e) => { events.push(e); }));
     await run({ subagentType: 'general', prompt: '干活', depth: 0, id: 'toolu_01ABC123' });
 
     expect(events.length).toBeGreaterThan(0);
@@ -61,8 +61,8 @@ describe('子 agent 进度事件 id 链路', () => {
     const eventsB: SubagentProgressEvent[] = [];
     // 共用 onEvent 收集，靠 id 分流——模拟 PiChat 消费侧的真实分流方式
     const all: SubagentProgressEvent[] = [];
-    const runA = createSubagentRunner(deps((_id, e) => all.push(e)));
-    const runB = createSubagentRunner(deps((_id, e) => all.push(e)));
+    const { run: runA } = createSubagentRunner(deps((_id, e) => all.push(e)));
+    const { run: runB } = createSubagentRunner(deps((_id, e) => all.push(e)));
 
     await Promise.all([
       runA({ subagentType: 'explore', prompt: 'a', depth: 0, id: 'toolu_AAAA' }),
@@ -81,7 +81,7 @@ describe('子 agent 进度事件 id 链路', () => {
 
   it('不传 id（旧调用方）→ 退回计数器值，不抛错、不崩溃', async () => {
     const events: SubagentProgressEvent[] = [];
-    const run = createSubagentRunner(deps((_id, e) => events.push(e)));
+    const { run } = createSubagentRunner(deps((_id, e) => events.push(e)));
     await run({ subagentType: 'general', prompt: '干活', depth: 0 });
 
     expect(events.length).toBeGreaterThan(0);
