@@ -149,11 +149,23 @@ interface ResolvedBinding {
   providerName?: string;
 }
 
-/** 组合根用它造 runSubagent 闭包。注册表按 cwd 构建一次。 */
-export function createSubagentRunner(deps: SubagentRunnerDeps): RunSubagentFn {
-  const registry = buildAgentRegistry(deps.cwd);
+/**
+ * 组合根用它造 runSubagent 闭包。注册表按 cwd 构建一次。
+ *
+ * 返回 `{ run, refreshRegistry }`：refreshRegistry 重新读取磁盘上的 agent 模板，
+ * 用于 `/agents reload` 热刷新，改完模板不用重启 step-code。
+ */
+export function createSubagentRunner(deps: SubagentRunnerDeps): {
+  run: RunSubagentFn;
+  refreshRegistry: () => void;
+} {
+  let registry = buildAgentRegistry(deps.cwd);
   // 按别名缓存 provider：同一别名的多次派生复用同一实例，避免每次派生重建连接
   const providerCache = new Map<string, ChatProvider>();
+
+  const refreshRegistry = (): void => {
+    registry = buildAgentRegistry(deps.cwd);
+  };
 
   /**
    * 解析角色的模型绑定。命中 `[models.<别名>]` 时按该别名的渠道单独构造 provider
@@ -592,7 +604,7 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): RunSubagentFn {
     }
   };
 
-  return runImpl;
+  return { run: runImpl, refreshRegistry };
 }
 
 /** 取消息历史里最后一条有文本的 assistant 消息的文本（读内层 message）。 */

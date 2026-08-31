@@ -121,7 +121,7 @@ describe('③ PiChat 接线断言', () => {
   });
 
   it('/agents 路由调 openAgentsOverlay', () => {
-    const agents = piChatSrc.slice(piChatSrc.indexOf("case 'agents'"), piChatSrc.indexOf("case 'agents'") + 100);
+    const agents = piChatSrc.slice(piChatSrc.indexOf("case 'agents'"), piChatSrc.indexOf("case 'agents'") + 300);
     expect(agents).toContain('openAgentsOverlay');
   });
 

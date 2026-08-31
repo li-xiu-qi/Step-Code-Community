@@ -26,6 +26,7 @@ import type { StreamEvent } from '../agent/background/manager.js';
 import { emitTerminalNotification } from '../agent/background/terminal-notify.js';
 import { decide, planModeDenyReason, type PermissionMode } from '../agent/permission/mode.js';
 import { createSubagentRunner } from '../agent/subagent/runner.js';
+import { buildAgentRegistry } from '../agent/subagent/registry.js';
 import type { RunSubagentFn } from '../agent/subagent/types.js';
 import type { SubagentStore } from '../agent/subagent/store.js';
 import type { AgentDefinition } from '../agent/subagent/types.js';
@@ -136,6 +137,7 @@ export interface PiChatDeps {
   skillsRef: { current: SkillRegistry };
   subagentRegistry: Map<string, AgentDefinition>;
   reloadSkills: (force?: boolean) => unknown;
+  reloadSubagents?: () => void;
   ctx: ToolContext;
   model: string;
   config: StepCodeConfig;
@@ -359,6 +361,8 @@ export class PiChat {
    * turn 结束后置 undefined。/handoff 只在非 busy 时可用，busy 时提示等待。
    */
   private currentRunSubagent: RunSubagentFn | undefined;
+  /** 当前 turn 的 subagent runner（含 refreshRegistry，供 /agents reload 热刷新）。 */
+  private currentSubagentRunner: { run: RunSubagentFn; refreshRegistry: () => void } | undefined;
   /**
    * 本回合运行中的子 agent id 集合（头部计数数据源）。
    *
@@ -2010,7 +2014,20 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
         return;
 
       case 'agents':
-        this.openAgentsOverlay();
+        // reload 子命令：热刷新，其余进弹层
+        if (args.trim() !== 'reload' && !args.startsWith('reload ')) {
+          this.openAgentsOverlay();
+          return;
+        }
+        if (this.currentSubagentRunner === undefined) {
+          this.push({ kind: 'note', text: '当前没有活跃的 turn，下次 turn 会自动读取最新模板' });
+          return;
+        }
+        this.currentSubagentRunner.refreshRegistry();
+        const fresh = buildAgentRegistry(this.deps.ctx.cwd);
+        this.deps.subagentRegistry.clear();
+        for (const [k, v] of fresh) this.deps.subagentRegistry.set(k, v);
+        this.push({ kind: 'note', text: `子 agent 模板已热刷新，共 ${this.deps.subagentRegistry.size} 个角色` });
         return;
 
       case 'reflect':
@@ -4360,7 +4377,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     this.controller = controller;
     const hooks = this.buildHooks();
     const compaction = this.compactionBinding;
-    const runSubagent = createSubagentRunner({
+    const subagentRunner = createSubagentRunner({
       provider: this.provider,
       cwd: this.deps.ctx.cwd,
       apiKey: this.deps.ctx.apiKey,
@@ -4400,7 +4417,8 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
         this.applySubagentProgress(ev);
       },
     });
-    this.currentRunSubagent = runSubagent;
+    this.currentSubagentRunner = subagentRunner;
+    this.currentRunSubagent = subagentRunner.run;
 
     // system 逐轮组装（composeSystem 定段序：低频内容在前，保住 prompt 缓存前缀）。
     // memory 段仅开启时注入，每轮现扫目录——条目数小、开销可忽略，换来的是 agent 自己
@@ -4423,7 +4441,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
           skills: this.deps.skillsRef.current,
           signal: controller.signal,
           depth: 0,
-          runSubagent,
+          runSubagent: subagentRunner.run,
           // dynamic_workflow 的阶段进度：phase 事件按 title 追加（index 是哨兵 -1，
           // 阶段在运行时才知道，不能按 index 定位），同样挂在工具卡片上。
           onWorkflowStep: (info) => this.applyWorkflowStep(info),
