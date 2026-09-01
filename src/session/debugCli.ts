@@ -8,6 +8,7 @@
  */
 import { exportDebugBundle } from './debugBundle.js';
 import type { SessionStore } from './store.js';
+import { SubagentStore } from '../agent/subagent/store.js';
 
 export interface RunExportDebugZipOptions {
   store: SessionStore;
@@ -18,6 +19,8 @@ export interface RunExportDebugZipOptions {
   dataDir?: string;
   /** 脱敏级别透传。缺省 vendor。 */
   level?: import('./debugBundle.js').RedactLevel;
+  /** 把子 agent 全量日志也打进去（默认 false）。true 时自动构造 SubagentStore。 */
+  includeSubagents?: boolean;
 }
 
 export interface RunExportDebugZipResult {
@@ -37,7 +40,7 @@ export interface RunExportDebugZipResult {
  * - 导出抛异常 → code 1 + stderr=错误 message。
  */
 export async function runExportDebugZip(opts: RunExportDebugZipOptions): Promise<RunExportDebugZipResult> {
-  const { store, cwd, sessionId, dataDir, level } = opts;
+  const { store, cwd, sessionId, dataDir, level, includeSubagents } = opts;
   const target = sessionId !== undefined ? store.load(cwd, sessionId) : store.latest(cwd);
   if (target === null) {
     return { code: 1, stderr: 'No session found for current directory\n' };
@@ -50,6 +53,9 @@ export async function runExportDebugZip(opts: RunExportDebugZipOptions): Promise
       ...(target.model ? { model: target.model } : {}),
       ...(dataDir !== undefined ? { dataDir } : {}),
       ...(level !== undefined ? { level } : {}),
+      ...(includeSubagents === true
+        ? { includeSubagents: true, subagentStore: new SubagentStore(store) }
+        : {}),
     });
     return { code: 0, stdout: `${zipPath}\n` };
   } catch (e) {

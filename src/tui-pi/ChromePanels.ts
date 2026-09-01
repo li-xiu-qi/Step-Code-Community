@@ -18,6 +18,7 @@ import {
   hiddenTodoCounts,
   previewQueueEntry,
   selectVisibleTodos,
+  isBlocked,
 } from '../chat/chromePanels.js';
 import { c } from './theme.js';
 import { t } from '../i18n.js';
@@ -51,16 +52,23 @@ export class ChromePanels implements Component {
   }
 }
 
-/** TODO 清单：标题 + 最多 5 条（按状态优先级裁剪）+ 折叠计数行。 */
+/** TODO 清单：标题 + 最多 5 条（按状态优先级裁剪）+ 折叠计数行。被阻塞的待办标注「等待 #N」。 */
 export function renderTodos(todos: readonly TodoItem[], width: number): string[] {
   if (todos.length === 0) return [];
   const visible = selectVisibleTodos(todos);
   const out = [c.toolName(t('panel.todo.title'))];
   for (const td of visible) {
+    const idx = todos.indexOf(td);
+    const num = idx + 1;
     const mark = td.status === 'done' ? c.ok('✓') : td.status === 'in_progress' ? c.toolName('●') : c.dim('○');
     const title = td.status === 'done' ? c.dim(td.title) : td.status === 'in_progress' ? td.title : c.dim(td.title);
+    // 被阻塞的待办标注「等待 #N」（只列未完成的依赖）
+    const blockedBy = td.status === 'pending' && isBlocked(todos, idx)
+      ? (td.deps ?? []).filter((d) => d >= 1 && d <= todos.length && todos[d - 1]?.status !== 'done').map((d) => `#${d}`)
+      : [];
+    const depTag = blockedBy.length > 0 ? c.dim(` 等待 ${blockedBy.join(',')}`) : '';
     // 单条截断到一行：面板高度按 1 行/条精确成立，长标题不折行把面板顶高
-    out.push(truncateToWidth(`${mark} ${title}`, width));
+    out.push(truncateToWidth(`${num}. ${mark} ${title}${depTag}`, width));
   }
   const hidden = hiddenTodoCounts(todos, visible);
   if (hidden.total > 0) {

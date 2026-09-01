@@ -4,6 +4,13 @@ import { ok, type ToolDef } from './types.js';
 const TodoItemSchema = z.object({
   title: z.string().min(1).describe('简短、可执行的任务标题。'),
   status: z.enum(['pending', 'in_progress', 'done']).describe('当前状态。'),
+  deps: z
+    .array(z.number().int().min(1))
+    .optional()
+    .describe(
+      '依赖的任务序号（1-based，对应清单行号）。有前置依赖的任务在前置完成前不应开始。' +
+        '模型可据此判断哪些任务可并行派子 agent、哪些必须串行等待。缺省 = 无依赖。',
+    ),
 });
 export type TodoItem = z.infer<typeof TodoItemSchema>;
 
@@ -19,7 +26,13 @@ function render(todos: readonly TodoItem[]): string {
   return todos
     .map((t, i) => {
       const mark = t.status === 'done' ? '✓' : t.status === 'in_progress' ? '●' : '○';
-      return `${i + 1}. ${mark} [${t.status}] ${t.title}`;
+      const num = i + 1;
+      // 依赖标注：前置未完成时显示「等待 #N」（只列未完成的依赖）
+      const blockedBy = (t.deps ?? [])
+        .filter((d) => d >= 1 && d <= todos.length && todos[d - 1]?.status !== 'done')
+        .map((d) => `#${d}`);
+      const depTag = blockedBy.length > 0 ? ` 等待 ${blockedBy.join(',')}` : '';
+      return `${num}. ${mark} [${t.status}] ${t.title}${depTag}`;
     })
     .join('\n');
 }
@@ -35,7 +48,9 @@ const SOFT_REMINDER =
 export const todoListTool: ToolDef<z.infer<typeof schema>> = {
   name: 'todo_list',
   description:
-    '维护当前任务清单（TODO）。多步骤任务用它跟踪进度：传 todos 整体替换清单，传空数组清空，不传参数则读取当前清单。条目 {title, status: pending/in_progress/done}。',
+    '维护当前任务清单（TODO）。多步骤任务用它跟踪进度：传 todos 整体替换清单，传空数组清空，不传参数则读取当前清单。' +
+    '条目 {title, status: pending/in_progress/done, deps?: number[]}。deps 声明前置依赖（1-based 行号），' +
+    '渲染时会标注「等待 #N」，模型可据此判断哪些任务可并行、哪些必须串行等待。',
   schema,
   async execute(input, ctx) {
     if (ctx.todos === undefined) {

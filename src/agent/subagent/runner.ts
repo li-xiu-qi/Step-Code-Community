@@ -1,5 +1,6 @@
 import type Anthropic from '@anthropic-ai/sdk';
-import { sep } from 'node:path';
+import { sep, resolve, join } from 'node:path';
+import { homedir } from 'node:os';
 import type { ChatProvider } from '../../provider/types.js';
 import { runExternalAgent, EXTERNAL_AGENTS } from './externalRunner.js';
 import { allToolNames } from '../../tools/index.js';
@@ -15,7 +16,7 @@ import { filterSkillRegistry, skillListing, type SkillRegistry } from '../../ski
 import type { SessionData } from '../../session/store.js';
 import { resolveModelEntry, type StepCodeConfig } from '../../config/config.js';
 import { createProvider } from '../../provider/factory.js';
-import { buildAgentRegistry } from './registry.js';
+import { buildAgentRegistry, mergePluginAgents, loadAgentFile, type PluginAgentSource } from './registry.js';
 import { closeDanglingToolUse } from '../wirelog.js';
 import { timeSection } from '../nowContext.js';
 import { memorySection, scanMemory } from '../memory.js';
@@ -91,6 +92,12 @@ export interface SubagentRunnerDeps {
   cwd: string;
   apiKey?: string;
   baseUrl?: string;
+  /**
+   * 插件贡献的 agent 来源（id + agentDirs）：与磁盘模板一起进 registry，
+   * 注册名加 `<pluginId>:` 前缀。refreshRegistry 时同样要合入，
+   * 否则 `/agents reload` 会让 plugin 角色集体消失直到重启。
+   */
+  pluginAgents?: PluginAgentSource[];
   /** 当前模型的能力标记（如 image_in，来自别名 capabilities）：子 agent 与父 agent 同模型，原样继承。 */
   capabilities?: readonly string[];
   /** 图片输入长边上限与单图字节预算（来自别名声明）：同 capabilities，原样继承。 */
@@ -127,6 +134,11 @@ export interface SubagentRunnerDeps {
   parentSessionId?: string;
   /** skill 注册表（组合根注入）：子 agent 共享，system 拼清单 + ctx 带 skills，使其 skill 工具可用。 */
   skills?: SkillRegistry;
+  /**
+   * AGENTS.md 正文（组合根注入）：子 agent system prompt 默认拼接它。
+   * 角色定义里 `omitAgentsMd: true` 时跳过（只读/外部 CLI 角色不需要项目约定）。
+   */
+  agentsMd?: string;
   /** 单个子 agent 的墙钟超时（毫秒）。0 = 不限。超时后 abort 该子 agent。 */
   subagentTimeoutMs?: number;
   /** 子 agent 进度事件回调（带子 agent 标识 + 生命周期，供 UI 区分各并行子 agent）。 */
@@ -159,13 +171,22 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): {
   run: RunSubagentFn;
   refreshRegistry: () => void;
 } {
-  let registry = buildAgentRegistry(deps.cwd);
+  let registry = buildRegistry();
   // 按别名缓存 provider：同一别名的多次派生复用同一实例，避免每次派生重建连接
   const providerCache = new Map<string, ChatProvider>();
 
   const refreshRegistry = (): void => {
-    registry = buildAgentRegistry(deps.cwd);
+    registry = buildRegistry();
   };
+
+  /** 磁盘模板 + plugin agents 合建一份注册表（build-then-swap，在途 spawn 拿到完整旧/新 Map）。 */
+  function buildRegistry(): Map<string, AgentDefinition> {
+    const next = buildAgentRegistry(deps.cwd);
+    if (deps.pluginAgents !== undefined && deps.pluginAgents.length > 0) {
+      mergePluginAgents(next, deps.pluginAgents);
+    }
+    return next;
+  }
 
   /**
    * 解析角色的模型绑定。命中 `[models.<别名>]` 时按该别名的渠道单独构造 provider
@@ -224,6 +245,15 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): {
     if (req.depth + 1 > deps.maxDepth) {
       return {
         summary: `已达子 agent 深度上限（${deps.maxDepth}）。请自己完成该任务，不要再派生子 agent。`,
+        isError: true,
+      };
+    }
+
+    // agent_file 与 resume/fork 互斥：快照只存 agentType 字符串，agent_file 在这两条路径上必然无效。
+    // 静默忽略会让模型以为 agent_file 生效了，实际用的还是快照里的角色定义——报错更诚实。
+    if (req.agentFile !== undefined && req.agentFile !== '' && (req.resume !== undefined || req.fork !== undefined)) {
+      return {
+        summary: `agent_file 不能与 resume/fork 同时使用：resume/fork 走快照里的角色定义，agent_file 在这两条路径上无效。请二选一。`,
         isError: true,
       };
     }
@@ -318,12 +348,42 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): {
       messages.push(stored({ role: 'user', content: req.prompt }, { kind: 'user' }));
       subSession.status = 'running';
     } else {
-      const def = registry.get(req.subagentType);
-      if (def === undefined) {
-        return {
-          summary: `未知子 agent 类型「${req.subagentType}」。可用类型：${[...registry.keys()].join(', ')}。`,
-          isError: true,
-        };
+      // agentFile：直接从指定路径加载角色定义，绕过 registry
+      if (req.agentFile !== undefined && req.agentFile !== '') {
+        // 路径安全边界：只接受 registry 根目录内的文件（<cwd>/.step-code/agents、
+        // ~/.step-code/agents、plugin agentDirs），拒绝逃逸到根外的绝对路径。
+        // agent 模板是「可执行的配置」（system prompt + 工具白名单 + 模型覆盖），
+        // 放任任意路径等于把只读工具升级成「从任意位置装载指令」的原语。
+        const allowedRoots = [
+          join(deps.cwd, '.step-code', 'agents'),
+          join(homedir(), '.step-code', 'agents'),
+          ...(deps.pluginAgents ?? []).flatMap((p) => p.agentDirs),
+        ];
+        const absFile = resolve(deps.cwd, req.agentFile);
+        const isAllowed = allowedRoots.some((root) => absFile === root || absFile.startsWith(root + sep));
+        if (!isAllowed) {
+          return {
+            summary: `agent_file 路径不在允许的目录内。允许的根目录：${allowedRoots.join(', ')}。`,
+            isError: true,
+          };
+        }
+        const fileDef = loadAgentFile(req.agentFile);
+        if (fileDef === null) {
+          return {
+            summary: `无法从指定路径加载子 agent 模板「${req.agentFile}」。请确认文件存在且 frontmatter 格式正确（需要 name 和 description 字段）。`,
+            isError: true,
+          };
+        }
+        agentDef = fileDef;
+      } else {
+        const def = registry.get(req.subagentType);
+        if (def === undefined) {
+          return {
+            summary: `未知子 agent 类型「${req.subagentType}」。可用类型：${[...registry.keys()].join(', ')}。`,
+            isError: true,
+          };
+        }
+        agentDef = def;
       }
 
       deps.sessionCounter.spawned += 1;
@@ -331,10 +391,9 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): {
       // 起步即建立子会话身份：UUID id + 活跃锁 + 状态 running。
       // sid（下方）只是 UI 路由 key，与这里的持久化 sessionId 解耦——sid 在 /new、/fork 后会归零重复，
       // 不能直接当文件名用。
-      agentDef = def;
       subSession = deps.subagentStore.create(deps.cwd, {
-        model: req.model ?? def.model ?? '',
-        agentType: def.name,
+        model: req.model ?? agentDef.model ?? '',
+        agentType: agentDef.name,
         depth: req.depth + 1,
         // parentId 精确化：嵌套派生时 runner 经 req.parentSessionId 把自己的子会话 id 传给下一层，
         // 缺省回退主会话 id（顶层派生）
@@ -435,7 +494,13 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): {
       // 记忆索引对子 agent 只读注入（开启时）：它做调研需要偏好上下文，但无写入权
       const memoryPart =
         deps.config?.memory?.enabled === true ? `\n\n${memorySection(scanMemory(cwd), 'readonly')}` : '';
-      const system = `${agentDef.systemPrompt}\n\n当前工作目录：${cwd}\n\n${timeSection(new Date())}${memoryPart}${skillPart}`;
+      // AGENTS.md 注入：默认加载（子 agent 在仓库里落地时需要项目约定），
+      // 角色定义里 omitAgentsMd: true 时跳过（只读探索 / 外部 CLI 不需要）。
+      const agentsMdPart =
+        agentDef.omitAgentsMd === true || deps.agentsMd === undefined || deps.agentsMd === ''
+          ? ''
+          : `\n\n${deps.agentsMd}`;
+      const system = `${agentDef.systemPrompt}\n\n当前工作目录：${cwd}\n\n${timeSection(new Date())}${memoryPart}${skillPart}${agentsMdPart}`;
       // 深度未达上限时给子 agent 注入 runSubagent（同一 runner，可再派生）；达上限则不注入（拿不到派生能力）。
       // 嵌套派生时把自己的子会话 id 线程化传递下去，下一层的 meta.parentId 才能指向真实的直接父级。
       const selfRunner = canSpawnDeeper

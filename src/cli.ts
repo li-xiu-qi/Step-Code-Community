@@ -48,7 +48,14 @@ if (args0 === 'export-debug-zip') {
   const { resolve } = await import('node:path');
   configureLogger({ mode: 'headless' });
   const cwd = program.opts().cwd !== undefined ? resolve(program.opts().cwd) : process.cwd();
-  const res = await runExportDebugZip({ store: new SessionStore(), cwd, sessionId: program.args[1] });
+  // --all 标志：把子 agent 全量日志也打进去（默认不打，子 agent 多时体积远超主会话）
+  const includeSubagents = program.args.includes('--all');
+  const res = await runExportDebugZip({
+    store: new SessionStore(),
+    cwd,
+    sessionId: program.args.find((a) => !a.startsWith('--')),
+    ...(includeSubagents ? { includeSubagents: true } : {}),
+  });
   if (res.stdout !== undefined) process.stdout.write(res.stdout);
   if (res.stderr !== undefined) process.stderr.write(res.stderr);
   process.exit(res.code);

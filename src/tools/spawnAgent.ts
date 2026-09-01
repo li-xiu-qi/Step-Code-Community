@@ -17,13 +17,27 @@ const schema = z.object({
     .optional()
     .describe(
       '完整任务描述。子 agent 看不到当前对话，所有必要背景、上下文、约束都要写进来。' +
-        '含糊的 prompt 产出的结果也含糊——背景写够 3 行，子 agent 少猜 1 轮。',
+        '含糊的 prompt 产出的结果也含糊——背景写够 3 行，子 agent 少猜 1 轮。' +
+        '\n\n派生子 agent 前必须确认的环境信息（不确定就用工具查，别让子 agent 猜）：' +
+        '\n- 工作目录的绝对路径' +
+        '\n- 需要的运行时/工具链是否已安装及版本（如 Godot 4.6、Python 3.12、Node 20）' +
+        '\n- 项目是否已初始化（如 Godot 项目是否有 project.godot、Node 项目是否有 package.json）' +
+        '\n- 相关的配置文件、密钥、环境变量是否就绪' +
+        '\n\n这些信息你不确定就别派——先自己用 bash/glob 查清楚，再写进 prompt。' +
+        '子 agent 停下来检查环境是你的失职，不是它的错。',
     ),
   subagent_type: z
     .string()
     .optional()
     .describe(
       '子 agent 角色名。可选角色见 system prompt 的「可派生的子 agent 角色」清单；省略默认 general。',
+    ),
+  agent_file: z
+    .string()
+    .optional()
+    .describe(
+      '直接从指定路径的 .md 文件加载角色定义，绕过 registry。用于调试临时角色、指向 registry 目录之外的文件。' +
+        '指定后 agent_file 优先，subagent_type 仅作为回落名与进度卡片显示。仅新派生生效，resume/fork 不受影响。',
     ),
   run_in_background: z
     .boolean()
@@ -105,7 +119,7 @@ export const spawnAgentTool: ToolDef<z.infer<typeof schema>> = {
   //   同轮派出的多个写 agent，scope 不重叠的并行，重叠或未声明的串行。未声明时退化
   //   为整个 cwd 保守串行——不知道会写哪里，就不猜。
   access: (input, ctx) => {
-    if (subagentParallelKind(ctx.cwd, input.subagent_type ?? 'general') !== 'read') {
+    if (subagentParallelKind(ctx.cwd, input.subagent_type ?? 'general', input.agent_file) !== 'read') {
       const scope = input.scope ?? [];
       if (scope.length > 0) {
         // 多个路径时取第一个作为 access 锚点：冲突判定是两两比较，锚点不重叠即放行。
@@ -148,6 +162,7 @@ export const spawnAgentTool: ToolDef<z.infer<typeof schema>> = {
           resume: input.resume,
           fork: input.fork,
           model: input.model,
+          agentFile: input.agent_file,
         })
         .then((r) => ({
           output: r.sessionId !== undefined ? `${r.summary}\n（子会话 id：${r.sessionId}）` : r.summary,
@@ -195,6 +210,7 @@ async function runForegroundSubagent(
     resume?: string | undefined;
     fork?: string | undefined;
     model?: string | undefined;
+    agent_file?: string | undefined;
   },
   ctx: ToolContext,
   subagentType: string,
@@ -211,6 +227,7 @@ async function runForegroundSubagent(
       resume: input.resume,
       fork: input.fork,
       model: input.model,
+      agentFile: input.agent_file,
     });
   }
 
@@ -233,6 +250,7 @@ async function runForegroundSubagent(
       resume: input.resume,
       fork: input.fork,
       model: input.model,
+      agentFile: input.agent_file,
     })
     .then((result) => ({
       result,

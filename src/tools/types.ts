@@ -6,6 +6,12 @@ import type { ToolAccess } from './access.js';
 export interface TodoItem {
   title: string;
   status: 'pending' | 'in_progress' | 'done';
+  /**
+   * 依赖的任务序号（1-based，对应清单里的行号）。
+   * 声明后渲染层会标注「等待 #N」，模型可据此判断哪些任务可并行、
+   * 哪些必须等前置完成。缺省 = 无依赖。
+   */
+  deps?: number[];
 }
 
 /** TODO store：独立存储，不占对话历史。 */

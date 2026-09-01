@@ -57,7 +57,7 @@ export const subagentListTool: ToolDef<z.infer<typeof listSchema>> = {
     let all = ctx.subagentStore.list(ctx.cwd);
     if (input.parent_id !== undefined) all = all.filter((m) => m.parentId === input.parent_id);
     if (input.status !== undefined) all = all.filter((m) => m.status === input.status);
-    if (q) all = all.filter((m) => `${m.title ?? ''} ${m.agentType ?? ''}`.toLowerCase().includes(q));
+    if (q) all = all.filter((m) => `${m.title ?? ''} ${m.agentType ?? ''} ${m.model ?? ''}`.toLowerCase().includes(q));
     const total = all.length;
     const shown = all.slice(0, limit);
     if (shown.length === 0) {
@@ -66,7 +66,8 @@ export const subagentListTool: ToolDef<z.infer<typeof listSchema>> = {
     const lines = shown.map((m) => {
       const tag = m.status === 'running' ? ' ◉' : m.status === 'error' ? ' ✗' : '';
       const title = m.title ?? m.agentType ?? '（无标题）';
-      return `${m.id} · ${title}${tag} · ${relativeTime(m.updatedAt, now)}`;
+      const model = m.model && m.model !== '' ? ` · ${m.model}` : '';
+      return `${m.id} · ${title}${tag}${model} · ${relativeTime(m.updatedAt, now)}`;
     });
     let out = lines.join('\n');
     if (total > shown.length) {

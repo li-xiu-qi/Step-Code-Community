@@ -214,4 +214,37 @@ describe('exportDebugBundle', () => {
     expect(wire).toContain('系统配置内容');
     expect(manifest.redactionLevel).toBe('internal');
   });
+
+  it('默认不导出子 agent 日志（includeSubagents 缺省 false）', async () => {
+    const id = seedSession();
+    const subStore = makeSubagentStoreWithEntries();
+    const { zipPath, files } = await exportDebugBundle({
+      store, cwd, sessionId: id, dataDir, subagentStore: subStore,
+    });
+    const { names } = entriesOf(zipPath);
+    // 默认不打子 agent：zip 里没有任何 subagent/ 条目
+    expect(names.some((n) => n.startsWith('subagent/'))).toBe(false);
+    expect(files.some((f) => f.startsWith('subagent/'))).toBe(false);
+  });
+
+  it('includeSubagents: true 时把子 agent 全量日志打进 zip', async () => {
+    const id = seedSession();
+    const subStore = makeSubagentStoreWithEntries();
+    const { zipPath } = await exportDebugBundle({
+      store, cwd, sessionId: id, dataDir, subagentStore: subStore, includeSubagents: true,
+    });
+    const { names, read } = entriesOf(zipPath);
+    const subEntries = names.filter((n) => n.startsWith('subagent/'));
+    expect(subEntries.length).toBeGreaterThan(0);
+    // 子 agent 日志内容被纳入
+    expect(read(subEntries[0]!)).toContain('子 agent 测试内容');
+  });
 });
+
+/** 造一个含条目的 SubagentStore mock（list + loadFull）。 */
+function makeSubagentStoreWithEntries() {
+  return {
+    list: () => [{ id: 'sub-test-1', agentType: 'explore' }],
+    loadFull: () => [{ role: 'user', content: '子 agent 测试内容' }],
+  };
+}

@@ -21,9 +21,10 @@ export function allTodosDone(todos: readonly TodoItem[]): boolean {
 /**
  * 空间不足时按状态优先级选可见条目（输出保持原清单顺序）：
  * 1) 进行中全部保留——回答「正在做什么」，是面板的核心信息；
- * 2) 最新一条已完成——保留进度上下文，更早的已完成先被挤掉；
- * 3) 按原顺序填充待办——回答「接下来做什么」；
- * 4) 待办不足时从最近往回补，填满名额。
+ * 2) 被阻塞（有未完成依赖）的待办——回答「什么在等待」，读者需要看到阻塞链；
+ * 3) 最新一条已完成——保留进度上下文，更早的已完成先被挤掉；
+ * 4) 按原顺序填充待办——回答「接下来做什么」；
+ * 5) 待办不足时从最近往回补，填满名额。
  *
  * 直接 slice 尾部会让前面堆积的已完成把进行中/待办挤出可视区，所以按状态选而非按位置切。
  */
@@ -36,6 +37,12 @@ export function selectVisibleTodos(todos: readonly TodoItem[], max: number = TOD
   todos.forEach((td, i) => {
     if (td.status === 'in_progress') take(i);
   });
+  // 被阻塞的待办：有未完成依赖，读者需要看到它在等什么
+  if (picked.size < max) {
+    todos.forEach((td, i) => {
+      if (td.status === 'pending' && isBlocked(todos, i)) take(i);
+    });
+  }
   if (picked.size < max) {
     for (let i = todos.length - 1; i >= 0; i--) {
       if (todos[i]!.status === 'done') {
@@ -51,6 +58,13 @@ export function selectVisibleTodos(todos: readonly TodoItem[], max: number = TOD
     take(i);
   }
   return [...picked].sort((a, b) => a - b).map((i) => todos[i]!);
+}
+
+/** 某条待办是否有未完成的前置依赖（用于渲染「等待 #N」标注与面板优先级）。 */
+export function isBlocked(todos: readonly TodoItem[], index: number): boolean {
+  const td = todos[index];
+  if (td === undefined || td.deps === undefined) return false;
+  return td.deps.some((d) => d >= 1 && d <= todos.length && todos[d - 1]?.status !== 'done');
 }
 
 /** 隐藏条目的状态分布（折叠行用；零值不列）。 */
