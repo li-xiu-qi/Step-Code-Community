@@ -10,7 +10,7 @@
  */
 
 import { Command } from 'commander';
-import { copyFileSync, existsSync, readFileSync, readdirSync, renameSync } from 'node:fs';
+import { copyFileSync, existsSync, readFileSync, renameSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { runAgent } from './agent/loop.js';
@@ -28,7 +28,7 @@ import { buildSettleMessage, notificationIdFor } from './agent/background/notify
 import type { WireEvent } from './agent/wirelog.js';
 import { buildSystemPrompt, subagentListing } from './agent/systemPrompt.js';
 import { loadAgentsMd, DEFAULT_AGENTS_MD_BUDGET_BYTES } from './agent/agentsMd.js';
-import { buildAgentRegistry, parseAgentMarkdown } from './agent/subagent/registry.js';
+import { buildAgentRegistry, mergePluginAgents } from './agent/subagent/registry.js';
 import { loadConfig, resolveModelEntry, TomlParseError, type ConfigLoadDiagnostics, type StepCodeConfig } from './config/config.js';
 import { collectConfigWarnings } from './config/diagnostics.js';
 import { configureWebResultCache } from './tools/webCache.js';
@@ -460,20 +460,7 @@ const agentsMd = agentsMdResult.text;
 // 子 agent 注册表：内置 < 用户(~/.step-code/agents) < 项目(<cwd>/.step-code/agents) < plugin agents，同名后者覆盖。
 const subagentRegistry = buildAgentRegistry(cwd);
 // plugin agents：每个 .md 解析为一个 AgentDefinition，注册名加 <pluginId>: 前缀
-for (const plugin of plugins) {
-  for (const dir of plugin.agentDirs) {
-    if (!existsSync(dir)) continue;
-    for (const file of readdirSync(dir)) {
-      if (!file.endsWith('.md')) continue;
-      try {
-        const def = parseAgentMarkdown(readFileSync(join(dir, file), 'utf8'), file.replace(/\.md$/i, ''));
-        if (def !== null) subagentRegistry.set(`${plugin.id}:${def.name}`, def);
-      } catch {
-        // 损坏文件跳过
-      }
-    }
-  }
-}
+mergePluginAgents(subagentRegistry, plugins.map((p) => ({ id: p.id, agentDirs: p.agentDirs })));
 // -p 模式下使用纯净模式：不包含 skill 路由指引，避免模型把所有输入都理解成「配置问题」
 const systemPrefix = buildSystemPrompt(cwd, { pureMode: opts.print !== undefined });
 /** 组合当前 system prompt：静态前缀 + 当前 skill 清单（随 reload 更新）+ 降权声明 + AGENTS.md。 */
@@ -951,6 +938,7 @@ async function runPrint(prompt: string): Promise<void> {
   const { run: runSubagent } = createSubagentRunner({
       provider,
       cwd,
+      pluginAgents: plugins.map((p) => ({ id: p.id, agentDirs: p.agentDirs })),
       apiKey: config.apiKey,
       baseUrl: config.baseUrl,
       capabilities: config.capabilities,
@@ -980,6 +968,7 @@ async function runPrint(prompt: string): Promise<void> {
       subagentStore,
       parentSessionId: session.id,
       skills: ctx.skills, // 子 agent 共享 skill
+      agentsMd: opts.agentsMd === false ? undefined : agentsMd, // 子 agent 默认继承 AGENTS.md（omitAgentsMd 角色除外）
       onEvent: (id, ev) => {
         // stream-json：五种事件全量进 stdout，保留 id 供并行子 agent 归属
         if (streamJson) {
@@ -1213,6 +1202,7 @@ if (opts.reflect === true) {
     reloadConfig,
     pluginCommands: plugins.flatMap((p) => p.commands),
     pluginIds: plugins.map((p) => p.id),
+    pluginAgents: plugins.map((p) => ({ id: p.id, agentDirs: p.agentDirs })),
     sessionStartSkills: plugins.filter((p) => p.sessionStartSkill).map((p) => p.sessionStartSkill!),
     configStartupNotice: renderConfigDiagnostics(configWarnings, ignoredBadConfig),
   });

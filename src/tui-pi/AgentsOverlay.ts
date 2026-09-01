@@ -39,7 +39,9 @@ export function agentRow(agent: SessionMeta, selected: boolean, width: number, d
   const type = c.accent(agent.agentType ?? 'general');
   const label = c.dim(agent.name ?? agent.title ?? agent.id.slice(0, 8));
   const msgs = c.dim(`${agent.messageCount} 条`);
-  const head = `${sel}${indent}${mark} ${type} ${label}  ${msgs}`;
+  // 模型：区分并发子 agent 谁在跑哪个模型（GLM-5.3 vs water18-new 等）。空 = 沿用主会话，不显示。
+  const model = agent.model && agent.model !== '' ? c.dim(` · ${agent.model}`) : '';
+  const head = `${sel}${indent}${mark} ${type} ${label}  ${msgs}${model}`;
   return truncateToWidth(head, width);
 }
 
@@ -80,7 +82,7 @@ export class AgentsOverlay implements Component {
     if (this.filter === '') return all;
     const q = this.filter.toLowerCase();
     return all.filter((m) => {
-      const haystack = `${m.id} ${m.agentType ?? ''} ${m.title ?? ''} ${m.name ?? ''}`.toLowerCase();
+      const haystack = `${m.id} ${m.agentType ?? ''} ${m.title ?? ''} ${m.name ?? ''} ${m.model ?? ''}`.toLowerCase();
       return haystack.includes(q);
     });
   }
@@ -188,6 +190,7 @@ export class AgentsOverlay implements Component {
   private renderDetail(agent: SessionMeta, width: number): string[] {
     const rows: Array<{ label: string; value: string; color?: (s: string) => string }> = [
       { label: 'id', value: agent.id },
+      { label: '模型', value: agent.model && agent.model !== '' ? agent.model : '（沿用主会话）' },
       { label: '类型', value: agent.agentType ?? 'general' },
       { label: '状态', value: agent.status ?? '未知', color: (s) => this.statusColor(agent.status ?? '', s) },
       { label: '消息', value: String(agent.messageCount) },

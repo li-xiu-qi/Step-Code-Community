@@ -28,12 +28,26 @@ export interface AgentDefinition {
    * 待命不占并发槽位，只占列表可见性；30 分钟无活动自动转归档。
    */
   standby?: boolean;
+  /**
+   * 是否省略 AGENTS.md 注入（默认 false = 加载）。
+   * Claude Code 的 Explore/Plan 两个内置角色显式 omitClaudeMd——上下文经济性最敏感的
+   * 只读/外部 CLI 角色不需要项目约定。内置 explore/claude-code/codex 设为 true。
+   */
+  omitAgentsMd?: boolean;
 }
 
 /** 子 agent 派生请求。 */
 export interface SpawnSubagentRequest {
   subagentType: string;
   prompt: string;
+  /**
+   * 直接从指定路径的 .md 文件加载角色定义，绕过 registry。
+   * 用于调试临时角色、指向 registry 目录之外的文件。仅新派生生效，
+   * resume/fork 走快照里的 agentType，不受此参数影响。
+   * 与 subagentType 的关系：指定后 agentFile 优先，subagentType 仅作为
+   * fork/resume 的回落名与进度卡片显示。
+   */
+  agentFile?: string;
   /** 父 agent 的当前深度（父 = 0）。 */
   depth: number;
   signal?: AbortSignal;

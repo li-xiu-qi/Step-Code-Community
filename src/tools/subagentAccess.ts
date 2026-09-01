@@ -50,13 +50,42 @@ function readTemplateTools(cwd: string, agentType: string): string[] | undefined
 }
 
 /**
+ * 从指定路径的 agent 模板文件读 tools 数组。
+ * 与 readTemplateTools 的区别：直接读文件，不扫目录。
+ * 找不到或解析失败返回 undefined（调用方按保守处理）。
+ */
+function readAgentFileTools(filePath: string): string[] | undefined {
+  try {
+    const raw = readFileSync(filePath, 'utf8');
+    const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(raw);
+    if (m === null) return undefined;
+    const fm = parseYaml(m[1]) as { tools?: unknown } | null;
+    const t = fm?.tools;
+    return Array.isArray(t) ? t.map(String) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * 查询子 agent 的并行能力。
  * - 'read'：可并行（模板显式声明 tools 且不含写工具）
  * - 'all'：必须串行（未声明 tools，或声明了写工具）
  *
  * 未声明 tools 的模板（如内置 general）按 all 保守处理——它默认拥有全部工具。
  */
-export function subagentParallelKind(cwd: string, agentType: string): 'read' | 'all' {
+export function subagentParallelKind(
+  cwd: string,
+  agentType: string,
+  agentFile?: string,
+): 'read' | 'all' {
+  // agentFile：直接从文件读 tools，不扫目录
+  if (agentFile !== undefined && agentFile !== '') {
+    const fileTools = readAgentFileTools(agentFile);
+    if (fileTools === undefined) return 'all';
+    if (fileTools.some((t) => WRITE_TOOLS.has(t))) return 'all';
+    return 'read';
+  }
   // 内置角色优先：registry 定义的能力，不靠磁盘模板推断
   const builtin = BUILTIN_PARALLEL[agentType];
   if (builtin !== undefined) return builtin;

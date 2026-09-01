@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
@@ -28,6 +28,7 @@ const BUILTIN_AGENTS: AgentDefinition[] = [
     description: '只读探索子 agent：搜索代码库、读文件、联网查资料，汇总发现。不修改任何文件，适合调查/定位/资料收集。',
     whenToUse: '需要大范围检索或彻底调查时——搞清楚某个机制怎么实现、定位问题出在哪、收集资料。多个独立问题可以同一轮派多个，它们会并行跑。',
     tools: ['read_file', 'read_media', 'list_dir', 'glob', 'grep', 'web_search', 'web_extract', 'web_image_search', 'skill'],
+    omitAgentsMd: true,
     systemPrompt: `你是被主 agent 派生的只读探索子 agent。你只能读、搜、查，不能修改任何文件或执行命令。
 你看不到主 agent 的对话历史，所有必要背景都在给你的任务描述里。
 
@@ -43,6 +44,7 @@ const BUILTIN_AGENTS: AgentDefinition[] = [
     description: '外部 Claude Code CLI：spawn Claude Code 子进程执行一次性任务。',
     whenToUse: '需要利用 Claude Code 的独立能力完成任务时——如特定于 Anthropic 生态的操作、需要与 Claude Code 互操作的场景。注意：每次调用启动新进程，有启动开销。',
     tools: [],
+    omitAgentsMd: true,
     systemPrompt: `你是被主 agent 派生的外部 Claude Code 子 agent。\n主 agent 通过 spawn_agent(subagent_type='claude-code') 启动你作为独立进程运行。`,
   },
   {
@@ -50,6 +52,7 @@ const BUILTIN_AGENTS: AgentDefinition[] = [
     description: '外部 Codex CLI：spawn Codex app-server 子进程执行一次性任务（JSON-RPC stdio 协议）。',
     whenToUse: '需要利用 Codex 的独立能力完成任务时——如 OpenAI 生态、沙箱隔离任务。注意：每次调用启动新进程，需本地安装 codex CLI。',
     tools: [],
+    omitAgentsMd: true,
     systemPrompt: `你是被主 agent 派生的外部 Codex 子 agent。\n主 agent 通过 spawn_agent(subagent_type='codex') 启动你作为独立进程运行。`,
   },
 ];
@@ -88,6 +91,8 @@ export function parseAgentMarkdown(content: string, fallbackName: string): Agent
   // standby：缺省 false（一次性用完即归档）。配 true 进待命，30 分钟无活动自动归档。
   // 之前这里漏了解析，模板写 standby: true 永远不生效（runner 读的是 undefined）。
   const standby = fm['standby'] === true;
+  // omitAgentsMd：缺省 false（加载 AGENTS.md）。配 true 跳过注入，适合只读/外部 CLI 角色。
+  const omitAgentsMd = fm['omitAgentsMd'] === true;
   return {
     name,
     description,
@@ -98,6 +103,7 @@ export function parseAgentMarkdown(content: string, fallbackName: string): Agent
     skills,
     disabledSkills,
     standby,
+    omitAgentsMd,
     systemPrompt: body,
   };
 }
@@ -118,8 +124,20 @@ function loadAgentsFromDir(dir: string): AgentDefinition[] {
 }
 
 /**
- * 构建 agent 注册表：内置 < 用户(~/.step-code/agents) < 项目(<cwd>/.step-code/agents)，同名后者覆盖。
+ * 从指定路径加载单个 agent 模板，返回 AgentDefinition。
+ * 与 loadAgentsFromDir 的区别：不扫目录，只读一个文件；失败时返回 null 而非跳过，
+ * 调用方需要区分「文件不存在/解析失败」与「目录里没有这个角色」。
  */
+export function loadAgentFile(filePath: string): AgentDefinition | null {
+  if (!existsSync(filePath)) return null;
+  try {
+    const raw = readFileSync(filePath, 'utf8');
+    const fallbackName = filePath.replace(/^.*[\\/]/, '').replace(/\.md$/, '');
+    return parseAgentMarkdown(raw, fallbackName);
+  } catch {
+    return null;
+  }
+}
 export function buildAgentRegistry(cwd: string): Map<string, AgentDefinition> {
   const registry = new Map<string, AgentDefinition>();
   for (const def of BUILTIN_AGENTS) registry.set(def.name, def);
@@ -130,4 +148,76 @@ export function buildAgentRegistry(cwd: string): Map<string, AgentDefinition> {
     registry.set(def.name, def);
   }
   return registry;
+}
+
+/** 插件 agent 来源：id + 该插件贡献的 agent 目录列表。 */
+export interface PluginAgentSource {
+  id: string;
+  agentDirs: string[];
+}
+
+/**
+ * 把 plugin agents 合入已有注册表：注册名加 `<pluginId>:` 前缀，同名后者覆盖。
+ * 抽成独立函数是为了让 `/agents reload` 与启动走同一条路——此前 reload 只调
+ * buildAgentRegistry，plugin 角色会在 reload 后集体消失直到重启。
+ */
+export function mergePluginAgents(
+  registry: Map<string, AgentDefinition>,
+  plugins: PluginAgentSource[],
+): void {
+  for (const plugin of plugins) {
+    for (const dir of plugin.agentDirs) {
+      if (!existsSync(dir)) continue;
+      let files: string[];
+      try {
+        files = readdirSync(dir);
+      } catch {
+        continue;
+      }
+      for (const file of files) {
+        if (!file.endsWith('.md')) continue;
+        try {
+          const def = parseAgentMarkdown(readFileSync(join(dir, file), 'utf8'), file.replace(/\.md$/, ''));
+          if (def !== null) registry.set(`${plugin.id}:${def.name}`, def);
+        } catch {
+          // 损坏文件跳过
+        }
+      }
+    }
+  }
+}
+
+/**
+ * agent 模板根目录的指纹：每个已发现 *.md 的「路径:mtime」排序拼接。
+ * 与 buildAgentRegistry 的扫描根保持一致（含 plugin agentDirs，纯变更检测）：
+ * 新增/删除/改名模板改变列表，编辑 *.md 改变 mtime。用作 reload 的失效信号——
+ * 走「缓存 + 失效 + 用到时全量重扫」，指纹比对替代 watcher（与 skill 同一套机制）。
+ */
+export function fingerprintAgentRoots(cwd: string, plugins: PluginAgentSource[] = []): string {
+  const roots: string[] = [
+    join(homedir(), '.step-code', 'agents'),
+    join(cwd, '.step-code', 'agents'),
+  ];
+  for (const plugin of plugins) {
+    for (const dir of plugin.agentDirs) roots.push(dir);
+  }
+  const parts: string[] = [];
+  for (const root of roots) {
+    let entries: string[];
+    try {
+      entries = readdirSync(root);
+    } catch {
+      continue; // 根目录不存在：等同空
+    }
+    for (const entry of entries) {
+      if (!entry.endsWith('.md')) continue;
+      const md = join(root, entry);
+      try {
+        parts.push(`${md}:${statSync(md).mtimeMs}`);
+      } catch {
+        // 无对应文件的条目与发现逻辑一致地忽略
+      }
+    }
+  }
+  return parts.sort().join('\n');
 }

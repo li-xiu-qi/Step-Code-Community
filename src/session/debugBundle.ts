@@ -37,11 +37,17 @@ export interface ExportDebugBundleOptions {
   dataDir?: string;
   /** 脱敏级别，缺省 vendor。 */
   level?: RedactLevel;
-  /** 子 agent 会话存储。传入则把该工作目录下所有子 agent 的全量日志一并打进 zip。 */
+  /** 子 agent 会话存储。传入且 includeSubagents 为 true 时，才把该工作目录下所有子 agent 的全量日志打进 zip。 */
   subagentStore?: {
     list(cwd: string): { id: string; agentType?: string }[];
     loadFull(cwd: string, id: string): unknown[];
   };
+  /**
+   * 是否把子 agent 全量日志打进 zip（缺省 false）。
+   * 默认不导出：一次会话派几十个子 agent 时，子 agent 日志体积远超主会话本身，
+   * 而排查 bug 通常只需要主会话的 wire.jsonl。需要时才显式打开。
+   */
+  includeSubagents?: boolean;
 }
 
 export interface ExportDebugBundleResult {
@@ -127,8 +133,9 @@ export async function exportDebugBundle(opts: ExportDebugBundleOptions): Promise
   }
 
   // 2) 子 agent 全量日志：把该工作目录下所有子 agent 的 full.jsonl 一并打进 zip。
-  // vendor 级别：逐行脱敏路径。
-  if (opts.subagentStore !== undefined) {
+  // 默认不打（includeSubagents 缺省 false）：子 agent 数量多时体积远超主会话，
+  // 且排查 bug 通常只需要主会话的 wire.jsonl。vendor 级别：逐行脱敏路径。
+  if (opts.subagentStore !== undefined && opts.includeSubagents === true) {
     const subagents = opts.subagentStore.list(cwd);
     for (const meta of subagents) {
       const messages = opts.subagentStore.loadFull(cwd, meta.id);

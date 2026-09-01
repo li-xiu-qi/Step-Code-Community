@@ -55,6 +55,11 @@ describe('④ agentRow 单行', () => {
     const row = strip(agentRow(meta({}), true, 80));
     expect(row.startsWith('›')).toBe(true);
   });
+
+  it('带模型名时行内显示，便于区分并发子 agent 的模型', () => {
+    const row = strip(agentRow(meta({ model: 'water18-new' }), false, 80));
+    expect(row).toContain('water18-new');
+  });
 });
 
 describe('④ AgentsOverlay render + handleInput', () => {
@@ -74,6 +79,8 @@ describe('④ AgentsOverlay render + handleInput', () => {
     expect(lines[0]).toContain('子 agent 总览');
     expect(lines.join('\n')).toContain('搜文件');
     expect(lines.join('\n')).toContain('改代码');
+    // 详情必须显示模型名——并发多模型时这是区分子 agent 的唯一依据。
+    expect(lines.join('\n')).toContain('模型');
     expect(lines[lines.length - 1]).toContain('Esc 关闭');
   });
 

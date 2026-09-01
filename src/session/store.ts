@@ -74,8 +74,8 @@ export interface SessionMeta {
 
 export interface SessionData extends SessionMeta {
   messages: StoredMessage[];
-  /** TODO 任务清单（独立存储，不占对话历史）。 */
-  todos?: { title: string; status: 'pending' | 'in_progress' | 'done' }[];
+  /** TODO 任务清单（独立存储，不占对话历史）。deps 为依赖的任务序号（1-based）。 */
+  todos?: { title: string; status: 'pending' | 'in_progress' | 'done'; deps?: number[] }[];
   /** team 团队模式快照（档案目录与基准仓；恢复时档案目录被删则静默降级未激活）。 */
   team?: import('../agent/team/mode.js').TeamSnapshot;
   /** 权限模式快照（会话级，随会话持久化；恢复时读回，旧快照缺失回退启动默认）。 */

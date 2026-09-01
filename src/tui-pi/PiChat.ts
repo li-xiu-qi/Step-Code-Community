@@ -26,7 +26,7 @@ import type { StreamEvent } from '../agent/background/manager.js';
 import { emitTerminalNotification } from '../agent/background/terminal-notify.js';
 import { decide, planModeDenyReason, type PermissionMode } from '../agent/permission/mode.js';
 import { createSubagentRunner } from '../agent/subagent/runner.js';
-import { buildAgentRegistry } from '../agent/subagent/registry.js';
+import { buildAgentRegistry, mergePluginAgents, type PluginAgentSource } from '../agent/subagent/registry.js';
 import type { RunSubagentFn } from '../agent/subagent/types.js';
 import type { SubagentStore } from '../agent/subagent/store.js';
 import type { AgentDefinition } from '../agent/subagent/types.js';
@@ -144,6 +144,8 @@ export interface PiChatDeps {
   initialMode: PermissionMode;
   /** Plugin sessionStart 指定的 skill 名列表（启动时自动激活）。 */
   sessionStartSkills?: string[];
+  /** 插件贡献的 agent 来源（id + agentDirs）：传给 subagent runner，reload 时也要合入。 */
+  pluginAgents?: PluginAgentSource[];
   /** 当前渠道名（config.provider）：/think 门控与 loop 的思考参数判定要用。 */
   providerName?: string;
   /**
@@ -1998,7 +2000,8 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
         return;
 
       case 'export-debug-zip':
-        await this.runExportDebugZip();
+        // all 子命令：把子 agent 全量日志也打进去（默认不打，见 runExportDebugZip 注释）
+        await this.runExportDebugZip(args.trim() === 'all');
         return;
 
       case 'goal':
@@ -2019,15 +2022,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
           this.openAgentsOverlay();
           return;
         }
-        if (this.currentSubagentRunner === undefined) {
-          this.push({ kind: 'note', text: '当前没有活跃的 turn，下次 turn 会自动读取最新模板' });
-          return;
-        }
-        this.currentSubagentRunner.refreshRegistry();
-        const fresh = buildAgentRegistry(this.deps.ctx.cwd);
-        this.deps.subagentRegistry.clear();
-        for (const [k, v] of fresh) this.deps.subagentRegistry.set(k, v);
-        this.push({ kind: 'note', text: `子 agent 模板已热刷新，共 ${this.deps.subagentRegistry.size} 个角色` });
+        this.push({ kind: 'note', text: this.refreshSubagentTemplates() });
         return;
 
       case 'reflect':
@@ -2546,15 +2541,37 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     // 新 hookEngine 换了引用，notice 出口要补挂，否则 hook 的可见性提示会静默丢
     this.deps.hookEngineRef.current?.setNoticeSink((m) => this.push({ kind: 'note', text: m }));
     const changes = diffConfig(prev, next);
-    if (changes.length === 0 && providerNote === '') {
+    const subagentNote = this.refreshSubagentTemplates();
+    if (changes.length === 0 && providerNote === '' && subagentNote.includes('没有活跃')) {
       this.push({ kind: 'note', text: '配置没有变化' });
     } else {
       const lines = changes.map((c) => formatConfigChange(c) + (c.restart === true ? '（需重启生效）' : ''));
       if (providerNote !== '') lines.push(providerNote);
+      if (!subagentNote.includes('没有活跃')) lines.push(subagentNote);
       this.push({ kind: 'note', text: `配置已重载：\n${lines.join('\n')}` });
     }
     this.syncStatus();
     this.tui.requestRender();
+  }
+
+  /**
+   * 刷新 subagent 模板：重新扫描磁盘上的 .step-code/agents/*.md，
+   * 合并 plugin agents，更新 deps.subagentRegistry。
+   * /agents reload 与 /reload 共用，避免两处逻辑漂移。
+   * 没有活跃 turn 时返回提示（下次 turn 会自动读取），不抛错。
+   */
+  private refreshSubagentTemplates(): string {
+    if (this.currentSubagentRunner === undefined) {
+      return '当前没有活跃的 turn，下次 turn 会自动读取最新模板';
+    }
+    this.currentSubagentRunner.refreshRegistry();
+    const fresh = buildAgentRegistry(this.deps.ctx.cwd);
+    if (this.deps.pluginAgents !== undefined && this.deps.pluginAgents.length > 0) {
+      mergePluginAgents(fresh, this.deps.pluginAgents);
+    }
+    this.deps.subagentRegistry.clear();
+    for (const [k, v] of fresh) this.deps.subagentRegistry.set(k, v);
+    return `子 agent 模板已热刷新，共 ${this.deps.subagentRegistry.size} 个角色`;
   }
 
   /**
@@ -3705,7 +3722,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     }
   }
 
-  private async runExportDebugZip(): Promise<void> {
+  private async runExportDebugZip(includeSubagents = false): Promise<void> {
     if (this.busy) return;
     this.busy = true;
     this.syncStatus();
@@ -3717,6 +3734,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
         sessionId: this.session.id,
         model: this.model,
         subagentStore: this.deps.subagentStore,
+        includeSubagents,
       });
       this.push({
         kind: 'note',
@@ -4380,6 +4398,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     const subagentRunner = createSubagentRunner({
       provider: this.provider,
       cwd: this.deps.ctx.cwd,
+      pluginAgents: this.deps.pluginAgents,
       apiKey: this.deps.ctx.apiKey,
       baseUrl: this.deps.ctx.baseUrl,
       capabilities: this.deps.ctx.capabilities,
@@ -4409,6 +4428,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       sessionCounter: this.subagentCounter,
       parentSessionId: this.session.id,
       skills: this.deps.skillsRef.current,
+      agentsMd: this.deps.agentsMd,
       subagentStore: this.deps.subagentStore,
       // 子 agent 进度直接写进那条 spawn_agent 工具卡片——差分渲染下条目内嵌就是实时面板
       onEvent: (_id, ev) => {
