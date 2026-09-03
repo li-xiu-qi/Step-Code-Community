@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import Anthropic from '@anthropic-ai/sdk';
 import { spawnAgentTool } from '../../src/tools/spawnAgent.js';
 import type { ToolContext } from '../../src/tools/types.js';
 
@@ -99,5 +100,60 @@ describe('spawn_agent 后台派生的生命周期', () => {
 
     expect(res.isError).toBe(true);
     expect(runSubagent).not.toHaveBeenCalled();
+  });
+
+  it('后台 settle output 带上失败原因（cause 摘要），不再只有「执行出错」', async () => {
+    // 回归契约：子 agent 出错时 settle 通知 / task_output 必须可见真实 provider 报错。
+    // 此前只回 summary（「子 agent 执行出错，未产出结果。」），无从判断是 429、溢出还是超时。
+    // 用真 Anthropic.APIError（带 status）：summarizeError 对它会输出 `HTTP <status> · ...`。
+    const cause = new Anthropic.APIError(429, { type: 'rate_limit_error' }, 'rate limited', null);
+    let capturedRun: Promise<{ output: string; ok: boolean }> | undefined;
+    const runSubagent = vi.fn(async () => ({
+      summary: '子 agent 执行出错，未产出结果。',
+      isError: true,
+      sessionId: 's-err',
+      cause,
+    }));
+    const ctx = makeCtx({
+      runSubagent: runSubagent as never,
+      onStopCapture: () => {},
+    });
+    // 覆写 startTask 以捕获 run，resolve 后断言 output
+    (ctx.background as unknown as { startTask: unknown }).startTask = (
+      _label: string,
+      r: Promise<{ output: string; ok: boolean }>,
+    ) => {
+      capturedRun = r;
+      return 'task-err';
+    };
+    await spawnAgentTool.execute({ prompt: 'x', run_in_background: true }, ctx);
+    const settled = await capturedRun!;
+    expect(settled.ok).toBe(false);
+    // output 含结构化头 + 失败原因摘要（summarizeError 对带 status 的错误输出 HTTP 状态码）
+    expect(settled.output).toContain('status: error');
+    expect(settled.output).toContain('失败原因：');
+    expect(settled.output).toContain('429');
+  });
+
+  it('后台 settle output 在 done 时不拼失败原因', async () => {
+    let capturedRun: Promise<{ output: string; ok: boolean }> | undefined;
+    const runSubagent = vi.fn(async () => ({
+      summary: '做完了',
+      isError: false,
+      sessionId: 's-ok',
+    }));
+    const ctx = makeCtx({ runSubagent: runSubagent as never, onStopCapture: () => {} });
+    (ctx.background as unknown as { startTask: unknown }).startTask = (
+      _label: string,
+      r: Promise<{ output: string; ok: boolean }>,
+    ) => {
+      capturedRun = r;
+      return 'task-ok';
+    };
+    await spawnAgentTool.execute({ prompt: 'x', run_in_background: true }, ctx);
+    const settled = await capturedRun!;
+    expect(settled.ok).toBe(true);
+    expect(settled.output).toContain('status: done');
+    expect(settled.output).not.toContain('失败原因');
   });
 });

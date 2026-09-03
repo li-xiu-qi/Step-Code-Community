@@ -3,6 +3,7 @@ import type { SubagentResult } from '../agent/subagent/types.js';
 import { subagentParallelKind } from './subagentAccess.js';
 import { fail, ok, type ToolContext, type ToolDef } from './types.js';
 import { resolvePath } from './fsutil.js';
+import { summarizeError } from '../provider/retry.js';
 
 const schema = z.object({
   description: z
@@ -77,16 +78,23 @@ function formatSubagentResult(
   status: 'done' | 'error',
   summary: string,
   sessionId: string | undefined,
+  cause?: unknown,
 ): string {
   const head =
     sessionId !== undefined
       ? `subagent: ${subagentType} | status: ${status} | session: ${sessionId}`
       : `subagent: ${subagentType} | status: ${status}`;
+  // 失败时把真实 provider 报错摘要拼进结果：子 agent 内部的 runTurn 重试已先扛过一轮，
+  // 走到 error 终态的都是重试耗尽/不可重试的硬故障。没有这段时，父 agent 与用户只看到
+  // 「子 agent 执行出错，未产出结果。」，无从判断是 429 限流、上下文溢出、连接拒绝还是超时，
+  // 只能靠翻 session 快照倒推（而快照不含 error cause）。cause 为空时退回原文案。
+  const causeLine =
+    status === 'error' && cause !== undefined ? `\n\n失败原因：${summarizeError(cause)}` : '';
   const tail =
     status === 'error' && sessionId !== undefined
       ? `\n\n（需要在它已有工作基础上继续时，用 spawn_agent 的 resume="${sessionId}" 续跑；如需带着历史另起炉灶但不影响源会话，用 fork="${sessionId}"）`
       : '';
-  return `${head}\n\n${summary}${tail}`;
+  return `${head}\n\n${summary}${causeLine}${tail}`;
 }
 
 export const spawnAgentTool: ToolDef<z.infer<typeof schema>> = {
@@ -165,7 +173,7 @@ export const spawnAgentTool: ToolDef<z.infer<typeof schema>> = {
           agentFile: input.agent_file,
         })
         .then((r) => ({
-          output: r.sessionId !== undefined ? `${r.summary}\n（子会话 id：${r.sessionId}）` : r.summary,
+          output: formatSubagentResult(subagentType, r.isError ? 'error' : 'done', r.summary, r.sessionId, r.cause),
           ok: !r.isError,
         }));
       try {
@@ -190,7 +198,7 @@ export const spawnAgentTool: ToolDef<z.infer<typeof schema>> = {
     // cause 透传给调度层：429 限流失败时父侧据此重排队尾（第二道防线）
     if (result.isError) {
       return {
-        ...fail(formatSubagentResult(subagentType, 'error', result.summary, result.sessionId)),
+        ...fail(formatSubagentResult(subagentType, 'error', result.summary, result.sessionId, result.cause)),
         cause: result.cause,
       };
     }
