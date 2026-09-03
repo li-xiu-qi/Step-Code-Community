@@ -902,7 +902,7 @@ async function runPrint(prompt: string): Promise<void> {
   // 后台任务终态通知：非交互模式没有队列通道，先收集，进程退出前 drain 到 stderr（不阻塞）
   const settledNotes: StoredMessage[] = [];
   const background = new BackgroundManager(10, {
-    taskTimeoutS: config.background?.bashTaskTimeoutS ?? 600,
+    taskTimeoutS: config.background?.bashTaskTimeoutS ?? 1800,
     // 任务落盘（meta.json + output.log）：resume 对账的事实源
     tasksDir: store.tasksDirFor(cwd, session.id),
     onSettleEvent: (task) => {

@@ -87,7 +87,7 @@ export interface ContinuationConfig {
 export interface BackgroundConfig {
   /** bash 前台超时后自动转后台（默认 true；false 保持超时即杀）。 */
   bashAutoBackgroundOnTimeout?: boolean;
-  /** 后台任务超时秒数（默认 600，clamp [0, 86400]，0 = 不限）。 */
+  /** 后台任务超时秒数（默认 1800，clamp [0, 86400]，0 = 不限）。 */
   bashTaskTimeoutS?: number;
   /** 后台任务终态时主动注入完成通知（默认 true；false 回到模型经 task_list 查询）。 */
   notifyOnComplete?: boolean;
@@ -497,7 +497,7 @@ const COMPACTION_RESERVED_TOKENS_MAX = 500_000;
 const COMPACTION_USER_TOKENS_MIN = 0;
 const COMPACTION_USER_TOKENS_MAX = 200_000;
 
-// 后台任务超时 clamp 边界（默认 600 在消费方落，0 = 不限）。
+// 后台任务超时 clamp 边界（默认 1800 在消费方落，0 = 不限）。
 const BACKGROUND_TASK_TIMEOUT_MIN = 0;
 const BACKGROUND_TASK_TIMEOUT_MAX = 86_400;
 
