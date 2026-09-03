@@ -739,7 +739,10 @@ export class PiChat {
     this.termTitle = new TerminalTitleWriter(
       process.env,
       process.stdout.isTTY,
-      deps.config.tui?.terminalTitle ?? false,
+      // config 文档声明默认 true（见 TuiConfig.terminalTitle）：未配置时默认把会话标题写进 tab，
+      // 用户想关再显式设 [tui] terminalTitle = false。此前兜底写成 false，导致功能默认不启用、
+      // rename 后 tab 标题不更新（与文档相反）。
+      deps.config.tui?.terminalTitle ?? true,
       (str) => process.stdout.write(str),
     );
     this.syncTerminalTitle();
