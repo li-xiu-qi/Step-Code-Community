@@ -76,10 +76,6 @@ pnpm test         # vitest
 
 CI runs typecheck, build, and test on Ubuntu, Windows, and macOS. Development conventions and the rules for model integration are in [`AGENTS.md`](./AGENTS.md); the contribution process is in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
-## Acknowledgements
-
-The source code of Step Code is written from scratch by this project; it is not affiliated with, sponsored by, or endorsed by any third-party project. Third-party open-source license texts are collected under [`licenses/`](./licenses/) for compliance, with details in [`licenses/NOTICE.md`](./licenses/NOTICE.md).
-
 ## License
 
-MIT, see [`LICENSE`](./LICENSE). Third-party acknowledgements and licenses are under [`licenses/`](./licenses/).
+MIT, see [`LICENSE`](./LICENSE).

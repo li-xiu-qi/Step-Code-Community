@@ -74,10 +74,6 @@ pnpm test         # vitest
 
 CI 在 Ubuntu、Windows、macOS 三平台运行 typecheck、build 与 test。开发约定与模型接入铁律见 [`AGENTS.md`](./AGENTS.md)，贡献流程见 [`CONTRIBUTING.md`](./CONTRIBUTING.md)。
 
-## 致谢
-
-Step Code 的源码由本项目自行编写，与任何第三方项目无隶属、赞助或背书关系。第三方开源许可证原文收录于 [`licenses/`](./licenses/) 目录作为合规留痕，详见 [`licenses/NOTICE.md`](./licenses/NOTICE.md)。
-
 ## 许可证
 
-MIT，详见 [`LICENSE`](./LICENSE)。第三方致谢与许可证见 [`licenses/`](./licenses/)。
+MIT，详见 [`LICENSE`](./LICENSE)。
