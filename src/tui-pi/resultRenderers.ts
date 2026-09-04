@@ -27,7 +27,7 @@ export const MAX_RESULT_CHARS = 65536;
 /**
  * 4 层正则清理 shell 输出中的终端控制序列，返回纯文本。
  *
- * 参考 Claude Code strip-ansi 策略（npm strip-ansi package）：
+ * 四层正则清理顺序（OSC → CSI → C0 → 回车残影）：
  * - Layer 1: OSC（超链接、标题）\x1b]...\x07 / \x1b]...\x1b\\
  * - Layer 2: CSI（颜色、光标、擦除）\x1b[...[A-Za-z]
  * - Layer 3: C0 控制字符（bell/backspace 等）\x00-\x1f 中除 \n\t 的部分

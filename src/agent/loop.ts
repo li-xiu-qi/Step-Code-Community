@@ -388,7 +388,7 @@ export async function* runAgent(opts: RunAgentOptions): AsyncGenerator<AgentEven
       }
     }
     // Monitor 流式事件：与终态通知同一条 step 边界注入路径（startsPromptTurn=false），
-    // 语义对应 claude code 的 priority:"next"——在两个工具调用之间读取，不打断正在执行的工具。
+    // 语义上等价于「在两个工具调用之间读取」：不打断正在执行的工具。
     // 不在 flush 时直接注入：那会逼出一个模型回合，200ms 一批等于每 200ms 烧一次 prompt cache。
     if (opts.injectBackgroundNotifications === true && ctx.background !== undefined) {
       for (const ev of ctx.background.drainStreamEvents()) {

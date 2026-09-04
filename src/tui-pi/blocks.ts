@@ -192,7 +192,7 @@ function hanging(lines: readonly string[], prefix: string, plainWidth: number): 
   return lines.map((l, i) => (i === 0 ? prefix : pad) + l);
 }
 
-// ---- 扩展截断策略（参考 Claude Code truncate.ts） ----
+// ---- 扩展截断策略 ----
 
 function truncateStartToWidth(text: string, maxWidth: number): string {
   if (text === '') return '';
@@ -502,7 +502,7 @@ export class ItemBlock implements Component {
 
       // Pre-truncation: for huge outputs, only process enough chars for visible preview lines.
       // Without this, split('\n') on a 64MB output allocates millions of entries → OOM crash.
-      // Reference: Claude Code terminal.ts (MAX_LINES_TO_SHOW * wrapWidth * 4 pattern).
+      // Bound processing to preview lines × width × 4 to avoid OOM on split('\n').
       const maxProcessChars = Math.max(ERROR_PREVIEW_LINES, DIFF_MAX_LINES, RESULT_PREVIEW_LINES) * Math.max(width - 4, 10) * 4;
       const isProcessTruncated = resultText.length > maxProcessChars;
       const processText = isProcessTruncated ? resultText.slice(0, maxProcessChars) : resultText;

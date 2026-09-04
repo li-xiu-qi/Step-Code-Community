@@ -212,7 +212,7 @@ export interface ModelEntry {
   capabilities?: string[];
   /**
    * 按别名声明模型的图片输入长边上限（像素，config.toml [models.*] image_max_edge_px）。
-   * 消费方：read_media 交付降采样阈值。缺省走全局保守值（1568，Claude 推荐长边）；
+   * 消费方：read_media 交付降采样阈值。缺省走全局保守值（1568，通用保守长边）；
    * 高上限通道（如 GPT 系 high detail 长边 2048）可按别名放宽。
    */
   imageMaxEdgePx?: number;

@@ -39,8 +39,8 @@ export function formatStreamNotification(
  * （kind=monitor_stream，携带 taskId）。下游按 origin 路由：UI 渲染、压缩取舍、
  * fork/undo 边界，无需解析正文。
  *
- * startsPromptTurn 由投递方决定：step 边界中途注入=false（对应 claude code 的
- * `priority:"next"`，不打断正在执行的工具），idle 唤醒新回合=true。
+ * startsPromptTurn 由投递方决定：step 边界中途注入=false（不打断正在执行的工具），
+ * idle 唤醒新回合=true。
  */
 export function buildStreamMessage(
   taskId: string,
@@ -73,8 +73,7 @@ export function buildStreamMessage(
  *    或命令本身已退出（exit 事件）——这两种情况模型必须看到。
  *
  * 其余常规输出（进度、心跳、INFO）不投：它们进了上下文也只是噪声，且 200ms 一批的
- * 频率下逐批投递等于每 200ms 消耗一次 prompt cache。这与 claude code 的系统提示词
- * 约束同源——「Routine or benign output doesn't need one.」过滤责任在模型侧，
+ * 频率下逐批投递等于每 200ms 消耗一次 prompt cache。过滤责任在模型侧，
  * 但调用方先挡掉明显的噪声能让模型不必为每批心跳做判断。
  */
 const SIGNAL_PATTERN = /\b(error|warn(?:ing)?|fail(?:ed|ure)?|critical|fatal)\b|异常|失败|错误/i;

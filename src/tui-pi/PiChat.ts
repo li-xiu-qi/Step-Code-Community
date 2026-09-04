@@ -3570,8 +3570,8 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
   /**
    * Monitor 流式事件到达（200ms 一批，行缓冲器合并后产出）。
    *
-   * busy 时只展示不唤醒：注入在 runAgent 的 step 边界（loop.ts），语义对应
-   * claude code 的 `priority:"next"`——在两个工具调用之间读取，不打断正在执行的工具。
+   * busy 时只展示不唤醒：注入在 runAgent 的 step 边界（loop.ts），语义上等价于
+   * 「在两个工具调用之间读取」：不打断正在执行的工具。
    *
    * idle 时按信号唤醒：闸门放行的批次（含告警词 / 进程退出）触发新回合，心跳不触发。
    * 冷却 30 秒防一次错误爆发反复唤醒。唤醒后事件进 drainStreamEvents 队列，

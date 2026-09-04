@@ -53,8 +53,7 @@ export interface StepMessagesProviderOptions {
  * > 顶层写法不报错但不生效，当时观测到的「effort 比 thinking 好」实际是
  * > 「不发任何思考参数」与「发了 thinking」的对比，不是两种档位写法的对比。
  * > 现已改为 `output_config.effort`，详见 {@link stepEffortParam} 的注释。
- * > 这也与 Anthropic 官方方向一致：Claude 4.6 起 `budget_tokens` 标 deprecated，
- * > 同样迁移到 `output_config.effort`。
+ * > 对端模型的近期版本已把 `budget_tokens` 标 deprecated，同样迁移到 `output_config.effort`。
  *
  * ## 与官方类的其他差异
  *

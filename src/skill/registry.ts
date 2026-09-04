@@ -206,7 +206,7 @@ function skillRoots(cwd: string, pluginSkillDirs: string[] = [], extraDirs?: str
  * 与 fingerprintSkillRoots 各扫一遍」的重复 fs（每根目录 readdirSync 由 2 次降为 1 次，
  * 每个 SKILL.md 的 readFileSync/statSync 在同一轮内完成）。
  *
- * 忠实复刻两个分离函数各自的过滤语义，不改变行为：
+ * 保持两个分离函数各自的过滤语义，不改变行为：
  * - 注册表侧跳过 `.` 开头目录、读全文 parse（同 discoverInDir）；
  * - 指纹侧不跳过 `.`、只取 mtime（同 fingerprintSkillRoots）。
  * reload 路径仍走分离的 fast path（指纹未变跳过构建），不受影响。
