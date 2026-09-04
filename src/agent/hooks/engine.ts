@@ -107,7 +107,7 @@ function execHook(
 /**
  * 用户可配置 hooks 引擎：按事件匹配配置、并行执行 shell 命令、聚合放行/阻断语义。
  *
- * 执行语义（业界 hook 机制的收敛结论）：
+ * 执行语义：
  * - stdin JSON（snake_case）：基础字段 hook_event_name / session_id / cwd + 事件字段
  *   （tool_name / tool_input / tool_output / prompt 等）。
  * - exit 0 → 放行，stdout 在 UserPromptSubmit / SessionStart 下注入上下文；
