@@ -16,7 +16,7 @@ import { join, win32 as pathWin32 } from 'node:path';
  *   - wsl：通过 wsl.exe 调用 Linux bash，需 /mnt 路径转换
  *   - busybox：busybox-w32 的 ash，仅基础 POSIX
  *   - powershell：cmdlet / PS 语法
- *   - none：未找到任何可用 shell（对齐业界，不回退 cmd.exe）；bash 工具据此报错引导装 Git Bash
+ *   - none：未找到任何可用 shell（不回退 cmd.exe）；bash 工具据此报错引导装 Git Bash
  */
 export type ShellFamily = 'posix' | 'wsl' | 'busybox' | 'powershell' | 'none';
 
