@@ -1,7 +1,7 @@
 /**
  * 行缓冲器测试。
  *
- * 这四个常数与行为契约逆向自 claude-code-win32-x64@2.1.251，改动需要有理由——
+ * 这四个常数改动需要有理由——
  * 它们解决的是具体问题（内存膨胀 / 逐行推送烧 token / 超长行打爆上下文），
  * 不是可以随手调的参数。
  */
@@ -55,8 +55,8 @@ describe('行缓冲器：200ms 窗口内合并', () => {
     expect(b.flush()).toBe('b');
   });
 
-  it('常量值与逆向结果一致', () => {
-    // 这四个数是从 claude code 二进制里量出来的，改动需要理由
+  it('常量值有明确推导依据', () => {
+    // 四个常数的值由内存/上下文预算推导，改动需要理由
     expect(MONITOR_FLUSH_MS).toBe(200);
     expect(MONITOR_LINE_CAP).toBe(500);
     expect(MONITOR_BATCH_CAP).toBe(3000);

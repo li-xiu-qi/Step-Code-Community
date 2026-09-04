@@ -64,8 +64,8 @@ export type StepChannel = 'messages' | 'chat' | 'responses';
  *
  * 官方[step-3.7-flash 文档](https://platform.stepfun.com/docs/zh/guides/models/step-3.7-flash)
  * 原文：「Chat Completions API 使用 `reasoning_effort` 控制推理强度；
- * Messages API 使用 `output_config.effort`」。这也与 Anthropic 官方方向一致——
- * Claude 4.6 起 `thinking.budget_tokens` 标记 deprecated，改用 `output_config.effort`。
+ * Messages API 使用 `output_config.effort`。对端模型的近期版本已把 `thinking.budget_tokens`
+ * 标记 deprecated，同样改用 `output_config.effort`。
  *
  * 症状：档位切换对 messages 通道完全无效果，且因为请求成功、思考照常返回，
  * 表面上一切正常，只有做配对实验统计输出 token 才能发现档位没起作用。

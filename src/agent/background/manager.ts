@@ -685,7 +685,7 @@ export class BackgroundManager {
       return;
     }
     // 入待投递队列而非直接注入：消费方是 runAgent 的 step 边界（drainStreamEvents），
-    // 语义对应 claude code 的 `priority:"next"`——在两个工具调用之间读取，不打断
+    // 语义上等价于「在两个工具调用之间读取」：不打断
     // 正在执行的工具。直接在这里注入会逼出一个模型回合，200ms 一批等于每 200ms 烧一次
     // prompt cache，与 settle 通知走 step 边界的既有设计一致。
     // 队列本身有字符预算（STREAM_QUEUE_MAX_CHARS）：长时间刷屏时保住最近的事件而非无限堆积。

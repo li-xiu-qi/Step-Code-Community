@@ -30,8 +30,7 @@ export interface AgentDefinition {
   standby?: boolean;
   /**
    * 是否省略 AGENTS.md 注入（默认 false = 加载）。
-   * Claude Code 的 Explore/Plan 两个内置角色显式 omitClaudeMd——上下文经济性最敏感的
-   * 只读/外部 CLI 角色不需要项目约定。内置 explore/claude-code/codex 设为 true。
+   * 只读 / 外部 CLI 角色不需要项目约定。内置 explore/claude-code/codex 设为 true。
    */
   omitAgentsMd?: boolean;
 }

@@ -11,11 +11,11 @@
  * 3. Reduce：分类（memory/skill/observation）+ Do-NOT-capture 过滤 + 评分排序
  * 4. Write：将高分工条目写入对应 store（dry-run 时只预览不写）
  *
- * 设计参考：
- * - Kimi Dream Agent：NO_UPDATE 是正常状态、工具层控制格式
- * - Hermes Background Review：Do-NOT-capture 负面清单、措辞纪律
- * - Claude Dreams：双模式（自动/审核）、不修改原始转录
- * - ZenBrain：TAG 评分筛选
+ * 设计要点：
+ * - NO_UPDATE 是正常状态，格式由工具层控制
+ * - 维护 Do-NOT-capture 负面清单与措辞纪律
+ * - 双模式（自动/审核），不修改原始转录
+ * - TAG 评分筛选决定哪些条目入 store
  */
 
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';

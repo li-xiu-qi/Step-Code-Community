@@ -42,7 +42,7 @@ const BUILTIN_AGENTS: AgentDefinition[] = [
   {
     name: 'claude-code',
     description: '外部 Claude Code CLI：spawn Claude Code 子进程执行一次性任务。',
-    whenToUse: '需要利用 Claude Code 的独立能力完成任务时——如特定于 Anthropic 生态的操作、需要与 Claude Code 互操作的场景。注意：每次调用启动新进程，有启动开销。',
+    whenToUse: '需要 Anthropic 生态的独立编码能力完成一次性任务时。注意：每次调用启动新进程，有启动开销。',
     tools: [],
     omitAgentsMd: true,
     systemPrompt: `你是被主 agent 派生的外部 Claude Code 子 agent。\n主 agent 通过 spawn_agent(subagent_type='claude-code') 启动你作为独立进程运行。`,
@@ -50,7 +50,7 @@ const BUILTIN_AGENTS: AgentDefinition[] = [
   {
     name: 'codex',
     description: '外部 Codex CLI：spawn Codex app-server 子进程执行一次性任务（JSON-RPC stdio 协议）。',
-    whenToUse: '需要利用 Codex 的独立能力完成任务时——如 OpenAI 生态、沙箱隔离任务。注意：每次调用启动新进程，需本地安装 codex CLI。',
+    whenToUse: '需要 OpenAI 生态的独立编码能力、或沙箱隔离任务时。注意：每次调用启动新进程，需本地安装 codex CLI。',
     tools: [],
     omitAgentsMd: true,
     systemPrompt: `你是被主 agent 派生的外部 Codex 子 agent。\n主 agent 通过 spawn_agent(subagent_type='codex') 启动你作为独立进程运行。`,
