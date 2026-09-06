@@ -346,7 +346,7 @@ export class PiChat {
    */
   private steers: string[] = [];
   /**
-   * 图片附件池（Ctrl+V 贴进来的图）。
+   * 图片附件池（Alt+V 贴进来的图）。
    *
    * 图片以占位符文本的形式待在输入框里，用户用退格删掉占位符就等于移除那张图，
    * 不需要额外的「取消附件」交互。提交时 extractImageContent 把仍在的占位符
@@ -622,14 +622,13 @@ export class PiChat {
       if (this.exitPrimed) return t('input.exitPrimed');
       return '';
     };
-    // Ctrl+V / Alt+V 读剪贴板图片。busy 时也允许：只往输入框草稿追加占位符，不碰在跑的回合
+    // Alt+V 读剪贴板图片。busy 时也允许：只往输入框草稿追加占位符，不碰在跑的回合
     // （提交走排队路径，drain 时统一展开成图）。
-    // 两个键位同一动作：Alt+V 是主仓原键位（用户肌肉记忆），Ctrl+V 兜住 Alt 被终端/窗口管理器吃掉的场景。
+    // 只绑 Alt+V：Ctrl+V 在越来越多终端里被送给应用本身，与文本粘贴习惯冲突。
     const attach = (): boolean => {
       void this.attachClipboardImage();
       return true;
     };
-    this.editor.onCtrlV = attach;
     this.editor.onAltV = attach;
     // ↑ 取回队列尾部一条进输入框编辑：busy + 空输入时生效。
     // 发送从头部消费（drainQueue shift），编辑从尾部取回（pop），两个方向不冲突。
@@ -2089,7 +2088,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       '',
       '快捷键：Enter 发送 · Shift+Enter 换行 · Esc 中断/取回队列 · Ctrl+C 退出 · Tab 补全',
       '输入 ! 开头的行会在本地执行 shell 命令（输出注入上下文），Ctrl+S 把队列与草稿插队给运行中的回合',
-      '　　　　Alt+V / Ctrl+V 贴剪贴板图片 · Ctrl+O 展开工具输出与思考 · Ctrl+B 前台任务转后台',
+      '　　　　Alt+V 贴剪贴板图片 · Ctrl+O 展开工具输出与思考 · Ctrl+B 前台任务转后台',
     ];
     // 空集合时不打这一行：全部接线后还挂个空提示，看起来像功能残缺
     if (NOT_WIRED.size > 0) lines.push(`pi 版尚未接线：${[...NOT_WIRED].map((n) => '/' + n).join(' ')}`);
@@ -2099,13 +2098,16 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
   /**
    * 读剪贴板图片并把占位符追加到输入框。
    *
+   * 不弹「正在读取」的中间态：读图通常几十毫秒（Windows 冷启动 PowerShell 可能到 1-2 秒），
+   * 但那条 note 会在剪贴板无图时变成纯噪音——用户按一下就看到「正在读取…没有图片」两连击。
+   * 改为只在终态给一条明确提示。耗时过长时的反馈由状态栏承担，不占用对话区。
+   *
    * 失败给三级诊断而不是一句「没有图片」：缺平台工具（Windows 无 PowerShell、
    * macOS 无 pngpaste）与「剪贴板里确实没图」是两回事，用户按了没反应时需要
    * 知道该装工具还是该重新复制。中间那级把剪贴板实际有哪些格式打出来，
    * 下次失败可直接定位。
    */
   private async attachClipboardImage(): Promise<void> {
-    this.push({ kind: 'note', text: t('app.image.reading') });
     const { image, formats } = await readClipboardImage();
     if (image === null) {
       const hint = clipboardToolHint();

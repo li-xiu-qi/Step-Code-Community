@@ -894,15 +894,18 @@ describe('贴图键位：Alt+V 与 Ctrl+V 双入口', () => {
     expect(alt).toBe(0);
   });
 
-  it('Ctrl+V 仍然可用（Alt 被终端吃掉时的兜底入口）', () => {
+  it('Ctrl+V 不再消费（贴图入口收敛为 Alt+V）', () => {
     const ed = mk();
     let ctrl = 0;
-    ed.onCtrlV = () => {
+    ed.onAltV = () => {
       ctrl += 1;
       return true;
     };
+    // \x16 是 Ctrl+V。它不再触发任何贴图钩子，也不该往输入框插字符——
+    // 让终端自己处理（VSCode 等终端里 Ctrl+V 是文本粘贴，与应用无关）。
     ed.handleInput('\x16');
-    expect(ctrl).toBe(1);
+    expect(ctrl, 'Alt+V 钩子不应被 Ctrl+V 触发').toBe(0);
+    expect(ed.getText()).toBe('');
   });
 
   it('钩子返回 false 时按键下传，不吞键', () => {

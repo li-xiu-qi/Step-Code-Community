@@ -296,7 +296,6 @@ const zh = {
   // 命令独占一行：终端里三击可整行选中，复制时不会带上前缀文字
   'exit.resumeHint': '恢复本会话：\n{command}',
   'app.replay.folded': '（更早的 {folded} 轮历史已折叠，共 {total} 轮）',
-  'app.image.reading': '正在读取剪贴板图片…',
   'app.image.none': '剪贴板里没有图片（或当前平台/终端不支持）。',
   'app.image.noneFormats': '剪贴板未读出图片。当前剪贴板格式：{formats}',
   'app.image.modelNoImageIn': '当前模型声明不收图片（-image_in），消息中的 {count} 张图未发送。请删除图片占位符，或切换到支持图片的模型。',
@@ -1075,7 +1074,6 @@ const en: Record<keyof typeof zh, string> = {
   'app.resumedEmpty': 'Resumed session {id}, but it has no message history (may not have been saved before a crash).',
   'exit.resumeHint': 'To resume this session:\n{command}',
   'app.replay.folded': '({folded} earlier turns folded, {total} turns total)',
-  'app.image.reading': 'Reading clipboard image…',
   'app.image.none': 'No image in clipboard (or unsupported on this platform/terminal).',
   'app.image.noneFormats': 'No image read from clipboard. Clipboard formats: {formats}',
   'app.image.modelNoImageIn': 'Current model declares no image input (-image_in); {count} image(s) not sent. Remove the image placeholder or switch to a vision-capable model.',
