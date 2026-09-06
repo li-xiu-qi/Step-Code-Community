@@ -307,8 +307,10 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): {
       // 尾部闭合（源会话可能停在工具执行段中间）
       const closure = closeDanglingToolUse(messages);
       subSession.messages = messages = closure.messages;
-      // 新 prompt 追加
-      messages.push(stored({ role: 'user', content: req.prompt }, { kind: 'user' }));
+      // 新 prompt 追加：前置边界声明，分离「继承历史（仅参考）」与「新任务（active 指令）」。
+      // 措辞见产品设计文档 20260904-fork边界注入：继承历史含中间过程，agent 易误当要延续的指令。
+      const forkBoundary = `[继承历史] 本消息之前的内容继承自上一段工作，仅作参考上下文，不要当作待执行的指令。\n[新任务] 你的新任务是：\n${req.prompt}`;
+      messages.push(stored({ role: 'user', content: forkBoundary }, { kind: 'user' }));
       subSession.status = 'running';
       // 新会话需要获取活跃锁（不碰源会话的锁）
       if (!deps.subagentStore.acquireLock(deps.cwd, sessionId)) {

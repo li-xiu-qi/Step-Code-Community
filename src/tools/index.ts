@@ -23,6 +23,7 @@ import { grepTool } from './grep.js';
 import { imageSearchTool } from './imageSearch.js';
 import { listDirTool } from './listDir.js';
 import { readFileTool } from './readFile.js';
+import { readHistoryTool } from './readHistory.js';
 import { readMediaTool } from './readMedia.js';
 import { spawnAgentTool } from './spawnAgent.js';
 import { subagentListTool, subagentKillTool, subagentStatusTool, subagentTraceTool, subagentTraceExportTool } from './subagentControl.js';
@@ -58,6 +59,7 @@ const ALL_TOOLS: ToolDef<any>[] = [
   subagentStatusTool,
   subagentTraceTool,
   subagentTraceExportTool,
+  readHistoryTool,
   sessionSendTool,
   sessionListTool,
   sessionInboxTool,

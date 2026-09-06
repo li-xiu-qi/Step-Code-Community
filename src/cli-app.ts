@@ -410,7 +410,9 @@ async function runBrokenConfigRecovery(
 if (opts.acp === true) {
   configureLogger({ mode: 'headless' });
   const { startAcpServer } = await import('./acp/server.js');
-  await startAcpServer({ config, cwd, provider, model: opts.model, providerName: opts.provider });
+  // 注入会话持久化：开启 session/list、session/resume、session/set_config_option。
+  const acpStore = new SessionStore();
+  await startAcpServer({ config, cwd, provider, model: opts.model, providerName: opts.provider, store: acpStore });
   process.exit(0);
 }
 
