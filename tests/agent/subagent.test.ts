@@ -1258,6 +1258,12 @@ describe('前台子 agent 的转后台（Ctrl+B detach）', () => {
     }
     throw new Error('子会话快照迟迟未上盘');
   };
+  // 轮询等到位，替代固定 sleep 猜时序：子 agent 终态落盘/锁释放跨多段事件循环 + 磁盘 I/O，
+  // 固定等待在满载或慢设备上会误报（假阳性）。deadline 给足余量，真死锁一样会超时。
+  const waitUntil = async (cond: () => boolean, timeoutMs = 8000): Promise<void> => {
+    const deadline = Date.now() + timeoutMs;
+    while (!cond() && Date.now() < deadline) await sleep(20);
+  };
 
   it('端到端：detach 后子会话以 running 落盘、锁持有；跑完写 done、锁释放、通知回灌', async () => {
     let releaseGate: () => void = () => {};
@@ -1288,7 +1294,8 @@ describe('前台子 agent 的转后台（Ctrl+B detach）', () => {
     expect(d.subagentStore.acquireLock(d.cwd, sessionId)).toBe(false);
 
     releaseGate(); // 放行，子 agent 跑完
-    await sleep(100);
+    // 等到 done 快照落盘（终态最末环节，跨多段事件循环 + writeFileSync），到位则前面的 completed/锁释放/settle 均已完成
+    await waitUntil(() => d.subagentStore.loadSnapshot(d.cwd, sessionId)?.status === 'done');
     expect(mgr.get(taskId)?.status).toBe('completed');
     const snap = d.subagentStore.loadSnapshot(d.cwd, sessionId)!;
     expect(snap.status).toBe('done'); // 终态落盘
@@ -1321,7 +1328,8 @@ describe('前台子 agent 的转后台（Ctrl+B detach）', () => {
     // /tasks 里 stop：走 manager 终止路径，经 onStop 中断子 agent 的 AbortController
     expect(mgr.stop(taskId)).toBe(true);
     releaseGate();
-    await sleep(100);
+    // 等 aborted 快照落盘（子 agent 感知中断后的终态，跨多段事件循环 + writeFileSync）；killed 已由 stop 同步置位
+    await waitUntil(() => d.subagentStore.loadSnapshot(d.cwd, sessionId)?.status === 'aborted');
     expect(mgr.get(taskId)?.status).toBe('killed');
     const snap = d.subagentStore.loadSnapshot(d.cwd, sessionId)!;
     expect(snap.status).toBe('aborted'); // 子 agent 感知中断，终态如实落盘

@@ -163,7 +163,8 @@ describe('Monitor：超时与终止', () => {
     const id = mgr.start('kill-flush', SH, shArgs(cmd), process.cwd(), { monitor: true, monitorDescription: 'x' });
     await sleep(100); // 让第一行进 pipe，但还没到 200ms flush
     mgr.stop(id);
-    await sleep(300);
+    // 轮询等 force flush 的回调到位，不用固定 sleep 猜时序（并发/慢设备下固定等待会误报）
+    await waitUntil(() => batches.join('\n').includes('last-word-before-kill'), 5000);
     expect(batches.join('\n')).toContain('last-word-before-kill');
   });
 });
