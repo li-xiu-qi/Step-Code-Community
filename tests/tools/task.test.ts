@@ -4,13 +4,20 @@ import { taskListTool, taskOutputTool, taskStopTool } from '../../src/tools/task
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+// 轮询等到位，替代固定 sleep 猜时序：真实子进程的完成/输出捕获受 CPU 争抢影响，
+// 固定等待在满载或慢设备上会误报（假阳性）。deadline 给足余量，真挂起一样会超时。
+const waitUntil = async (cond: () => boolean, timeoutMs = 10_000): Promise<void> => {
+  const deadline = Date.now() + timeoutMs;
+  while (!cond() && Date.now() < deadline) await sleep(20);
+};
+
 describe('BackgroundManager', () => {
   it('启动后台任务立即返回 id，完成后状态为 completed', async () => {
     const mgr = new BackgroundManager();
     const id = mgr.start('echo hi', process.platform === 'win32' ? 'cmd.exe' : '/bin/sh', process.platform === 'win32' ? ['/c', 'echo hi'] : ['-c', 'echo hi'], process.cwd());
     expect(id).toBeTruthy();
     expect(mgr.get(id)?.status).toBe('running');
-    await sleep(400);
+    await waitUntil(() => mgr.get(id)?.status === 'completed');
     expect(mgr.get(id)?.status).toBe('completed');
   });
 
@@ -43,7 +50,7 @@ describe('task 工具', () => {
   it('task_output / task_stop 查询与终止', async () => {
     const mgr = new BackgroundManager();
     const id = mgr.start('echo hello', process.platform === 'win32' ? 'cmd.exe' : '/bin/sh', process.platform === 'win32' ? ['/c', 'echo hello'] : ['-c', 'echo hello'], process.cwd());
-    await sleep(400);
+    await waitUntil(() => mgr.get(id)?.status === 'completed');
     const out = await taskOutputTool.execute({ task_id: id }, { cwd: process.cwd(), background: mgr });
     expect(out.content).toContain('hello');
     const stop = await taskStopTool.execute({ task_id: id }, { cwd: process.cwd(), background: mgr });
