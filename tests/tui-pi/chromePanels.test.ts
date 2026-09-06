@@ -80,9 +80,10 @@ describe('renderTodos / renderQueue', () => {
   it('待办渲染标记：✓ 已完成 · ● 进行中 · ○ 待办', () => {
     const lines = plain(renderTodos([td('做完的', 'done'), td('在做的', 'in_progress'), td('没做的', 'pending')], 60));
     expect(lines[0]).toContain('待办');
-    expect(lines[1]).toBe('✓ 做完的');
-    expect(lines[2]).toBe('● 在做的');
-    expect(lines[3]).toBe('○ 没做的');
+    // 序号从 1 开始，格式：`{序号}. {标记} {标题}`
+    expect(lines[1]).toBe('1. ✓ 做完的');
+    expect(lines[2]).toBe('2. ● 在做的');
+    expect(lines[3]).toBe('3. ○ 没做的');
   });
 
   it('超 5 条给折叠行，带隐藏项状态分布', () => {
