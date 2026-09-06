@@ -27,6 +27,10 @@ const listSchema = z.object({
     .string()
     .optional()
     .describe('按状态过滤：running / done / error。留空不过滤。'),
+  scope: z
+    .enum(['mine', 'all'])
+    .optional()
+    .describe('可见性范围。mine=只看本会话派生的 + 待命中的(默认，降低噪音，避免跨会话子 agent 越攒越多找不到自己的)；all=当前工作目录下跨会话全部。要找历史会话创建的子 agent 时用 all。'),
 });
 
 function relativeTime(iso: string, now: number): string {
@@ -46,7 +50,7 @@ function relativeTime(iso: string, now: number): string {
 export const subagentListTool: ToolDef<z.infer<typeof listSchema>> = {
   name: 'subagent_list',
   description:
-    '列出当前工作目录下的子 agent 会话（按更新时间倒序）。支持按标题/角色关键词过滤、父会话过滤、状态过滤。不返回消息内容。',
+    '列出子 agent 会话（按更新时间倒序），不返回消息内容。默认只看本会话派生的 + 待命中的(standby)。可用动作：status="running"/"done"/"error" 按状态筛（status="running" 叠加默认范围即"自己正在跑的"）；scope="all" 看当前 cwd 下跨会话全部（含历史会话的一次性子 agent）；query="关键词" 按标题/角色名/模型搜；parent_id="父会话id" 只列该父会话派生的（显式指定时绕过默认降噪）。常用：subagent_list(status="running") 看自己正在运行的；subagent_list(scope="all") 找回历史会话的子 agent。',
   schema: listSchema,
   access: () => ({ kind: 'none' }),
   async execute(input, ctx) {
@@ -55,6 +59,11 @@ export const subagentListTool: ToolDef<z.infer<typeof listSchema>> = {
     const limit = Math.min(input.limit ?? 20, 50);
     const now = Date.now();
     let all = ctx.subagentStore.list(ctx.cwd);
+    // 默认降噪：只看本会话派生的 + 待命中的；显式指定 parent_id 或 scope=all 时绕过（用户意图已明确）
+    if (input.scope !== 'all' && input.parent_id === undefined) {
+      const sid = ctx.sessionId;
+      all = all.filter((m) => (sid !== undefined && m.parentId === sid) || m.standby === true);
+    }
     if (input.parent_id !== undefined) all = all.filter((m) => m.parentId === input.parent_id);
     if (input.status !== undefined) all = all.filter((m) => m.status === input.status);
     if (q) all = all.filter((m) => `${m.title ?? ''} ${m.agentType ?? ''} ${m.model ?? ''}`.toLowerCase().includes(q));
