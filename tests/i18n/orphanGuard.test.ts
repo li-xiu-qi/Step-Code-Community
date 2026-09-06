@@ -23,7 +23,12 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { I18N_TABLES } from '../../src/i18n.js';
 
-/** 2026-08-17 首次实测基线（宽口径：字面量 + 动态前缀）：276 个缺接线 key。只减不增。 */
+/** 2026-08-17 首次实测基线（宽口径：字面量 + 动态前缀）：276 个缺接线 key。只减不增。
+ *
+ * 2026-09-06 降到 277：移除 Ctrl+V 贴图入口时删掉中间态提示 app.image.reading（中英各一）。
+ * 注：仍超首次基线 1，多出的是 workingStatus.tokens——状态栏 token 显示走 commandText.ts 直接渲染、
+ * 未接 i18n，属 Ink 迁移遗留的死 key，接线或删除待独立处理（见 backlog）。
+ */
 const ORPHAN_BASELINE = 277;
 
 const ORPHAN_ALLOWLIST: ReadonlySet<string> = new Set<string>([

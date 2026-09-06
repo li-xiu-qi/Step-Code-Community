@@ -2,6 +2,12 @@
 
 本项目的所有重要变更记录于此。格式沿用 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### Changed
+
+- **移除 Ctrl+V 贴图入口，Alt+V 成为唯一贴图快捷键**：此前 Ctrl+V 与 Alt+V 都会触发图片粘贴，在 VSCode 集成终端里 Ctrl+V 同时触发文本粘贴与贴图逻辑、且无条件先弹提示，导致纯文本粘贴被污染、无法正常使用。现 Ctrl+V 恢复为系统文本粘贴，贴图统一走 Alt+V（各终端均不冲突）。`attachClipboardImage()` 的中间态「正在读取剪贴板」提示一并移除，改为缺剪贴板工具 / 读到非图片格式 / 成功贴图三级终态诊断。
+
 ## [0.1.3] - 2026-09-06
 
 ### Added

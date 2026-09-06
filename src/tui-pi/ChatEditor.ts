@@ -36,15 +36,12 @@ export class ChatEditor extends Editor {
   /** 返回 true 表示控制器已消费这次 Ctrl+C。 */
   onCtrlC?: () => boolean;
   /**
-   * Ctrl+V：读剪贴板图片。返回 true 表示已消费。
+   * Alt+V：读剪贴板图片。返回 true 表示已消费。
    *
-   * 终端里的 Ctrl+V 通常不是「粘贴」——粘贴由终端软件处理并以 bracketed paste 送进来，
-   * Ctrl+V 这个按键本身原样到达应用，故借作贴图入口。
-   */
-  onCtrlV?: () => boolean;
-  /**
-   * Alt+V：同 onCtrlV 的另一个入口。Alt+V 是主仓原键位；Ctrl+V 兜住 Alt 被终端/窗口管理器吃掉的场景
-   * （macOS Option 作组字键、部分 Linux 桌面把 Alt 拿去拖窗口）。
+   * 选 Alt+V 而不是 Ctrl+V：Ctrl+V 在越来越多终端里被送给应用本身（VSCode 集成终端、
+   * 部分 Linux 终端），与用户的文本粘贴习惯正面冲突——剪贴板里是文本时按 Ctrl+V 会
+   * 既插入文本又触发读图，弹出一条「没有图片」污染对话。Alt+V 没有任何终端消费它，
+   * 也不与任何编辑语义冲突。
    * 实测两种模式下 Alt+V 都解析为 `alt+v`，不会被误判成 `escape`，故 Esc 语义不受影响。
    */
   onAltV?: () => boolean;
@@ -238,9 +235,6 @@ export class ChatEditor extends Editor {
     }
     if (matchesKey(data, 'ctrl+c')) {
       if (this.onCtrlC?.() === true) return;
-    }
-    if (matchesKey(data, 'ctrl+v')) {
-      if (this.onCtrlV?.() === true) return;
     }
     // alt+v 放在 escape 判定之后：legacy 下二者的字节序列都以 \x1b 开头，但 pi-tui 只把
     // 单独到达的 \x1b 认作 escape，`\x1bv` 直接解析为 alt+v，两条判定互不干扰（有实测）。
