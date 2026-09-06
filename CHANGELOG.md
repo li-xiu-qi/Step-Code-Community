@@ -2,7 +2,7 @@
 
 本项目的所有重要变更记录于此。格式沿用 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [0.1.3] - 2026-09-06
 
 ### Added
 - **记忆观察池 `/memory`（默认关闭）**：agent 可把对话中观察到的偏好与约定（用户明确要求记住、纠正、稳定项目约定）自主沉淀到两级 markdown 目录——全局 `~/.step-code/memory/` 与项目 `.step-code/memory/`。观察**不直接生效**：system 记忆段显式标注「未经确认，与规范冲突时以规范为准」，定期回顾经用户确认后才晋升进规范层。存储为 markdown 正文 + HTML 注释结构化字段（version / occurrences 计数 / updated_at），人可直接编辑；无 embedding、无后台提取管线，更新只发生在对话回合内。`/memory` 无参列出全部观察（含索引字符用量与待修复文件），`on`/`off` 写回 config 并即时生效；中途开启时注入回看引导，agent 补沉淀本次会话的遗留观察。子 agent 只读（见索引、不能写）。
@@ -41,6 +41,20 @@
 - **任务清单面板按状态优先级裁剪，折叠行带状态分布**：面板仍最多显示 5 条，但超出时不再是硬切列表尾部——此前清单前部堆积的已完成条目会等权占位，把进行中和待办挤出可视区。现在进行中全部保留、最新一条已完成保留做进度上下文、剩余名额按原顺序填待办；折叠行从「… +N more」改为带隐藏条目的状态分布（如「… +3（1 已完成 · 2 待办）」），被裁掉的部分可感知。
 
 - **安装链路收敛为永久链接，`dist-npm` 预构建分支退役**：Release 资产新增不带版本号的 `step-code.tgz` 固定名副本，安装命令改为 `npm i -g https://github.com/<仓库>/releases/latest/download/step-code.tgz`——`releases/latest/download/` 始终解析到最新 Release，发新版不再需要改文档里的版本号；三端单文件可执行同样走该永久链接。原 `dist-npm` 预构建分支（每次发版由 CI 强推覆盖的分发快照）已删除，CI 里负责刷新它的 `dist-branch` job 与 `scripts/make-dist-branch.mjs` 同步移除；要锁定版本时改用 `releases/download/<tag>/step-code-<版本>.tgz` 带版本号资产。安装文档（中英）、快速上手（中英）、README（中英）与 `step-code-install` skill 已全部对齐到四种安装方式。
+
+- **`read_history` 工具：压缩后找回「之前做到哪」**：读当前会话的历史消息，返回 resume 重放后的存活序列（与模型当前上下文一致，压缩点之前已被摘要替代的原始内容不混入）。支持 `limit`（默认 20，上限 50）、`role` 过滤、`include_compaction`（附上宿主压缩摘要作概览，默认 true）、`before_compaction`（深挖压缩点之前的原始历史，默认关闭，开启后强截断到 15 条并显式标注可能与概览矛盾）。仅主 agent 可用；子 agent 读历史用 `subagent_trace`。
+
+- **`subagent_list` 的 `scope` 参数与默认降噪**：不传 `parent_id` 也不传 `scope=all` 时，默认只返回本会话派生的 + 待命中的子 agent 会话，避免跨会话累积后找不到自己的。`scope="all"` 看当前 cwd 下跨会话全部（含历史会话创建的一次性子 agent）。
+
+- **hooks 文档补 `PreOutput` 事件**：`PreOutput` 在模型产出正文后触发，exit 2 阻断本轮并对文本做去污染处理，每轮仅生效一次。hooks 文档（中英）的事件表此前只列了五个事件，代码实际有六个。
+
+- **ACP 服务端文档补全实际协议面**：`session/list`、`session/resume`、`session/close`、`session/set_config_option`、`authenticate` 五个方法与 `session/request_permission` 请求此前均未记录；同时明确 `fs/read_text_file` / `fs/write_text_file` 未实现、会话级 `mcpServers` 动态挂载不支持的已知边界。
+
+- **工具集文档补全 48 个工具**：`tools.md`（中英）的全景表此前只列了 29 个，实际注册 48 个。补上 `monitor`、5 个 `subagent_*`、3 个 `session_*`、`task_wait`、`skill_search`、8 个 `team_*`、`read_history`。
+
+- **`step-code` commit hook 增强**：全局 `~/.step-code/hooks/commit-competitor-check.mjs` 从「只查竞品串」扩展为「竞品串 + message 格式 + 无信息量 message」。message 必须符合 `type(scope): 描述`（type ∈ {feat, fix, docs, refactor, chore, test, perf}，描述 2-50 字）；`修复`、`update`、`wip`、`fix ci` 这类无信息量 message 会被拦。merge / revert commit 豁免格式检查。粒度与「单独 revert 是否自洽」仍需人肉自检。
+
+- **清理误打的 v0.2.0 tag 与空 Release**：v0.2.0 tag 于 2026-08-21 误打，其 Release assets 为 0（workflow 因 tag 与 package.json 版本不一致失败），导致 `releases/latest/download/step-code.tgz` 安装命令 404。已删除远端 tag、远端 Release 与本地 tag，`releases/latest` 回落至 v0.1.2，安装链接恢复可达。本次发布版本号定为 0.1.3。
 
 ## [0.1.2] - 2026-08-07
 

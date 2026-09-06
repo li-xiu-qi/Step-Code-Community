@@ -5,7 +5,7 @@
 
 # Tools
 
-This page is the reference manual for Step Code's built-in tools: the full list of 29 tools, the parameters and behavioral limits of the file, multimodal, command, network, interaction, and orchestration tools, and the general mechanisms that run through all of them (validation, result feedback, parallel scheduling, permission gating).
+This page is the reference manual for Step Code's built-in tools: the full list of 48 tools, the parameters and behavioral limits of the file, multimodal, command, network, interaction, and orchestration tools, and the general mechanisms that run through all of them (validation, result feedback, parallel scheduling, permission gating).
 
 Tools are invoked by the model itself; you never write call syntax by hand. The point of this document is to let you know what the model has at its disposal, where each tool's limits are, and which layer to suspect when something goes wrong.
 
@@ -23,21 +23,41 @@ Listed in registration order. The "See" column points to the page with the full 
 | `glob` | Find file paths by glob pattern | This page |
 | `grep` | Search file contents by regular expression | This page |
 | `bash` | Run a shell command, optionally moved to the background | This page |
+| `monitor` | Watch a command's output continuously, pushing an event whenever something appears | This page |
 | `web_search` | Search the web (StepFun's official search) | This page |
 | `web_fetch` | Fetch a URL and extract its main content | This page |
 | `web_image_search` | Search for images by text description (StepFun's official text-to-image search) | This page |
 | `spawn_agent` | Spawn a sub-agent to handle a subtask | [Sub-agents and automation](./agents.md) |
+| `subagent_list` | List sub-agent sessions; by default only those spawned by this session plus those on standby | [Sub-agents and automation](./agents.md) |
+| `subagent_kill` | Delete all on-disk data for a sub-agent session | [Sub-agents and automation](./agents.md) |
+| `subagent_status` | View detailed information about a sub-agent session | [Sub-agents and automation](./agents.md) |
+| `subagent_trace` | Read a sub-agent session's message history | [Sub-agents and automation](./agents.md) |
+| `subagent_trace_export` | Export a sub-agent session's full trace to a file | [Sub-agents and automation](./agents.md) |
+| `read_history` | Read the current session's history, to recover context after compaction | [Session management](./sessions.md) |
+| `session_send` | Deliver an instruction to another session | [Session management](./sessions.md) |
+| `session_list` | List sessions in the current working directory | [Session management](./sessions.md) |
+| `session_inbox` | View the current session's pending cross-session inbox | [Session management](./sessions.md) |
 | `exit_plan_mode` | Submit an execution plan and request to exit plan mode | This page |
 | `ask_user` | Ask the user a question and let them choose | This page |
 | `todo_list` | Maintain the current task list | This page |
 | `task_list` | List background tasks and their status | [Sub-agents and automation](./agents.md) |
 | `task_output` | View the output of a background task | [Sub-agents and automation](./agents.md) |
 | `task_stop` | Terminate a running background task | [Sub-agents and automation](./agents.md) |
+| `task_wait` | Wait synchronously for a background task to finish | [Sub-agents and automation](./agents.md) |
 | `skill` | Activate a skill and load its full instructions | [Skills, plugins, and MCP](./skills-and-mcp.md) |
+| `skill_search` | Search all available skills by keyword | [Skills, plugins, and MCP](./skills-and-mcp.md) |
 | `create_goal` | Set an autonomous goal | [Sub-agents and automation](./agents.md) |
 | `update_goal` | Update goal state | [Sub-agents and automation](./agents.md) |
 | `set_goal_budget` | Set a turn/token budget for a goal | [Sub-agents and automation](./agents.md) |
 | `get_goal` | View the current goal and its usage | [Sub-agents and automation](./agents.md) |
+| `team_init` | Initialize team mode and create the team archive directory | [Sub-agents and automation](./agents.md) |
+| `team_plan` | Break work into team missions and register the mission list | [Sub-agents and automation](./agents.md) |
+| `team_spawn` | Open an isolated workspace for a mission and spawn a worker | [Sub-agents and automation](./agents.md) |
+| `team_send` | Send a message via the team mailbox | [Sub-agents and automation](./agents.md) |
+| `team_inbox` | Read messages from the team mailbox | [Sub-agents and automation](./agents.md) |
+| `team_status` | View the team overview | [Sub-agents and automation](./agents.md) |
+| `team_merge` | Merge back into the base branch after passing the gates | [Sub-agents and automation](./agents.md) |
+| `team_teardown` | Clean up workspaces and exit team mode | [Sub-agents and automation](./agents.md) |
 | `cron_create` | Create a scheduled task | [Sub-agents and automation](./agents.md) |
 | `cron_list` | List scheduled tasks | [Sub-agents and automation](./agents.md) |
 | `cron_delete` | Delete a scheduled task | [Sub-agents and automation](./agents.md) |
@@ -46,7 +66,7 @@ Listed in registration order. The "See" column points to the page with the full 
 
 Tools provided by MCP servers are registered dynamically once `tool_search` finds them, so they are not in this table; on a name collision the built-in tool wins.
 
-`read_media` is subject to **capability gating**: when the current model does not declare the `image_in` capability, it is unloaded from the tool table entirely, so the model cannot see it and therefore will not call it (see [Configuration](./configuration.md#capabilities-tags)). On a model without image support, the tools actually visible number 28.
+`read_media` is subject to **capability gating**: when the current model does not declare the `image_in` capability, it is unloaded from the tool table entirely, so the model cannot see it and therefore will not call it (see [Configuration](./configuration.md#capabilities-tags)). On a model without image support, the tools actually visible number 47.
 
 ## File tools
 

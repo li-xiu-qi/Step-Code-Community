@@ -9,7 +9,7 @@ when_to_use: 用户想安装、构建、升级、卸载 Step Code，或安装过
 > **四种安装方式，按需选择**：
 > - **单文件可执行**（无 Node 环境）：从 [Releases](https://github.com/li-xiu-qi/Step-Realtime-CLI/releases/latest) 下载对应平台产物，改名放进 PATH。
 > - **npm 装 Release tarball**（一条命令，推荐）：`npm i -g https://github.com/li-xiu-qi/Step-Realtime-CLI/releases/latest/download/step-code.tgz`，不编译不拉依赖，链接始终指向最新 Release。需 Node 22+。
-> - **npm 装源码分支**（跟最新主干）：`npm i -g github:li-xiu-qi/Step-Realtime-CLI#step-code-explore-pi，约 1 分钟，本机编译。需 Node 22+。
+> - **npm 装源码分支**（跟最新主干）：`npm i -g github:li-xiu-qi/Step-Realtime-CLI#step-code-explore-pi`，约 1 分钟，本机编译。需 Node 22+。
 > - **从源码安装**（参与开发）：clone + `pnpm install && pnpm build && pnpm link --global`。需 Node 22+ 与 pnpm。
 >
 > 详细步骤与故障排查见下方各节。
