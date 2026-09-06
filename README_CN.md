@@ -12,7 +12,7 @@
 
 终端里的编码 agent CLI，阶跃星辰 **Step 系列模型**为主要适配目标，UI 层用 **pi-tui**。模型接入层支持三种协议（Anthropic Messages、OpenAI Chat Completions、OpenAI Responses），任何兼容的模型都能直接接入；Step 是默认且经过最充分验证的目标。
 
-> 本仓库是 [stepfun-ai/Step-Realtime-CLI](https://github.com/stepfun-ai/Step-Realtime-CLI) 的 `step-code-explore-pi 探索分支。
+> 本仓库是 [stepfun-ai/Step-Realtime-CLI](https://github.com/stepfun-ai/Step-Realtime-CLI) 的 `step-code-explore-pi` 探索分支。
 
 ## 它是什么
 

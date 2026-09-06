@@ -100,6 +100,21 @@ model: step35
 
 并行子 agent 额外受 `[subagent].max_concurrent`（默认 4）的并发上限约束——超出的排队等空槽。子 agent 因限流（429）失败时不白占槽位，会退回队尾延迟重试，TUI 会提示重排队次数。授权确认始终串行进行（多个审批不会交错弹出）。这些都由模型自动处理，你不需要显式控制。
 
+### 列出子 agent 会话
+
+`subagent_list` 列出子 agent 会话（按更新时间倒序），不返回消息内容。可用动作：
+
+| 参数 | 作用 |
+|------|------|
+| `status` | 按状态筛（`running` / `done` / `error`）。叠加默认范围即「自己正在跑的」 |
+| `scope` | 可见性范围。`mine` = 只看本会话派生的 + 待命中的（默认，降低噪音）；`all` = 当前 cwd 下跨会话全部 |
+| `query` | 按标题 / 角色名 / 模型搜 |
+| `parent_id` | 只列该父会话派生的（显式指定时绕过默认降噪） |
+
+默认降噪是刻意的：跨会话的子 agent 会随会话累积越来越多，不区分归属时很容易找不到自己的。要找回历史会话创建的子 agent 时用 `scope="all"`。
+
+配套的 `subagent_status`（单个会话详情）、`subagent_trace`（读消息历史）、`subagent_trace_export`（导出全量 trace）、`subagent_kill`（删除会话全部落盘数据）见 [工具集](./tools.md#全部工具)。
+
 ### 外部 agent 驱动
 
 `spawn_agent` 除了派生子 agent 处理子任务，还可以驱动外部 coding CLI 作为子 agent。只需在 `subagent_type` 指定外部类型，step-code 会 spawn 对应 CLI 子进程、解析其输出、收集结果回灌。
@@ -113,15 +128,29 @@ model: step35
 
 ### ACP 服务端模式
 
-`step --acp` 启动 ACP（Agent Client Protocol）JSON-RPC stdio 服务端，让 IDE 或外部工具通过 stdin/stdout 驱动 step-code。
+`step --acp` 启动 ACP（Agent Client Protocol，Zed 主导的 editor↔agent JSON-RPC stdio 协议）服务端，让 IDE 或编辑器（Zed、Neovim、JetBrains 等）通过 stdin/stdout 驱动 step-code。协议规范见 agentclientprotocol.com。
 
-支持的方法：
+client → server 支持的方法：
 
-- `initialize` — 版本协商
+- `initialize` — 版本协商，回带 agentInfo 与 agentCapabilities
+- `authenticate` — 占位实现（step-code 不做 ACP 层鉴权，直接 resolve）
 - `session/new` — 创建 agent 会话
-- `session/prompt` — 发送文本任务，跑一轮 agent
-- `session/cancel` — 取消当前 turn
-- `session/update` — 流式通知（server → client）
+- `session/prompt` — 发送任务，跑一轮 agent，流式 `session/update` 回传
+- `session/cancel` — 取消当前 turn（notification）
+- `session/close` — 关闭内存中的活动会话
+- `session/list` — 列出本工作目录可恢复的持久化会话
+- `session/resume` — 从持久化恢复一个历史会话
+- `session/set_config_option` — 会话级切换模型
+
+server → client 的回传：
+
+- `session/update`（notification）— `agent_message_chunk` / `agent_thought_chunk` / `tool_call` / `tool_call_update` / `usage_update`，从 agent 事件单向投影而来
+- `session/request_permission`（request）— 写/执行类工具运行前向编辑器请求一次性授权，只发一次性选项；客户端报错或断开一律降级为拒绝
+
+已知边界（不声明对应 capability）：
+
+- `fs/read_text_file` / `fs/write_text_file` 未实现。文件改动经 `tool_call` 的 content 回传给编辑器渲染，协议本身没有专门的 diff 字段。
+- 会话级 `mcpServers` 动态挂载不支持。ACP 允许在 `session/new` 传 `mcpServers`，但 step-code 的 MCP 走 `config.toml` 与插件统一管理、在应用启动时装配，不支持向运行中的会话热挂外部 MCP。传入的 `mcpServers` 当前不生效（不会静默假装生效），需要额外工具请用 config 或插件配置。
 
 ## 编排能力
 

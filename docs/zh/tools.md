@@ -1,6 +1,6 @@
 # 工具集
 
-本页是 Step Code 内置工具的参考手册：29 个工具的全景清单、文件/多模态/命令/联网/交互/编排各类工具的参数与行为边界，以及贯穿所有工具的通用机制（校验、结果回灌、并行调度、权限门控）。
+本页是 Step Code 内置工具的参考手册：48 个工具的全景清单、文件/多模态/命令/联网/交互/编排各类工具的参数与行为边界，以及贯穿所有工具的通用机制（校验、结果回灌、并行调度、权限门控）。
 
 工具由模型自行调用，你不需要手写调用语法。这份文档的用途是让你知道模型手里有什么、每个工具的边界在哪、出问题时该怀疑哪一层。
 
@@ -18,21 +18,41 @@
 | `glob` | 按 glob 模式查文件路径 | 本页 |
 | `grep` | 按正则搜文件内容 | 本页 |
 | `bash` | 执行 shell 命令，可转后台 | 本页 |
+| `monitor` | 持续监听命令输出，有输出即推事件 | 本页 |
 | `web_search` | 联网搜索网页（阶跃官方搜索） | 本页 |
 | `web_fetch` | 抓取 URL 并提取正文 | 本页 |
 | `web_image_search` | 按文字描述搜图（阶跃官方文搜图） | 本页 |
 | `spawn_agent` | 派生子 agent 处理子任务 | [子 agent 与自动化](./agents.md) |
+| `subagent_list` | 列出子 agent 会话，默认只看本会话派生的 + 待命中的 | [子 agent 与自动化](./agents.md) |
+| `subagent_kill` | 删除一个子 agent 会话的全部落盘数据 | [子 agent 与自动化](./agents.md) |
+| `subagent_status` | 查看子 agent 会话的详细信息 | [子 agent 与自动化](./agents.md) |
+| `subagent_trace` | 读取子 agent 会话的消息历史 | [子 agent 与自动化](./agents.md) |
+| `subagent_trace_export` | 导出子 agent 会话全量 trace 为文件 | [子 agent 与自动化](./agents.md) |
+| `read_history` | 读当前会话历史，压缩后找回上下文 | [会话管理](./sessions.md) |
+| `session_send` | 给另一个会话投递指令 | [会话管理](./sessions.md) |
+| `session_list` | 列出当前工作目录下的会话 | [会话管理](./sessions.md) |
+| `session_inbox` | 查看当前会话的跨会话待收件箱 | [会话管理](./sessions.md) |
 | `exit_plan_mode` | 提交执行计划、请求退出计划模式 | 本页 |
 | `ask_user` | 向用户提问并让其选择 | 本页 |
 | `todo_list` | 维护当前任务清单 | 本页 |
 | `task_list` | 列出后台任务及状态 | [子 agent 与自动化](./agents.md) |
 | `task_output` | 查看后台任务输出 | [子 agent 与自动化](./agents.md) |
 | `task_stop` | 终止运行中的后台任务 | [子 agent 与自动化](./agents.md) |
+| `task_wait` | 同步等待后台任务完成 | [子 agent 与自动化](./agents.md) |
 | `skill` | 激活技能，加载完整指令 | [技能、插件与 MCP](./skills-and-mcp.md) |
+| `skill_search` | 按关键词检索全部可用技能 | [技能、插件与 MCP](./skills-and-mcp.md) |
 | `create_goal` | 设定自主目标 | [子 agent 与自动化](./agents.md) |
 | `update_goal` | 更新 goal 状态 | [子 agent 与自动化](./agents.md) |
 | `set_goal_budget` | 为 goal 设轮次/token 预算 | [子 agent 与自动化](./agents.md) |
 | `get_goal` | 查看当前 goal 与用量 | [子 agent 与自动化](./agents.md) |
+| `team_init` | 初始化团队模式，创建团队档案目录 | [子 agent 与自动化](./agents.md) |
+| `team_plan` | 拆分团队任务并登记任务清单 | [子 agent 与自动化](./agents.md) |
+| `team_spawn` | 为任务开出独立工作间并派生 worker | [子 agent 与自动化](./agents.md) |
+| `team_send` | 团队信箱发信 | [子 agent 与自动化](./agents.md) |
+| `team_inbox` | 团队信箱收信 | [子 agent 与自动化](./agents.md) |
+| `team_status` | 查看团队全景 | [子 agent 与自动化](./agents.md) |
+| `team_merge` | 过门禁后合回基准分支 | [子 agent 与自动化](./agents.md) |
+| `team_teardown` | 清理工作间，退出团队模式 | [子 agent 与自动化](./agents.md) |
 | `cron_create` | 创建定时任务 | [子 agent 与自动化](./agents.md) |
 | `cron_list` | 列出定时任务 | [子 agent 与自动化](./agents.md) |
 | `cron_delete` | 删除定时任务 | [子 agent 与自动化](./agents.md) |
@@ -41,7 +61,7 @@
 
 MCP server 提供的工具经 `tool_search` 命中后动态注册，不在这张表里；同名时以内置工具为准。
 
-`read_media` 受**能力门控**：当前模型未声明 `image_in` 能力时，它从工具表里整个卸载——模型看不到也就不会调用（见[配置参考](./configuration.md#capabilities-能力标签)）。所以在不支持图片的模型下，实际可见工具是 28 个。
+`read_media` 受**能力门控**：当前模型未声明 `image_in` 能力时，它从工具表里整个卸载——模型看不到也就不会调用（见[配置参考](./configuration.md#capabilities-能力标签)）。所以在不支持图片的模型下，实际可见工具是 47 个。
 
 ## 文件工具
 

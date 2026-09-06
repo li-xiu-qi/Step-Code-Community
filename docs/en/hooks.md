@@ -5,7 +5,7 @@
 
 # Hooks
 
-Hooks let you run your own shell commands at lifecycle event points without changing any code: to observe what the agent is doing, or to block it at a specific moment. This page covers the configuration shape, the semantics of the five events, and the execution and blocking conventions. For a field-by-field reference, see the [configuration reference](./configuration.md).
+Hooks let you run your own shell commands at lifecycle event points without changing any code: to observe what the agent is doing, or to block it at a specific moment. This page covers the configuration shape, the semantics of the six events, and the execution and blocking conventions. For a field-by-field reference, see the [configuration reference](./configuration.md).
 
 ## How it relates to the permission system
 
@@ -29,12 +29,13 @@ timeout = 30                                   # seconds, optional, default 30, 
 - When `matcher` is omitted, every trigger of that event matches.
 - Only user-level global configuration is supported; there is no project-level variant. The config file location is the trust boundary, which removes the need for an additional content review mechanism.
 
-## The five events
+## The six events
 
 | Event | Can it block | When it fires | What stdout is used for |
 |------|----------|----------|-------------|
 | `PreToolUse` | Can block (veto only) | Before the tool runs, as the first link in the authorization chain | — |
 | `PostToolUse` | Observe | After the tool runs | — |
+| `PreOutput` | Can block (once per turn) | After the model produces its output text | — |
 | `UserPromptSubmit` | Can block + inject | After the user submits input, before the model is called | Injected as context into this turn |
 | `Stop` | Can block the stop and continue | When the agent decides this turn is over | — |
 | `SessionStart` | Observe + inject | Once after a session is created or resumed | Injects session context once |
@@ -42,6 +43,7 @@ timeout = 30                                   # seconds, optional, default 30, 
 A few semantics worth noting:
 
 - **PreToolUse can only veto, not approve**. A hook allowing something through only means it does not object; the existing permission approval still runs afterward (if a confirmation prompt was due, it still appears). It does not replace human confirmation.
+- **PreOutput takes effect only once per turn**. It sees the output text the model just produced; exit 2 blocks this turn and injects the reason (as the next user message), and it will not fire a second time within the same turn.
 - **Stop gives only one chance to continue**. When a Stop hook blocks, the reason is injected so the model keeps going, but this takes effect only once per turn, preventing a blocking hook from trapping the agent in an infinite loop.
 - **When UserPromptSubmit blocks**, the model is not called for this turn; when it allows the input through, its stdout text is injected as context.
 
