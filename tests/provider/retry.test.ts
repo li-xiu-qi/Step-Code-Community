@@ -8,6 +8,7 @@ import {
   isContextOverflowError,
   isRateLimitError,
   isRetryableError,
+  isTransportAbortError,
   RETRY_AFTER_MAX_MS,
   RETRY_BASE_MS,
   RETRY_MAX_MS,
@@ -275,5 +276,43 @@ describe('withRetry', () => {
     const fn = vi.fn(async () => 'ok');
     await expect(withRetry(fn, { signal: ac.signal })).rejects.toThrow();
     expect(fn).not.toHaveBeenCalled();
+  });
+});
+
+describe('isTransportAbortError', () => {
+  // 核心回归：服务端断连的 AbortError 必须被识别为传输层中断（可重试），
+  // 而非用户取消（终止）。此前被误判导致回合静默放弃、弹「This operation was aborted」。
+  it('cause 链带连接类网络 code 的 AbortError 判为传输层中断', () => {
+    const err = new TypeError('fetch failed', { cause: Object.assign(new Error('reset'), { code: 'ECONNRESET' }) });
+    Object.defineProperty(err, 'name', { value: 'AbortError' });
+    expect(isTransportAbortError(err)).toBe(true);
+  });
+
+  it('SDK 包装的 APIConnectionError 判为传输层中断', () => {
+    expect(isTransportAbortError(new Anthropic.APIConnectionError({ message: 'net' }))).toBe(true);
+  });
+
+  it('cause 链带 UND_ERR_SOCKET 的 AbortError 判为传输层中断', () => {
+    const socket = Object.assign(new Error('socket'), { code: 'UND_ERR_SOCKET' });
+    const err = new TypeError('terminated', { cause: socket });
+    Object.defineProperty(err, 'name', { value: 'AbortError' });
+    expect(isTransportAbortError(err)).toBe(true);
+  });
+
+  // 真用户中断：纯 AbortError 无网络痕迹，或 SDK 的 APIUserAbortError —— 不得判为传输层中断
+  it('无网络痕迹的纯 AbortError 判为「非传输层中断」（即用户取消）', () => {
+    const err = new Error('This operation was aborted');
+    Object.defineProperty(err, 'name', { value: 'AbortError' });
+    expect(isTransportAbortError(err)).toBe(false);
+  });
+
+  it('APIUserAbortError 判为「非传输层中断」（用户主动取消）', () => {
+    expect(isTransportAbortError(new Anthropic.APIUserAbortError())).toBe(false);
+  });
+
+  it('非 AbortError 一律判为非传输层中断', () => {
+    expect(isTransportAbortError(new Error('boom'))).toBe(false);
+    expect(isTransportAbortError(new TypeError('fetch failed'))).toBe(false);
+    expect(isTransportAbortError(undefined)).toBe(false);
   });
 });

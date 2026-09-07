@@ -2,6 +2,12 @@
 
 本项目的所有重要变更记录于此。格式沿用 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### Fixed
+
+- **服务端断连不再误报"操作被放弃"**：走 Anthropic 协议的渠道（如 water18-new）在服务端连接挂起或半开断连时，底层 undici 抛出的 `AbortError` 此前被当作用户中断处理，走「立刻停手、不重试」路径，表现为回合静默放弃、弹出 `This operation was aborted`、任务丢失，用户必须手动重发。现在区分「真用户中断」（signal 被主动置位）与「传输层中断」（服务端断连，cause 链带连接类网络 code 或 SDK 包装为 `APIConnectionError`）：传输层中断归入可重试，自动换连接重发，重试耗尽才报错。真用户中断行为不变（按 Esc 仍立即停止）。
+
 ## [0.1.3] - 2026-09-06
 
 ### Added

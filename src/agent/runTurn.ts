@@ -9,6 +9,7 @@ import {
   isEmptyStreamError,
   isRateLimitError,
   isRetryableError,
+  isTransportAbortError,
   retryAfterMs,
   summarizeError,
   RETRY_MAX_ATTEMPTS,
@@ -571,14 +572,21 @@ export async function* runTurn(
       final = msg;
       break;
     } catch (e) {
-      if (signal?.aborted) return { stopReason: 'aborted' };
+      // 真用户中断：signal 被主动置位，且不是服务端断连导致的假阳性。
+      // 服务端断连时底层 undici 也可能把 signal 置为 aborted（SDK 中间 controller 的清理路径），
+      // 这种「传输层中断」若被当作用户取消处理，会走「立刻停手不重试」，表现为回合静默放弃、
+      // 弹「This operation was aborted」、任务丢失（water18-new 线上实证）。故用 isTransportAbortError
+      // 排除：传输层中断交下方重试逻辑，只有 signal 主动置位且非传输层中断才是用户按了 Esc。
+      if (signal?.aborted && !isTransportAbortError(e)) return { stopReason: 'aborted' };
       // 上下文溢出：不报错，交给外层循环压缩历史后重试本回合（仅在尚未吐字时才有意义）
       if (!emittedText && isContextOverflowError(e)) {
         return { stopReason: 'overflow' };
       }
       // 429 限流不是网络故障，给更多重试机会（5 次 vs 普通错误的 3 次）
       const maxRetries = isRateLimitError(e) ? RETRY_MAX_429_ATTEMPTS : RETRY_MAX_ATTEMPTS;
-      if (!isRetryableError(e) || attempt >= maxRetries) {
+      // 传输层中断（服务端断连的 AbortError）归入可重试：换连接重发往往能恢复
+      const retryable = isRetryableError(e) || isTransportAbortError(e);
+      if (!retryable || attempt >= maxRetries) {
         yield { type: 'error', message: errorMessageWithAdvice(e), cause: e };
         return { stopReason: 'error' };
       }
