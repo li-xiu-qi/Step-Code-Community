@@ -110,18 +110,31 @@ describe('drainStreamEvents：闸门后的投递队列', () => {
   });
 
   it('shutdown 后不再有新事件入队（防跨会话回灌）', async () => {
+    let produced = 0;
     const mgr = new BackgroundManager(10, {
-      onStream: () => {},
+      onStream: () => {
+        produced++;
+      },
       onStreamFilter: () => true,
     });
     managers.push(mgr);
-    mgr.start('dead', SH, shArgs('echo ERROR: after-shutdown'), process.cwd(), {
+    // 持续产流的进程（不是 echo）：shutdown 要拦住的是「正在飞的事件」，
+    // echo 瞬间就退，等它退出再 shutdown 等于没东西可拦，测试空转。
+    // 用 onStream 计数判「进程在产流」（不能用 drainStreamEvents 轮询——它是取走会清空，
+    // 见文件顶部 waitUntil 注释），并发/慢设备下固定 sleep 会竞态假阳性。
+    const cmd =
+      process.platform === 'win32'
+        ? 'for /l %i in (1,1,60) do @(echo ERROR: live-%i & ping -n 2 127.0.0.1 >nul)'
+        : 'for i in $(seq 1 60); do echo "ERROR: live-$i"; sleep 0.3; done';
+    mgr.start('dead', SH, shArgs(cmd), process.cwd(), {
       monitor: true,
       monitorDescription: 'x',
     });
-    await sleep(50);
+    // 等进程真正产出了至少一批（running 且有事件在飞）再 shutdown
+    await waitUntil(() => produced >= 1);
+    await sleep(200); // 让 flush 窗口再转过一圈，确保有事件在飞
     mgr.shutdown();
-    await sleep(500);
+    await sleep(500); // 等过 200ms 窗口与进程退出 flush
     expect(mgr.drainStreamEvents()).toHaveLength(0);
   });
 });
