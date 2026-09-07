@@ -630,6 +630,18 @@ export class BackgroundManager {
     };
     proc.stdout?.on('data', append);
     proc.stderr?.on('data', append);
+    let stdoutEnded = false;
+    let stderrEnded = false;
+    /** exit + stdout end + stderr end 齐了才 settle：管道被孙进程持有时 close 不来，靠这里兜底。 */
+    const maybeSettle = (): void => {
+      if (!task.exited || !stdoutEnded || !stderrEnded) return;
+      if (task.status !== 'running') return;
+      task.status = (task.exitCode ?? 0) === 0 ? 'completed' : 'failed';
+      if (task.monitor === true) this.flushMonitor(task, true);
+      this.settle(task);
+    };
+    proc.stdout?.on('end', () => { stdoutEnded = true; maybeSettle(); });
+    proc.stderr?.on('end', () => { stderrEnded = true; maybeSettle(); });
     proc.on('error', (err) => {
       if (task.status === 'running') {
         task.status = 'failed';
@@ -639,12 +651,36 @@ export class BackgroundManager {
       if (task.monitor === true) this.flushMonitor(task, true);
       this.settle(task);
     });
-    proc.on('close', (code) => {
+    // exit 事件在进程退出时立即触发（不等管道关闭）；
+    // close 事件要等 stdout/stderr 管道全部写端关闭才触发——
+    // 若命令用 & 起了常驻进程且它继承了管道写端，close 永远不来。
+    // exit 后：先等 stdout/stderr end（正常路径），同时设 500ms 兜底延时，
+    // 到期若 close/end 仍未来（管道被孙进程持有），直接强制 settle。
+    let exitFallback: NodeJS.Timeout | undefined;
+    proc.on('exit', (code) => {
       task.exited = true;
       if (task.status === 'running') {
-        task.status = code === 0 ? 'completed' : 'failed';
         task.exitCode = code ?? undefined;
         task.endedAt = new Date().toISOString();
+      }
+      // 正常路径：等 stdout/stderr end 后 maybeSettle 触发
+      maybeSettle();
+      // 兜底：管道被孙进程持有时 stdout/stderr end 不会来，500ms 后强制结算
+      exitFallback = setTimeout(() => {
+        if (task.status !== 'running') return;
+        task.status = (task.exitCode ?? 0) === 0 ? 'completed' : 'failed';
+        if (task.monitor === true) this.flushMonitor(task, true);
+        this.settle(task);
+      }, 500);
+      exitFallback.unref?.();
+    });
+    proc.on('close', (code) => {
+      task.exited = true;
+      if (exitFallback !== undefined) { clearTimeout(exitFallback); exitFallback = undefined; }
+      if (task.status === 'running') {
+        task.status = code === 0 ? 'completed' : 'failed';
+        if (task.exitCode === undefined) task.exitCode = code ?? undefined;
+        if (task.endedAt === undefined) task.endedAt = new Date().toISOString();
       }
       // 退出前把残余半行也发出去：进程最后一行常常不带换行符
       if (task.monitor === true) this.flushMonitor(task, true);
