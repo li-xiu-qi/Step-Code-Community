@@ -152,11 +152,15 @@ function runForeground(
     /** 清理前台计时与自身监听。必须按引用摘除：转后台后 manager 在同一进程上挂了自己的监听，全量摘除会误伤。 */
     const cleanup = (): void => {
       clearTimeout(timer);
+      if (exitFallback !== undefined) { clearTimeout(exitFallback); exitFallback = undefined; }
       ctx.signal?.removeEventListener('abort', onAbort);
       proc.removeListener('close', onClose);
+      proc.removeListener('exit', onExit);
       proc.removeListener('error', onError);
       proc.stdout?.removeListener('data', onStdout);
       proc.stderr?.removeListener('data', onStderr);
+      proc.stdout?.removeListener('end', onStdoutEnd);
+      proc.stderr?.removeListener('end', onStderrEnd);
       collector.close();
     };
     const finish = (r: ToolResult): void => {
@@ -194,9 +198,29 @@ function runForeground(
       exitCode = code;
       maybeFinish();
     };
-    /** 等 stdout/stderr 的 end 与 close 三者齐了再 snapshot：close 可能在流 data 之前触发，漏掉尾部 stderr。 */
+    // exit 事件在进程退出时立即触发（不等管道关闭）。
+    // close 要等 stdout/stderr 管道全部写端关闭——
+    // 若命令用 & 起了常驻进程且它继承了管道写端，close 永远不来。
+    // exit 先到记退出码，等 stdout/stderr end 后即可 finish；
+    // 若 stdout/stderr end 因管道被持有而不来，500ms 后强制 finish。
+    let exitFallback: NodeJS.Timeout | undefined;
+    const onExit = (code: number | null): void => {
+      if (exitCode === null) exitCode = code;
+      maybeFinish();
+      exitFallback = setTimeout(() => {
+        if (settled) return;
+        if (stdoutEnded && stderrEnded) return;
+        stdoutEnded = true;
+        stderrEnded = true;
+        maybeFinish();
+      }, 500);
+      exitFallback.unref?.();
+    };
+    /** 等 exit/stdout end/stderr end 三者齐了再 snapshot：避免管道被孙进程持有时永远等不到 close。 */
     const maybeFinish = (): void => {
       if (exitCode === null || !stdoutEnded || !stderrEnded) return;
+      if (settled) return;
+      if (exitFallback !== undefined) { clearTimeout(exitFallback); exitFallback = undefined; }
       if (taskId !== undefined) ctx.background?.settleForeground(taskId, exitCode);
       if (ctx.signal?.aborted) {
         finish(fail('用户中断，命令已终止。'));
@@ -212,6 +236,7 @@ function runForeground(
     };
     proc.on('error', onError);
     proc.on('close', onClose);
+    proc.on('exit', onExit);
     proc.stdout?.on('end', onStdoutEnd);
     proc.stderr?.on('end', onStderrEnd);
 

@@ -235,4 +235,49 @@ describe('bash 前台任务主动转后台（detach）', () => {
     expect(settled).toHaveLength(1); // 终态通知恰好一次
     expect(settled[0]).toContain('after');
   }, 20000);
+
+  it('& 起常驻进程后 bash 退出：exit 事件触发即终态，不等管道关闭', async () => {
+    // 回归点：2026-09-07 clipmate 启动场景。命令用 & 起了常驻进程（Tauri GUI），
+    // 它继承了 bash 的 stdout/stderr 管道写端。bash 自己退出了，但管道写端仍被
+    // 孙进程持有，Node.js 的 close 事件永远不触发，task_wait 一直阻塞。
+    // 修复：exit 事件在进程退出时立即触发（不等管道关闭），
+    // 与 stdout/stderr end 齐了即可 settle。
+    const settled: string[] = [];
+    const mgr = new BackgroundManager(10, { onSettle: (t) => settled.push(t.id) });
+
+    const r = await bashTool.execute(
+      { command: 'echo start; sleep 30 & echo done', timeout: 5 },
+      { cwd: process.cwd(), background: mgr },
+    );
+    // 命令应在 5 秒内返回（不等 sleep 30），且输出完整
+    expect(r.isError).toBe(false);
+    expect(r.content).toContain('start');
+    expect(r.content).toContain('done');
+  }, 10000);
+
+  it('& 起常驻进程后转后台：exit 触发即终态，不因管道被孙进程持有而挂起', async () => {
+    // 回归点：2026-09-07 clipmate 启动场景（后台路径）。
+    // bash 用 & 起了常驻进程，bash 退出后管道写端被孙进程持有，
+    // close 事件不来导致后台任务永远不 settle。修复：exit 事件 + 500ms 兜底。
+    const settled: string[] = [];
+    const mgr = new BackgroundManager(10, { onSettle: (t) => settled.push(t.id) });
+
+    // bash 先 sleep 2 再起后台 sleep 30，确保 bash 本身运行超过 timeout=1
+    const r = await bashTool.execute(
+      { command: 'echo before; sleep 2; sleep 30 & echo bg', timeout: 1 },
+      { cwd: process.cwd(), background: mgr },
+    );
+    expect(r.content).toContain('已转为后台任务');
+    const id = mgr.list()[0]!.id;
+
+    // 关键断言：bash exit 后 500ms 兜底触发 settle，不等 sleep 30 结束
+    for (let i = 0; i < 50 && mgr.get(id)?.status === 'running'; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const task = mgr.get(id);
+    expect(task?.status).toBe('completed');
+    expect(task?.exitCode).toBe(0);
+    expect(settled).toHaveLength(1);
+    expect(settled[0]).toBe(id);
+  }, 15000);
 });
