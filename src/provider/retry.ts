@@ -170,6 +170,28 @@ export function isAbortError(err: unknown): boolean {
 }
 
 /**
+ * 判断 AbortError 是否为「传输层中断」（服务端/网关断连）而非用户主动取消。
+ *
+ * 背景（线上实证）：water18-new 走 Anthropic 协议，服务端连接挂起或半开断连时，底层
+ * undici fetch 会抛出 `AbortError`（name='AbortError'），但此时用户的 AbortSignal **并未**
+ * 被置位（用户没按 Esc）。这种错误若被当作用户中断处理，会走「立刻停手不重试」路径，
+ * 表现为回合静默放弃、弹出「This operation was aborted」、任务丢失，用户必须手动重发。
+ *
+ * 判别：传输层中断的 AbortError 通常在 cause 链上带连接类网络 code（ECONNRESET / UND_ERR_SOCKET
+ * 等），或 SDK 将其包装为 APIConnectionError；纯粹由 controller.abort() 触发的用户中断则不带这些。
+ * signal 状态由调用方（runTurn）另行核对——本函数只判「这个错误长什么样」。
+ */
+export function isTransportAbortError(err: unknown): boolean {
+  // SDK 包装的连接错误：服务端断连的常见形态，本身就是传输层中断的明确标记，先行判定
+  if (err instanceof Anthropic.APIConnectionError || err instanceof Anthropic.APIConnectionTimeoutError) {
+    return true;
+  }
+  if (!isAbortError(err)) return false;
+  // cause 链带连接类网络 code：裸 undici 断连（fetch failed / terminated 的底层）
+  return causeChainCodes(err).some((c) => RETRYABLE_NET_CODES.has(c));
+}
+
+/**
  * 错误码 → 建议用户动作（最小目录，对齐 error.advice.* 文案）：
  * 401/403 → 检查 key 配置；429（重试耗尽后）→ 稍后重试或查配额。其他错误无建议（undefined）。
  */
