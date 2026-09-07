@@ -2,12 +2,6 @@
 
 本项目的所有重要变更记录于此。格式沿用 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
-
-### Changed
-
-- **移除 Ctrl+V 贴图入口，Alt+V 成为唯一贴图快捷键**：此前 Ctrl+V 与 Alt+V 都会触发图片粘贴，在 VSCode 集成终端里 Ctrl+V 同时触发文本粘贴与贴图逻辑、且无条件先弹提示，导致纯文本粘贴被污染、无法正常使用。现 Ctrl+V 恢复为系统文本粘贴，贴图统一走 Alt+V（各终端均不冲突）。`attachClipboardImage()` 的中间态「正在读取剪贴板」提示一并移除，改为缺剪贴板工具 / 读到非图片格式 / 成功贴图三级终态诊断。
-
 ## [0.1.3] - 2026-09-06
 
 ### Added
@@ -41,6 +35,8 @@
 - **session 索引过期判定的同毫秒竞态**：`rebuiltAt` 与快照 mtime 相等时 `>` 漏判索引过期，改 `>=`。
 
 ### Changed
+
+- **移除 Ctrl+V 贴图入口，Alt+V 成为唯一贴图快捷键**：此前 Ctrl+V 与 Alt+V 都会触发图片粘贴，在 VSCode 集成终端里 Ctrl+V 同时触发文本粘贴与贴图逻辑、且无条件先弹提示，导致纯文本粘贴被污染、无法正常使用。现 Ctrl+V 恢复为系统文本粘贴，贴图统一走 Alt+V（各终端均不冲突）。`attachClipboardImage()` 的中间态「正在读取剪贴板」提示一并移除，改为缺剪贴板工具 / 读到非图片格式 / 成功贴图三级终态诊断。
 
 - **goal 预算默认不设上限，工具描述写明口径**：此前模型常在 `create_goal` 后顺手调 `set_goal_budget` 给目标加轮次/token 上限——机制层预算本来就是可选项，这是模型的自主倾向。现在 `create_goal` 与 `set_goal_budget` 的描述明确：预算默认不设上限（默认心智是把任务做完，不是跑固定额度），仅当用户明确给出硬限制时才设置。
 
