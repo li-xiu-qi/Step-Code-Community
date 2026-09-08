@@ -939,20 +939,43 @@ export class BackgroundManager {
    * 等待指定后台任务终态（completed / failed / killed）。
    * 已终态则立即返回；运行中则挂起直到 settle 唤醒。
    * signal 用于支持用户取消（Esc/Ctrl+C）。
+   *
+   * maxWaitMs 给单次等待封顶：到点仍 running 时返回**当前快照**（状态还是 running，
+   * 不是终态也不是失败），让调用方能区分「等到了结果」与「等超时了、任务还在跑」。
+   * 这与后台任务的绝对超时（[background].bash_task_timeout_s）是两条独立的链：
+   * 后者决定任务何时被 kill，前者只决定这次调用何时返回。命令让子进程永不退出时
+   * （如 ssh 起远端常驻进程、远端持有 channel 使 ssh 不返回），后者永不触发，
+   * 调用方会无限期阻塞——所以封顶必须长在这里。
+   * 超时后 waiters 条目被摘除：任务后续 settle 时该回调已无消费方，摘除只是避免常驻。
    */
-  waitFor(id: string, signal?: AbortSignal): Promise<BackgroundTask | null> {
+  waitFor(id: string, signal?: AbortSignal, maxWaitMs?: number): Promise<BackgroundTask | null> {
     const task = this.tasks.get(id);
     if (task === undefined) return Promise.resolve(null);
     if (task.status !== 'running') return Promise.resolve(this.toPublic(task));
     return new Promise<BackgroundTask | null>((resolve) => {
-      const onAbort = (): void => {
+      let timer: NodeJS.Timeout | undefined;
+      const cleanup = (): void => {
+        if (timer !== undefined) clearTimeout(timer);
         this.waiters.delete(id);
+        signal?.removeEventListener('abort', onAbort);
+      };
+      const onAbort = (): void => {
+        cleanup();
         resolve(null);
       };
       if (signal?.aborted) return resolve(null);
       signal?.addEventListener('abort', onAbort, { once: true });
+      if (maxWaitMs !== undefined && maxWaitMs > 0) {
+        timer = setTimeout(() => {
+          cleanup();
+          const t = this.tasks.get(id);
+          resolve(t === undefined ? null : this.toPublic(t));
+        }, maxWaitMs);
+        // 不阻止进程退出：非交互模式下遗留定时器不应挂住 node
+        timer.unref?.();
+      }
       this.waiters.set(id, (t) => {
-        signal?.removeEventListener('abort', onAbort);
+        cleanup();
         resolve(t);
       });
     });

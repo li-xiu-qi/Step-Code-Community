@@ -360,6 +360,7 @@ The background mode of the two spawning tools shares one **v1 limitation**: `tas
 | `task_list` | none | Lists all background tasks: id / status / command / exit code |
 | `task_output` | `task_id` | Shows one task's output (the tail retained in memory, capped at 64KB) |
 | `task_stop` | `task_id` | Terminates a running task |
+| `task_wait` | `task_id`, `timeout_s` | Blocks until the task reaches a terminal state, with a per-call cap |
 
 Tasks have four statuses: `running` / `completed` / `failed` / `killed`. At most 10 background tasks run at the same time, and when the limit is hit, a launch request fails outright with a hint to wait or stop some tasks first.
 
@@ -378,6 +379,8 @@ A completion notification is injected on a task's terminal state, so you do not 
 Notification behavior can be turned off in the `[background]` section (`notify_on_complete`), after which the model goes back to querying actively via `task_list`. The terminal bell and desktop notifications are a separate switch (`notify_terminal`).
 
 One anti-pattern to avoid: starting a background task and then immediately waiting on it in place, which is no better than running it in the foreground. The value of a background task is "go do something else and get notified automatically when it finishes".
+
+`task_wait` is the exception to this rule, because it is capped and will not hang the turn indefinitely: a single wait defaults to 300 seconds (adjustable with `timeout_s`, up to 3600 seconds), and when the cap is reached before a terminal state it returns a "still running" progress snapshot. The task itself is not interrupted, and you can check its output or wait again. This cap and the background task's absolute timeout are two independent chains: the latter decides when the task gets killed, the former only decides when this call returns. When a command makes its child process never exit (an ssh session that started a long-lived remote process, for instance, where the remote end holds the channel open and ssh never returns), the latter never fires, and the former is the only thing that can rescue the turn.
 
 ## Usage advice
 

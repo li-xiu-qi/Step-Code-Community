@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { BackgroundManager } from '../../src/agent/background/manager.js';
-import { taskListTool, taskOutputTool, taskStopTool } from '../../src/tools/task.js';
+import { taskListTool, taskOutputTool, taskStopTool, taskWaitTool } from '../../src/tools/task.js';
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -55,5 +55,84 @@ describe('task 工具', () => {
     expect(out.content).toContain('hello');
     const stop = await taskStopTool.execute({ task_id: id }, { cwd: process.cwd(), background: mgr });
     expect(stop.isError).toBe(true); // 已完成的任务无法再终止
+  });
+});
+
+// 起一个「子进程永不退出」的任务：等价于 ssh 起远端常驻进程、远端持有 channel 使 ssh
+// 不返回。这类任务的后台绝对超时那条链永不触发（没有 exit、没有 close），
+// 唯一能拦住 task_wait 的就是它自身的封顶。
+function startNeverExiting(mgr: BackgroundManager): string {
+  return mgr.start(
+    'sleep-forever',
+    process.execPath,
+    ['-e', 'setTimeout(() => {}, 60_000)'],
+    process.cwd(),
+  );
+}
+
+describe('task_wait 单次等待封顶', () => {
+  it('到点未到终态：返回「仍在运行」而非失败，且不谎报完成', async () => {
+    const mgr = new BackgroundManager();
+    const id = startNeverExiting(mgr);
+    const r = await taskWaitTool.execute(
+      { task_id: id, timeout_s: 1 },
+      { cwd: process.cwd(), background: mgr },
+    );
+    expect(r.isError).toBe(false); // 超时不是失败
+    expect(r.content).toContain('等待超时（1s）');
+    expect(r.content).toContain('仍在后台运行');
+    expect(r.content).toContain('task_output'); // 给出续查手段
+    expect(r.content).not.toContain('✓ 完成'); // 不得把半截输出当终态
+    mgr.stop(id);
+  });
+
+  it('不传 timeout_s 时默认封顶为有限值，不是无限阻塞', async () => {
+    // 默认 300s 不便真等，改为劫持 waitFor 捕获实参后立即返回 running 快照：
+    // 断言工具确实向 manager 传了一个有限毫秒数，同时钉住「默认值存在」与「默认值 > 0」，
+    // 且不依赖等待真实流逝。
+    const mgr = new BackgroundManager();
+    const id = startNeverExiting(mgr);
+    const seen: unknown[] = [];
+    mgr.waitFor = (tid, _signal, maxWaitMs) => {
+      seen.push(maxWaitMs);
+      return Promise.resolve({ ...mgr.get(tid)!, status: 'running' as const });
+    };
+    const r = await taskWaitTool.execute({ task_id: id }, { cwd: process.cwd(), background: mgr });
+    mgr.stop(id);
+    expect(seen).toHaveLength(1);
+    expect(typeof seen[0]).toBe('number');
+    expect(seen[0] as number).toBeGreaterThan(0);
+    expect(seen[0] as number).toBeLessThanOrEqual(3_600_000);
+    // 桩返回 running，工具应按超时路径给出续查手段
+    expect(r.content).toContain('仍在后台运行');
+  });
+
+  it('封顶期间任务自然完成：正常返回终态，封顶不干扰正常路径', async () => {
+    const mgr = new BackgroundManager();
+    const id = mgr.start(
+      'echo hi',
+      process.platform === 'win32' ? 'cmd.exe' : '/bin/sh',
+      process.platform === 'win32' ? ['/c', 'echo hi'] : ['-c', 'echo hi'],
+      process.cwd(),
+    );
+    const r = await taskWaitTool.execute(
+      { task_id: id, timeout_s: 30 },
+      { cwd: process.cwd(), background: mgr },
+    );
+    expect(r.isError).toBe(false);
+    expect(r.content).toContain('✓ 完成');
+    expect(r.content).toContain('hi');
+    expect(r.content).not.toContain('等待超时');
+  });
+
+  it('waitFor 超时返回 running 快照后，任务后续 settle 不残留 waiters', async () => {
+    const mgr = new BackgroundManager();
+    const id = startNeverExiting(mgr);
+    // 先等超时
+    await taskWaitTool.execute({ task_id: id, timeout_s: 1 }, { cwd: process.cwd(), background: mgr });
+    // 再杀它，settle 应正常发生且不因残留 waiter 抛错
+    expect(mgr.stop(id)).toBe(true);
+    await waitUntil(() => mgr.get(id)?.status === 'killed');
+    expect(mgr.get(id)?.status).toBe('killed');
   });
 });
