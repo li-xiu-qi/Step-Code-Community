@@ -280,4 +280,54 @@ describe('bash 前台任务主动转后台（detach）', () => {
     expect(settled).toHaveLength(1);
     expect(settled[0]).toBe(id);
   }, 15000);
+
+  // 以下两条回归点：2026-09-08 排空窗口改造。孙进程继承管道写端后，bash 退出并不等于输出排空——
+  // 孙进程可能还在往管道里写。旧实现是 exit 后固定 500ms 强制置 end，会把还在流的输出切掉；
+  // 新实现是空闲 250ms / 硬上限 2s 双闸，持续有输出就续等。
+  it('bash 退出后孙进程仍在写输出：排空窗口续等，不因固定延时切掉尾部', async () => {
+    // 孙进程在 bash 退出后再活 ~900ms 并持续输出，总跨度超过旧实现的 500ms 一刀切
+    // 但落在新实现的 2s 硬上限之内——新旧实现的输出完整性在这里可区分。
+    const mgr = new BackgroundManager(10, { onSettle: () => {} });
+    const r = await bashTool.execute(
+      {
+        command:
+          'for i in 1 2 3 4 5 6; do echo "tick-$i"; sleep 0.15; done & echo launched',
+        timeout: 2,
+      },
+      { cwd: process.cwd(), background: mgr },
+    );
+    expect(r.isError).toBe(false);
+    expect(r.content).toContain('launched');
+    // 关键断言：后台任务要把孙进程写出的 tick 收全（6 个），而不是在 500ms 处截断
+    const id = mgr.list()[0]!.id;
+    for (let i = 0; i < 60 && mgr.get(id)?.status === 'running'; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const task = mgr.get(id);
+    expect(task?.status).toBe('completed');
+    const ticks = (task?.output.match(/tick-/g) ?? []).length;
+    expect(ticks).toBe(6);
+  }, 20000);
+
+  it('bash 退出后孙进程持续输出超过硬上限：2s 强制收，不无限等', async () => {
+    // 反向边界：硬上限必须存在，否则「输出一直不停」会把排空窗口拖成新的无限阻塞。
+    // 孙进程活 6s（远超 2s 硬上限），任务必须在数秒内结算，不能等到孙进程自己结束。
+    const mgr = new BackgroundManager(10, { onSettle: () => {} });
+    const r = await bashTool.execute(
+      { command: 'for i in $(seq 1 60); do echo "tick-$i"; sleep 0.1; done & echo launched', timeout: 2 },
+      { cwd: process.cwd(), background: mgr },
+    );
+    expect(r.isError).toBe(false);
+    const id = mgr.list()[0]!.id;
+    const t0 = Date.now();
+    for (let i = 0; i < 100 && mgr.get(id)?.status === 'running'; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const elapsed = Date.now() - t0;
+    const task = mgr.get(id);
+    expect(task?.status).toBe('completed');
+    // 硬上限 2s + 轮询余量，远小于孙进程的 6s 寿命
+    expect(elapsed).toBeLessThan(5_000);
+    mgr.stop(id);
+  }, 20000);
 });
