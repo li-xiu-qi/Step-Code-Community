@@ -151,6 +151,27 @@ const STREAM_QUEUE_MAX_CHARS = 32 * 1024;
 const DEFAULT_MAX_OUTPUT_FILE_BYTES = 32 * 1024 * 1024;
 /** SIGTERM 后的宽限期（ms），未退出再 SIGKILL 强杀。 */
 const KILL_GRACE_MS = 2000;
+/**
+ * 进程退出后 stdio 排空窗口的双闸阈值（ms）。
+ *
+ * 为什么需要：Node 的 `close` 要等 stdout/stderr 管道**全部写端**关闭才触发，孙进程继承
+ * 了写端时 `close` 与流的 `end` 都可能永不触发，「等 end 齐了再结算」会永久挂起。
+ * 为什么是双闸而不是单个固定延时：孙进程可能在退出后还在往管道里写（`cmd &`、ssh 起远端
+ * 进程），固定延时会在输出还没排空时就切掉。空闲闸让「仍在出输出」的命令排空完，
+ * 硬上限防「输出一直不停」把窗口拖无限长。
+ *
+ * 空闲闸取 500ms 而不是更短的值，理由是实测的到达间隔分布。孙进程继承管道写端后，
+ * 每次 echo 都要等 Node 端读走管道才返回，于是输出节奏被管道吞吐压慢：同一组 6 行输出，
+ * 直接跑子 shell 约 85ms 全部产出，经管道降到约 185ms 一行（首两行仍挤在 2ms 内）。
+ * 间隔中位数 ~185ms，若阈值取 250ms 只留 26% 余量，一次调度抖动就越界被判为已排空，
+ * 表现为「孙进程还在写，任务却已结算并把尾部输出丢掉」。500ms 对 185ms 有 2.7 倍余量，
+ * 代价只是真正空闲的命令多等 250ms——而这类命令的输出早已停止，多等的代价可忽略。
+ */
+const DRAIN_IDLE_MS = 500;
+const DRAIN_MAX_MS = 2_000;
+
+/** 排空阈值对外暴露，供 bash.ts 前台路径复用：两条路径必须用同一组值，否则同一命令在转后台前后截断行为不一致。 */
+export { DRAIN_IDLE_MS, DRAIN_MAX_MS };
 
 /**
  * 往待投递队列里加一批事件，超预算时从队首丢最旧的一批。
@@ -185,6 +206,62 @@ export interface MonitorStartOpts {
    * 普通后台任务不走这里（用全局 taskTimeoutS），只有 monitor 显式给。
    */
   timeoutS?: number;
+}
+
+/**
+ * 进程退出后的 stdio 排空窗口。
+ *
+ * 背景：Node 的 `close` 事件要等 stdout/stderr 管道**全部写端**关闭才触发。命令用 `&` 起了
+ * 常驻进程、或 ssh 起的远端进程持有 channel 时，孙进程继承了管道写端，`close` 与流的
+ * `end` 都可能永不触发。所以「等 end/close 齐了再结算」会永久挂起，必须给排空一个有界窗口。
+ *
+ * 双闸语义：退出后给一段有界窗口，空闲判为已排空、到硬上限无条件收。
+ * 这个形状与多家同类实现的共同选择一致（退出后空闲阈值 + 硬上限双闸），不是本项目独创。
+ * - **空闲闸**：距上次收到数据超过 `idleMs` 判为已排空，触发 giveUp；每次 `poke()` 重武装。
+ *   仍在出输出的命令不会被提前切掉。
+ * - **硬上限**：`maxMs` 到点无条件触发 giveUp，不可重武装。防「输出一直不停」把窗口拖无限长。
+ *
+ * 两个定时器都 `unref`：非交互模式下遗留定时器不应挂住 node 进程。
+ * 窗口只在 `open()` 之后生效；`poke()` 在未 open 时是空操作（前台阶段的 data 不该续命）。
+ */
+export function createDrainWindow(opts: {
+  idleMs: number;
+  maxMs: number;
+  onGiveUp: () => void;
+}): { open: () => void; poke: () => void; clear: () => void } {
+  let idleTimer: NodeJS.Timeout | undefined;
+  let maxTimer: NodeJS.Timeout | undefined;
+  let open = false;
+  const giveUp = (): void => {
+    if (idleTimer !== undefined) clearTimeout(idleTimer);
+    if (maxTimer !== undefined) clearTimeout(maxTimer);
+    idleTimer = maxTimer = undefined;
+    open = false;
+    opts.onGiveUp();
+  };
+  return {
+    open: () => {
+      if (open) return;
+      open = true;
+      idleTimer = setTimeout(giveUp, opts.idleMs);
+      idleTimer.unref?.();
+      maxTimer = setTimeout(giveUp, opts.maxMs);
+      maxTimer.unref?.();
+    },
+    poke: () => {
+      // 只续空闲闸，不续硬上限：输出一直来时要能在 maxMs 收住
+      if (!open || idleTimer === undefined) return;
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(giveUp, opts.idleMs);
+      idleTimer.unref?.();
+    },
+    clear: () => {
+      if (idleTimer !== undefined) clearTimeout(idleTimer);
+      if (maxTimer !== undefined) clearTimeout(maxTimer);
+      idleTimer = maxTimer = undefined;
+      open = false;
+    },
+  };
 }
 
 /**
@@ -640,6 +717,19 @@ export class BackgroundManager {
       if (task.monitor === true) this.flushMonitor(task, true);
       this.settle(task);
     };
+    // exit 之后 stdio 可能还有孙进程写来的数据在排空。等 end/close 会永久挂起（管道写端被
+    // 孙进程持有时它们永不触发），所以给排空一个有界窗口：持续有输出就续等，硬上限强制收。
+    const drain = createDrainWindow({
+      idleMs: DRAIN_IDLE_MS,
+      maxMs: DRAIN_MAX_MS,
+      onGiveUp: () => {
+        stdoutEnded = true;
+        stderrEnded = true;
+        maybeSettle();
+      },
+    });
+    proc.stdout?.on('data', () => { drain.poke(); });
+    proc.stderr?.on('data', () => { drain.poke(); });
     proc.stdout?.on('end', () => { stdoutEnded = true; maybeSettle(); });
     proc.stderr?.on('end', () => { stderrEnded = true; maybeSettle(); });
     proc.on('error', (err) => {
@@ -651,12 +741,10 @@ export class BackgroundManager {
       if (task.monitor === true) this.flushMonitor(task, true);
       this.settle(task);
     });
-    // exit 事件在进程退出时立即触发（不等管道关闭）；
-    // close 事件要等 stdout/stderr 管道全部写端关闭才触发——
+    // exit 事件在进程退出时立即触发（不等管道关闭）。
+    // close 要等 stdout/stderr 管道全部写端关闭——
     // 若命令用 & 起了常驻进程且它继承了管道写端，close 永远不来。
-    // exit 后：先等 stdout/stderr end（正常路径），同时设 500ms 兜底延时，
-    // 到期若 close/end 仍未来（管道被孙进程持有），直接强制 settle。
-    let exitFallback: NodeJS.Timeout | undefined;
+    // exit 后：等 stdout/stderr end（正常路径）或排空窗口到点（管道被孙进程持有）再结算。
     proc.on('exit', (code) => {
       task.exited = true;
       if (task.status === 'running') {
@@ -665,18 +753,12 @@ export class BackgroundManager {
       }
       // 正常路径：等 stdout/stderr end 后 maybeSettle 触发
       maybeSettle();
-      // 兜底：管道被孙进程持有时 stdout/stderr end 不会来，500ms 后强制结算
-      exitFallback = setTimeout(() => {
-        if (task.status !== 'running') return;
-        task.status = (task.exitCode ?? 0) === 0 ? 'completed' : 'failed';
-        if (task.monitor === true) this.flushMonitor(task, true);
-        this.settle(task);
-      }, 500);
-      exitFallback.unref?.();
+      // 兜底：管道被孙进程持有时 stdout/stderr end 不会来，排空窗口到点强制结算
+      drain.open();
     });
     proc.on('close', (code) => {
       task.exited = true;
-      if (exitFallback !== undefined) { clearTimeout(exitFallback); exitFallback = undefined; }
+      drain.clear();
       if (task.status === 'running') {
         task.status = code === 0 ? 'completed' : 'failed';
         if (task.exitCode === undefined) task.exitCode = code ?? undefined;
@@ -686,6 +768,26 @@ export class BackgroundManager {
       if (task.monitor === true) this.flushMonitor(task, true);
       this.settle(task);
     });
+    // 接管可能发生在进程退出**之后**（前台超时转后台：bash 早已 exit，监听器现在才挂）。
+    // 此时上面的 onExit 永远不会再触发，排空窗口也就永远不武装——任务只能等孙进程自己结束、
+    // 管道自然 close 才结算，表现为「进程早死了，任务却还要再等几秒」。
+    // 所以接管时补一次出口检查：已退出就按退出记账，管道已排空直接结算，没排空则武装窗口。
+    // 判据用宽松比较：真实 ChildProcess 未退出时 exitCode/signalCode 是 null，而注入的假进程
+    // 可能两个字段都没有（undefined）。若用 !== 会把假进程误判成已退出，进而让 terminate 的
+    // SIGKILL 兜底（守卫 task.exited !== true）被永久跳过，温和终止失败的进程就此变孤儿。
+    if (proc.exitCode != null || proc.signalCode != null) {
+      task.exited = true;
+      if (task.status === 'running' && task.exitCode === undefined) {
+        task.exitCode = proc.exitCode ?? undefined;
+        task.endedAt = new Date().toISOString();
+      }
+      // 管道已读到 EOF 说明输出排空完毕，无需再等窗口：直接置 end 标志触发结算。
+      // readableEnded 为假说明孙进程还持有写端，此时才需要排空窗口兜底。
+      if (proc.stdout !== null && proc.stdout.readableEnded) stdoutEnded = true;
+      if (proc.stderr !== null && proc.stderr.readableEnded) stderrEnded = true;
+      maybeSettle();
+      if (task.status === 'running') drain.open();
+    }
   }
 
   /**

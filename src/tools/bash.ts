@@ -4,7 +4,7 @@ import { fail, ok, type ToolContext, type ToolDef, type ToolResult } from './typ
 import { resolveShell, winPathToWsl, rewriteNulRedirect, type ResolvedShell } from './shellResolve.js';
 import { createOutputCollector, renderOutputNotes, type OutputSnapshot } from './bashOutput.js';
 import { truncateMiddle } from '../agent/toolResultLimit.js';
-import { terminateProcTree } from '../agent/background/manager.js';
+import { createDrainWindow, DRAIN_IDLE_MS, DRAIN_MAX_MS, terminateProcTree } from '../agent/background/manager.js';
 
 const schema = z.object({
   command: z.string().describe('要执行的 shell 命令。'),
@@ -132,8 +132,9 @@ function runForeground(
     const onStderr = (chunk: Buffer): void => {
       collector.append(chunk, 'stderr');
     };
-    proc.stdout?.on('data', onStdout);
-    proc.stderr?.on('data', onStderr);
+    // onStdout/onStderr 不在此处提前挂：它们已在下面的主监听块里注册，EventEmitter 允许
+    // 同一函数重复 add，早挂一次会让每个 chunk 被 append 两遍（输出整体翻倍），
+    // 且 cleanup 的单次 removeListener 摘不干净，转后台后会留下孤儿监听继续往已关闭的收集器里写。
     /** 有子 agent 可用时，溢出文件的恢复指引优先建议委派（避免把整份日志拉进当前上下文）。 */
     const canDelegate = ctx.runSubagent !== undefined;
 
@@ -152,13 +153,15 @@ function runForeground(
     /** 清理前台计时与自身监听。必须按引用摘除：转后台后 manager 在同一进程上挂了自己的监听，全量摘除会误伤。 */
     const cleanup = (): void => {
       clearTimeout(timer);
-      if (exitFallback !== undefined) { clearTimeout(exitFallback); exitFallback = undefined; }
+      drain.clear();
       ctx.signal?.removeEventListener('abort', onAbort);
       proc.removeListener('close', onClose);
       proc.removeListener('exit', onExit);
       proc.removeListener('error', onError);
       proc.stdout?.removeListener('data', onStdout);
       proc.stderr?.removeListener('data', onStderr);
+      proc.stdout?.removeListener('data', onStdoutData);
+      proc.stderr?.removeListener('data', onStderrData);
       proc.stdout?.removeListener('end', onStdoutEnd);
       proc.stderr?.removeListener('end', onStderrEnd);
       collector.close();
@@ -194,33 +197,36 @@ function runForeground(
       stderrEnded = true;
       maybeFinish();
     };
+    const onStdoutData = (): void => { drain.poke(); };
+    const onStderrData = (): void => { drain.poke(); };
     const onClose = (code: number | null): void => {
       exitCode = code;
       maybeFinish();
     };
-    // exit 事件在进程退出时立即触发（不等管道关闭）。
-    // close 要等 stdout/stderr 管道全部写端关闭——
-    // 若命令用 & 起了常驻进程且它继承了管道写端，close 永远不来。
-    // exit 先到记退出码，等 stdout/stderr end 后即可 finish；
-    // 若 stdout/stderr end 因管道被持有而不来，500ms 后强制 finish。
-    let exitFallback: NodeJS.Timeout | undefined;
-    const onExit = (code: number | null): void => {
-      if (exitCode === null) exitCode = code;
-      maybeFinish();
-      exitFallback = setTimeout(() => {
-        if (settled) return;
-        if (stdoutEnded && stderrEnded) return;
+    // exit 之后 stdio 可能还有孙进程写来的数据在排空。不能无限等 end/close（管道写端被
+    // 孙进程持有时它们永不触发），也不能像从前那样 exit 后固定 500ms 一刀切——那会切掉
+    // 还在流的输出。改为双闸：持续有输出就续等（空闲闸到点判为排空），硬上限强制收。
+    // 阈值取值理由见 manager.ts 的 DRAIN_IDLE_MS 注释。
+    const drain = createDrainWindow({
+      idleMs: DRAIN_IDLE_MS,
+      maxMs: DRAIN_MAX_MS,
+      onGiveUp: () => {
         stdoutEnded = true;
         stderrEnded = true;
         maybeFinish();
-      }, 500);
-      exitFallback.unref?.();
+      },
+    });
+    const onExit = (code: number | null): void => {
+      if (exitCode === null) exitCode = code;
+      maybeFinish();
+      drain.open();
     };
     /** 等 exit/stdout end/stderr end 三者齐了再 snapshot：避免管道被孙进程持有时永远等不到 close。 */
     const maybeFinish = (): void => {
       if (exitCode === null || !stdoutEnded || !stderrEnded) return;
       if (settled) return;
-      if (exitFallback !== undefined) { clearTimeout(exitFallback); exitFallback = undefined; }
+      // 走到这里说明已排空（end 自然到达或窗口到点），摘掉窗口定时器避免它随后误触发
+      drain.clear();
       if (taskId !== undefined) ctx.background?.settleForeground(taskId, exitCode);
       if (ctx.signal?.aborted) {
         finish(fail('用户中断，命令已终止。'));
@@ -237,6 +243,10 @@ function runForeground(
     proc.on('error', onError);
     proc.on('close', onClose);
     proc.on('exit', onExit);
+    proc.stdout?.on('data', onStdout);
+    proc.stderr?.on('data', onStderr);
+    proc.stdout?.on('data', onStdoutData);
+    proc.stderr?.on('data', onStderrData);
     proc.stdout?.on('end', onStdoutEnd);
     proc.stderr?.on('end', onStderrEnd);
 
