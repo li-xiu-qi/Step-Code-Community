@@ -43,7 +43,7 @@ Listed in registration order. The "See" column points to the page with the full 
 | `task_list` | List background tasks and their status | [Sub-agents and automation](./agents.md) |
 | `task_output` | View the output of a background task | [Sub-agents and automation](./agents.md) |
 | `task_stop` | Terminate a running background task | [Sub-agents and automation](./agents.md) |
-| `task_wait` | Wait synchronously for a background task to finish | [Sub-agents and automation](./agents.md) |
+| `task_wait` | Wait synchronously for a background task to finish (per-call cap, 300s by default) | [Sub-agents and automation](./agents.md) |
 | `skill` | Activate a skill and load its full instructions | [Skills, plugins, and MCP](./skills-and-mcp.md) |
 | `skill_search` | Search all available skills by keyword | [Skills, plugins, and MCP](./skills-and-mcp.md) |
 | `create_goal` | Set an autonomous goal | [Sub-agents and automation](./agents.md) |

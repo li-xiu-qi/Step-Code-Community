@@ -38,7 +38,7 @@
 | `task_list` | 列出后台任务及状态 | [子 agent 与自动化](./agents.md) |
 | `task_output` | 查看后台任务输出 | [子 agent 与自动化](./agents.md) |
 | `task_stop` | 终止运行中的后台任务 | [子 agent 与自动化](./agents.md) |
-| `task_wait` | 同步等待后台任务完成 | [子 agent 与自动化](./agents.md) |
+| `task_wait` | 同步等待后台任务完成（单次等待默认 300s 封顶） | [子 agent 与自动化](./agents.md) |
 | `skill` | 激活技能，加载完整指令 | [技能、插件与 MCP](./skills-and-mcp.md) |
 | `skill_search` | 按关键词检索全部可用技能 | [技能、插件与 MCP](./skills-and-mcp.md) |
 | `create_goal` | 设定自主目标 | [子 agent 与自动化](./agents.md) |
