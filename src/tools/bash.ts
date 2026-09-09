@@ -86,6 +86,25 @@ function truncateOutput(snap: OutputSnapshot, canDelegate: boolean): string {
 }
 
 /**
+ * 渲染中断 / 超时即杀路径的工具结果：已收集的输出 + 状态后缀。
+ *
+ * 这两条路径原先只返回一句结论（「用户中断，命令已终止。」/「命令超时后被终止。」），
+ * 被截断的输出完全没进结果——模型只知道命令没了，不知道该中断前跑出了什么。
+ * 改为交出 `truncateOutput` 的输出（含落盘/丢弃说明），末尾挂状态后缀说明「为什么不完整」。
+ *
+ * 后缀进输出尾部而非只改结论措辞，是为了让模型在同一处看到「结果」和「为什么不完整」，
+ * 与正常退出路径的 `[退出码：N]` 标注对称。
+ *
+ * 空输出时退回纯结论：命令还没产出任何字节就被杀时，挂状态后缀没有意义，
+ * 一句结论比「\n\n[命令被中断...]」更干净。
+ */
+function renderInterrupted(snap: OutputSnapshot, canDelegate: boolean, suffix = '[命令被中断，以上输出不完整]'): string {
+  const body = truncateOutput(snap, canDelegate);
+  if (body === '') return `命令被用户中断，未产生输出。${suffix}`;
+  return `${body}\n\n${suffix}`;
+}
+
+/**
  * 前台执行命令：async spawn + 自行计时（不再用 spawnSync 的超时即杀）。
  * 四种结局：正常退出（按退出码返回）、用户 Esc 中断（杀进程报错）、用户主动转后台、前台超时。
  * 支持后台任务时进程启动即登记为前台任务：用户按键可主动转后台；前台超时默认也不杀——
@@ -179,7 +198,10 @@ function runForeground(
       // 已转后台的任务独立于回合存活：中断只杀还在前台的进程
       if (taskId !== undefined && ctx.background?.isDetached(taskId) === true) return;
       terminateProcTree(proc);
-      finish(fail('用户中断，命令已终止。'));
+      // 中断也要交出已收集的输出并标注原因：只说「已终止」却不给输出，
+      // 模型不知道该中断前跑出了什么。状态后缀进输出尾部，与正常退出的退出码标注对称。
+      const interrupted = renderInterrupted(collector.snapshot(), canDelegate);
+      finish(fail(interrupted));
     };
     ctx.signal?.addEventListener('abort', onAbort, { once: true });
 
@@ -283,7 +305,10 @@ function runForeground(
       if (taskId === undefined || ctx.background === undefined) {
         // 配置关闭或上下文不支持后台：保持旧行为，超时即杀返回错误
         terminateProcTree(proc);
-        finish(fail(`命令超时（${timeoutSec}s）后被终止。`));
+        // 同样交出已收集的输出并标注超时原因：只说「超时被终止」却不给输出，
+        // 模型不知道该超时前跑出了什么。与中断路径共用状态后缀逻辑。
+        const timedOut = renderInterrupted(collector.snapshot(), canDelegate, `[命令超时（${timeoutSec}s）后被终止，以上输出不完整]`);
+        finish(fail(timedOut));
         return;
       }
       // 前台超时 = 自动转后台，由 waitForegroundRelease 路径统一结算；
