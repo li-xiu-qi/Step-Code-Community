@@ -111,14 +111,85 @@ export interface OutputSnapshot {
   overflowPath: string | null;
   /** 已写入溢出文件的字节数。 */
   overflowBytes: number;
+  /**
+   * 输出是否确定完整。三态，不可折叠成两态：
+   * - `true`：执行侧发了完成帧，输出确定完整；
+   * - `false`：执行侧明确报中断，输出确定不完整；
+   * - `undefined`：不知道（本地命令、未接入完成帧的路径）。
+   *
+   * 为什么是 undefined 而不是默认 false：把「不知道」报成「不完整」会让每个本地任务都带
+   * 不完整标记，模型学会忽略该标记，于是真正不完整的任务也被忽略。宁可覆盖率低，不可信度低。
+   */
+  outputComplete?: boolean;
 }
+
+/**
+ * 输出完成标记帧。执行侧在命令真正结束时发出，收集器据此判定输出完整性。
+ *
+ * 取这个字节序列是因为它含 NUL 与控制字符，正常命令输出不会产生（shell 回显、日志、
+ * 程序输出都走可打印字符加换行），且不可能是合法 UTF-8 文本的前缀冲突——解码后按整帧匹配。
+ * 用帧而不是「看输出是否还在增长」这类启发式，因为后者在输出恰好停顿时会误判。
+ */
+export const OUTPUT_COMPLETE_FRAME = '\u0000STEP-CODE-OUTPUT-COMPLETE\u0000';
 
 export interface OutputCollector {
   append(chunk: Buffer, stream: 'stdout' | 'stderr'): void;
+  /**
+   * 标记输出确定完整（执行侧发了完成帧）。
+   * 幂等；重复调用不改变已置的值。
+   */
+  markComplete(): void;
+  /**
+   * 标记输出确定不完整（执行侧明确报中断）。
+   * 已标记 complete 时不再翻转：完整是更强的断言，后来的中断信号不清掉它。
+   */
+  markIncomplete(): void;
   snapshot(): OutputSnapshot;
   /** 关闭溢出文件句柄。可重复调用。 */
   close(): void;
 }
+
+/**
+ * 输出完成帧的流式剥离器。
+ *
+ * 帧可能跨 chunk 到达（管道切分不保证帧完整），所以要留一份尾部残帧缓冲区。
+ * 抽成共享 helper 是因为前台收集器（bashOutput）与后台接管（manager.takeOver）
+ * 两处都要做同一件事，各写一份必然漂移——而漂移的表现是「某些路径认得帧、某些不认得」，
+ * 极难查。
+ *
+ * 残帧长度上界为帧长减一：更长的尾部不可能是帧的前缀，直接放行。
+ */
+export class OutputFrameFilter {
+  private pending = '';
+  /** 最近一次 push 是否识别到完整帧。调用方据此置 outputComplete。 */
+  sawComplete = false;
+
+  /**
+   * 喂入一块原始文本，返回应计入正文的部分（帧已被剥掉）。
+   * 识别到完整帧时置 sawComplete，同一次调用内可能既输出正文又置标记。
+   */
+  push(text: string): string {
+    this.sawComplete = false;
+    if (!text.includes(FRAME[0]) && this.pending === '') return text;
+    const combined = this.pending + text;
+    if (!combined.includes(FRAME)) {
+      const keep = combined.length >= FRAME.length ? FRAME.length - 1 : combined.length;
+      for (let k = keep; k > 0; k--) {
+        if (FRAME.startsWith(combined.slice(-k))) {
+          this.pending = combined.slice(-k);
+          return combined.slice(0, combined.length - k);
+        }
+      }
+      this.pending = '';
+      return combined;
+    }
+    this.pending = '';
+    this.sawComplete = true;
+    return combined.split(FRAME).join('');
+  }
+}
+
+const FRAME = OUTPUT_COMPLETE_FRAME;
 
 /** 目录内 `bash-*.log` 超过上限时，按 mtime 从旧到新删到上限以内。失败静默忽略。 */
 function pruneOverflowDir(dir: string): void {
@@ -185,6 +256,9 @@ export function createOutputCollector(opts: OutputCollectorOptions = {}): Output
   /** 统一解码：一次性拼接全部字节再解码，chunk 边界不会切碎多字节字符。 */
   const decode = (): string => (cachedText ??= Buffer.concat(chunks).toString('utf8'));
   let droppedStdout = 0;
+  /** 输出完整性标记。undefined = 执行侧从未表态，不是「不完整」。 */
+  let outputComplete: boolean | undefined = undefined;
+  const frameFilter = new OutputFrameFilter();
   let droppedStderr = 0;
 
   let fd: number | null = null;
@@ -238,6 +312,17 @@ export function createOutputCollector(opts: OutputCollectorOptions = {}): Output
 
   return {
     append(chunk, stream) {
+      // 完成帧在入口剥离：它不能进 chunks（否则算进预算、可能触发溢出落盘、还会出现在 text 里）。
+      // 输出触顶时恰恰最需要这个标记，所以它必须走在所有预算逻辑之前。
+      //
+      // 注意这里只取「剥离后的长度」而不重新编码：Buffer.from(text, 'utf8') 会把多字节字符
+      // 按 UTF-16 码元重切，在 chunk 边界产生替换字符（既有用例「多字节字符按原始字节落盘」
+      // 守着这条）。所以剥离的判断走文本，落 chunks 的仍是原始字节的前缀。
+      const stripped = frameFilter.push(chunk.toString('utf8'));
+      if (frameFilter.sawComplete === true) outputComplete = true;
+      const cut = Buffer.byteLength(stripped, 'utf8');
+      if (cut === 0) return;
+      if (cut < chunk.length) chunk = chunk.subarray(0, cut);
       const isErr = stream === 'stderr';
       const used = isErr ? stderrBytes : stdoutBytes;
       const reserve = isErr ? stderrReserve : stdoutReserve;
@@ -285,7 +370,16 @@ export function createOutputCollector(opts: OutputCollectorOptions = {}): Output
       }
     },
     snapshot() {
-      return { text: decode(), droppedStdout, droppedStderr, overflowPath, overflowBytes };
+      return {
+        text: decode(),
+        droppedStdout,
+        droppedStderr,
+        overflowPath,
+        overflowBytes,
+        // 只有被显式标记过才出现这个键：未标记时必须是 undefined 而不是 false，
+        // 消费方据此区分「确定不完整」与「不知道」
+        ...(outputComplete === undefined ? {} : { outputComplete }),
+      };
     },
     close() {
       // 先固化解码结果再释放字节：close() 之后 snapshot() 仍要能拿到完整文本
@@ -298,6 +392,13 @@ export function createOutputCollector(opts: OutputCollectorOptions = {}): Output
         // 已关闭或句柄失效，忽略
       }
       fd = null;
+    },
+    markComplete() {
+      outputComplete = true;
+    },
+    markIncomplete() {
+      // 完整是更强的断言，不清掉：中断信号到达时若已确认过完整，以完整为准
+      if (outputComplete !== true) outputComplete = false;
     },
   };
 }

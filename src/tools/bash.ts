@@ -144,7 +144,9 @@ function runForeground(
     let taskId: string | undefined;
     if (ctx.bashAutoBackgroundOnTimeout !== false && ctx.background !== undefined) {
       try {
-        taskId = ctx.background.registerForeground(command, proc, () => collector.snapshot().text);
+        taskId = ctx.background.registerForeground(command, proc, () => collector.snapshot().text, () => ({
+          outputComplete: collector.snapshot().outputComplete,
+        }));
       } catch {
         taskId = undefined;
       }
