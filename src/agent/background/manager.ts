@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { notifyDedupKey } from '../wirelog.js';
 import { notificationIdFor } from './notify.js';
 import { createMonitorBatcher, MONITOR_FLUSH_MS } from './monitorBatcher.js';
+import { OutputFrameFilter, type OutputSnapshot } from '../../tools/bashOutput.js';
 
 /** 后台任务状态。 */
 export type TaskStatus = 'running' | 'completed' | 'failed' | 'killed';
@@ -45,6 +46,12 @@ export interface BackgroundTask {
   outputTruncated?: boolean;
   /** 历史总产出字节数（含被截断省略的；outputBytes 只是当前文件大小）。 */
   outputTotalBytes?: number;
+  /**
+   * 输出是否确定完整。三态，与 OutputSnapshot.outputComplete 同构：
+   * true=执行侧发了完成帧；false=明确报中断；undefined=不知道（本地命令、未接入的路径）。
+   * 不可折叠成两态，理由见 bashOutput.ts 的 OutputSnapshot 注释。
+   */
+  outputComplete?: boolean;
 }
 
 interface Internal extends BackgroundTask {
@@ -63,6 +70,11 @@ interface Internal extends BackgroundTask {
   foregroundRelease?: { promise: Promise<ForegroundReleaseReason>; resolve: (r: ForegroundReleaseReason) => void };
   /** 前台命令的部分输出取值器：前台期间输出由调用方收集，detach/终态时才读当前值。 */
   getPartialOutput?: () => string;
+  /**
+   * 前台命令的收集器快照取值器（可选）：比 getPartialOutput 多带输出完整性标记。
+   * 未提供时完整性保持 undefined（不知道），不猜。
+   */
+  getPartialSnapshot?: () => Pick<OutputSnapshot, 'outputComplete'>;
   /** async 任务的终止钩子（无进程可杀时由 stop/超时调用，如中断子 agent 的 AbortController）。 */
   onStop?: () => void;
   /** 输出是否经 takeOver 流式落盘（区分进程类与 async 类：后者终态时一次性写入 output.log）。 */
@@ -575,7 +587,12 @@ export class BackgroundManager {
    * 正常跑完的前台命令由工具结果自身报告，不再走后台通知。
    * 超并发上限抛错（调用方据此退化为不支持后台的行为）。
    */
-  registerForeground(command: string, proc: ChildProcess, getPartialOutput: () => string): string {
+  registerForeground(
+    command: string,
+    proc: ChildProcess,
+    getPartialOutput: () => string,
+    getPartialSnapshot?: () => Pick<OutputSnapshot, 'outputComplete'>,
+  ): string {
     if (this.activeCount() >= this.maxRunning) {
       throw new Error(`后台任务已达上限（${this.maxRunning}），请先等待或停止部分任务。`);
     }
@@ -597,6 +614,7 @@ export class BackgroundManager {
       suppressNotify: true,
       foregroundRelease: { promise, resolve: resolveRelease },
       getPartialOutput,
+      getPartialSnapshot,
     };
     this.tasks.set(id, task);
     this.initPersistence(task);
@@ -656,6 +674,9 @@ export class BackgroundManager {
       task.exitCode = exitCode ?? undefined;
     }
     task.endedAt = new Date().toISOString();
+    // 输出完整性：调用方给了快照取值器才拿得到，否则保持 undefined（不知道，不是不完整）
+    const snap = task.getPartialSnapshot?.();
+    if (snap?.outputComplete !== undefined) task.outputComplete = snap.outputComplete;
     this.settle(task);
   }
 
@@ -690,8 +711,13 @@ export class BackgroundManager {
 
   /** 接管进程输出收集与终态监听（adopt 注册时 / detach 前台任务时调用）。 */
   private takeOver(task: Internal, proc: ChildProcess): void {
+    // 完成帧的剥离走共享 helper：前台收集器与这里必须认同一套规则，
+    // 否则会出现「某些路径认得帧、某些不认得」，而那种漂移极难查。
+    const frameFilter = new OutputFrameFilter();
     const append = (chunk: Buffer): void => {
-      const text = chunk.toString('utf8');
+      const text = frameFilter.push(chunk.toString('utf8'));
+      if (frameFilter.sawComplete === true) task.outputComplete = true;
+      if (text === '') return;
       task.streamed = true;
       task.output += text;
       if (task.output.length > MAX_OUTPUT_BYTES) {

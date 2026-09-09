@@ -1,8 +1,21 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, utimesSync } from 'node:fs';
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+  utimesSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createOutputCollector, renderOutputNotes, type OutputSnapshot } from '../../src/tools/bashOutput.js';
+import {
+  createOutputCollector,
+  renderOutputNotes,
+  OUTPUT_COMPLETE_FRAME,
+  type OutputSnapshot,
+} from '../../src/tools/bashOutput.js';
 
 /**
  * bash 输出收集器：两条流分别记账 + 触顶溢出落盘。
@@ -291,5 +304,94 @@ describe('renderOutputNotes：报真实总量 + 给可执行下一步', () => {
     const s = notes.join('\n');
     expect(s).toContain('stdout 3 KB');
     expect(s).toContain('stderr 1 KB');
+  });
+});
+
+/**
+ * 输出完成标记（outputComplete）。
+ *
+ * ## 这里回归的是哪个 bug
+ *
+ * 后台任务在排空窗口硬上限处被强制收时，输出是**半截**的，但 task.status 是 completed、
+ * 退出码是 0（那是被强杀进程组的残留码）。模型读到半截日志，看不到自己关心的关键词，
+ * 据此写出「检索结果为空 / 指标为零 / 文件不存在」——而结论是错的，且它没有任何依据
+ * 能发现自己错。
+ *
+ * 所以输出必须自己携带「我真的写完了」的标记，而不是让消费方去猜。这里锁三件事：
+ * 三态不可折叠、完成帧必须从正文剥离、帧不能算进预算（输出触顶时恰恰最需要它）。
+ */
+describe('输出完成标记 outputComplete', () => {
+  const FRAME = OUTPUT_COMPLETE_FRAME;
+
+  it('未收到完成帧时是 undefined，不是 false（三态不可折叠）', () => {
+    const c = createOutputCollector({ cwd: dir });
+    c.append(Buffer.from('some output\n'), 'stdout');
+    // 关键：这个键必须不存在。若折叠成 false，每个本地任务都会被标注「不完整」，
+    // 模型学会忽略该标记，于是真正不完整的任务也被忽略。
+    expect(c.snapshot().outputComplete).toBeUndefined();
+    expect('outputComplete' in c.snapshot()).toBe(false);
+  });
+
+  it('收到完成帧后为 true，且帧本身不出现在正文里', () => {
+    const c = createOutputCollector({ cwd: dir });
+    c.append(Buffer.from('line-1\n'), 'stdout');
+    c.append(Buffer.from(`${FRAME}`), 'stdout');
+    const snap = c.snapshot();
+    expect(snap.outputComplete).toBe(true);
+    expect(snap.text).not.toContain('STEP-CODE-OUTPUT-COMPLETE');
+    expect(snap.text).toBe('line-1\n');
+  });
+
+  it('完成帧与正常输出同块到达时，正文保留帧之前的部分', () => {
+    const c = createOutputCollector({ cwd: dir });
+    c.append(Buffer.from(`real-output\n${FRAME}`), 'stdout');
+    expect(c.snapshot().outputComplete).toBe(true);
+    expect(c.snapshot().text).toBe('real-output\n');
+  });
+
+  it('完成帧跨 chunk 到达时仍能识别（管道切分不保证帧完整）', () => {
+    const c = createOutputCollector({ cwd: dir });
+    const splitAt = 12;
+    c.append(Buffer.from(FRAME.slice(0, splitAt)), 'stdout');
+    expect(c.snapshot().outputComplete).toBeUndefined();
+    c.append(Buffer.from(FRAME.slice(splitAt)), 'stdout');
+    expect(c.snapshot().outputComplete).toBe(true);
+  });
+
+  it('stderr 上的完成帧同样认（两条流都可能带标记）', () => {
+    const c = createOutputCollector({ cwd: dir });
+    c.append(Buffer.from(FRAME), 'stderr');
+    expect(c.snapshot().outputComplete).toBe(true);
+  });
+
+  it('输出触顶时完成帧仍然有效：帧不计入内存、不触发溢出落盘', () => {
+    // 输出被截断恰恰是最需要完整性标记的场景，所以帧必须走在所有预算逻辑之前。
+    // 用默认预算制造真实的触顶：单流保底 1MB + 共享池 8MB = 9.4MB，所以正文要超过它。
+    // 帧紧跟其后，验证它在触顶之后依然被认出来、且不污染落盘的全量文件。
+    const big = 'x'.repeat(20 * 1024 * 1024);
+    const c = createOutputCollector({ cwd: dir });
+    c.append(Buffer.from(big), 'stdout');
+    c.append(Buffer.from(FRAME), 'stdout');
+    const snap = c.snapshot();
+    expect(snap.outputComplete).toBe(true);
+    // 帧不能出现在正文里（那会是 27 字节的垃圾），也不能被算进丢弃/落盘字节数
+    expect(snap.text).not.toContain('STEP-CODE-OUTPUT-COMPLETE');
+    expect(snap.text).not.toContain(' ');
+    expect(snap.droppedStdout).toBeGreaterThan(0); // 正文确实触顶了
+    // 落盘的是正文全量，帧不在其中
+    const onDisk = readFileSync(snap.overflowPath!, 'utf8');
+    expect(onDisk).not.toContain('STEP-CODE-OUTPUT-COMPLETE');
+    expect(onDisk.length).toBe(big.length);
+  });
+
+  it('markComplete / markIncomplete 直接置位，且完整不被后来的中断清掉', () => {
+    const c = createOutputCollector({ cwd: dir });
+    c.markIncomplete();
+    expect(c.snapshot().outputComplete).toBe(false);
+    c.markComplete();
+    expect(c.snapshot().outputComplete).toBe(true);
+    // 完整是更强的断言：已确认完整之后到来的中断信号不清掉它
+    c.markIncomplete();
+    expect(c.snapshot().outputComplete).toBe(true);
   });
 });

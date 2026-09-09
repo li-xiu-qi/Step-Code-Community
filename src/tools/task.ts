@@ -75,6 +75,11 @@ export const taskWaitTool: ToolDef<z.infer<typeof waitSchema>> = {
     const status = task.status === 'completed' ? '✓ 完成' : task.status === 'failed' ? '✗ 失败' : '⊘ 已终止';
     const lines = [`${status} | ${task.command}`];
     if (task.exitCode !== undefined) lines.push(`exit: ${task.exitCode}`);
+    // 确定不完整才标注。running 那条路径不走到这里（它有自己的【未完成】提示语，两者不叠加）。
+    // true 与 undefined 都不加：完整是默认预期，不知道则不该伪装成任何一种确定结论。
+    if (task.outputComplete === false) {
+      lines.push('【输出不完整】执行侧报过中断，上面的输出被切掉过。不要据此判定任何「不存在 / 零命中 / 已清零」。');
+    }
     if (task.output) lines.push(task.output.slice(-4000));
     return ok(lines.join('\n'));
   },
@@ -93,7 +98,13 @@ export const taskOutputTool: ToolDef<z.infer<typeof outputSchema>> = {
     if (ctx.background === undefined) return fail('当前上下文不支持后台任务。');
     const t = ctx.background.get(input.task_id);
     if (t === undefined) return fail(`未找到后台任务 ${input.task_id}。`);
-    return ok(`[${t.status}] ${t.command}\n\n${t.output === '' ? '（暂无输出）' : t.output}`);
+    // 只在「确定不完整」时标注。true 不加（完整是默认预期，声明它反而稀释信号），
+    // undefined 更不加——那表示不知道，不是不完整。
+    const note =
+      t.outputComplete === false
+        ? '\n\n【输出不完整】执行侧报过中断，上面的输出被切掉过。不要据此判定任何「不存在 / 零命中 / 已清零」。'
+        : '';
+    return ok(`[${t.status}] ${t.command}\n\n${t.output === '' ? '（暂无输出）' : t.output}${note}`);
   },
 };
 
