@@ -61,6 +61,20 @@ describe('bash 前台执行', () => {
     expect(r.isError).toBe(true);
     expect(r.content).toContain('用户中断');
   });
+
+  it('Esc 中断（abort）且有输出时：交出已收集输出并标注不完整', async () => {
+    // 中断路径原先只返回一句结论，被截断的输出完全没进结果——模型只知道命令没了，
+    // 不知道该中断前跑出了什么。本用例守着「输出 + 状态后缀」都要在。
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 300);
+    const r = await bashTool.execute(
+      { command: 'echo partial-output; sleep 5', timeout: 60 },
+      { cwd: process.cwd(), signal: controller.signal, background: new BackgroundManager() },
+    );
+    expect(r.isError).toBe(true);
+    expect(r.content).toContain('partial-output');
+    expect(r.content).toContain('命令被中断，以上输出不完整');
+  });
 });
 
 describe('bash 前台超时自动转后台', () => {
@@ -112,6 +126,17 @@ describe('bash 前台超时自动转后台', () => {
     const r = await bashTool.execute({ command: 'sleep 5', timeout: 1 }, { cwd: process.cwd() });
     expect(r.isError).toBe(true);
     expect(r.content).toContain('命令超时（1s）后被终止');
+  });
+
+  it('超时即杀且有输出时：交出已收集输出并标注不完整', async () => {
+    // 与中断路径对称：超时即杀原先也只返回一句结论，已收集的输出没进结果。
+    const r = await bashTool.execute(
+      { command: 'echo partial-output; sleep 5', timeout: 1 },
+      { cwd: process.cwd() },
+    );
+    expect(r.isError).toBe(true);
+    expect(r.content).toContain('partial-output');
+    expect(r.content).toContain('命令超时（1s）后被终止，以上输出不完整');
   });
 
   it('请求超时超过 MAX_TIMEOUT 时会按上限执行并告知模型', async () => {
