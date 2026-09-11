@@ -63,10 +63,79 @@ const PRIVATE_ADDRESS_BLOCKLIST = (() => {
   return list;
 })();
 
+/**
+ * 把 IPv6 地址展开为 8 组 4 位十六进制，返回小写数组；无法解析时返回 null。
+ * 用于 NAT64 内嵌解嵌——`::` 压缩写法必须展开才能定位后 4 字节。
+ */
+function expandIPv6(address: string): string[] | null {
+  // 大写十六进制在 IPv6 里合法（Node 的 isIP 也接受），先归一化再匹配
+  const normalized = (address.split('%', 1)[0] ?? address).toLowerCase();
+  const halves = normalized.split('::');
+  if (halves.length > 2) return null;
+  // 每组补齐到 4 位：压缩写法下单字符组如 '1' 必须展开成 '0001'，
+  // 否则后续 slice(2, 4) 会取到空串、parseInt 得到 NaN
+  const parseGroups = (part: string): string[] | null => {
+    if (part === '') return [];
+    const groups = part.split(':');
+    const out: string[] = [];
+    for (const g of groups) {
+      if (!/^[0-9a-f]{1,4}$/.test(g)) return null;
+      out.push(g.padStart(4, '0'));
+    }
+    return out;
+  };
+  const head = parseGroups(halves[0] ?? '');
+  if (head === null) return null;
+  if (halves.length === 1) {
+    return head.length === 8 ? head : null;
+  }
+  const tail = parseGroups(halves[1] ?? '');
+  if (tail === null) return null;
+  const missing = 8 - head.length - tail.length;
+  if (missing < 1) return null;
+  return [...head, ...Array<string>(missing).fill('0000'), ...tail];
+}
+
+/**
+ * NAT64/DNS64 前缀下的内嵌 IPv4 解嵌。
+ *
+ * IPv4-mapped（`::ffff:0:0/96`）无需处理：Node 的 BlockList 对内嵌地址有内建支持，
+ * 实测（Node v24.15.0）`::ffff:127.0.0.1` 会被正确拦下。
+ *
+ * 漏放的是 RFC 6052 的 well-known NAT64 前缀 `64:ff9b::/96`，地址形如 `64:ff9b::a00:1`
+ * 表示 10.0.0.1。这类地址 `isIP()` 返回 6、走 IPv6 分支，而阻断表里只有 `::/128`、
+ * `::1/128` 这类整段条目，内嵌私网地址全部漏过。2026-09-11 实测：
+ * `64:ff9b::a9fe:a9fe`（= 169.254.169.254 云元数据地址）未被拦。
+ *
+ * 处理：匹配 well-known 前缀后取末 4 字节转 IPv4 再判一次。节点的本地 DNS64 前缀
+ * 未知，这里只覆盖 RFC 6052 的 well-known 前缀；本地前缀场景见产品设计文档的取舍说明。
+ */
+function extractEmbeddedIPv4(address: string): string | null {
+  const groups = expandIPv6(address);
+  if (groups === null) return null;
+  // well-known 前缀 64:ff9b:: 占前 6 组（96 位）。组已补齐到 4 位，直接比字符串
+  const wellKnown = ['0064', 'ff9b', '0000', '0000', '0000', '0000'];
+  for (let i = 0; i < wellKnown.length; i++) {
+    if (groups[i] !== wellKnown[i]) {
+      return null;
+    }
+  }
+  const bytes = groups.slice(6).flatMap((g) => [
+    Number.parseInt(g.slice(0, 2), 16),
+    Number.parseInt(g.slice(2, 4), 16),
+  ]);
+  if (bytes.length !== 4 || bytes.some((b) => Number.isNaN(b))) return null;
+  return bytes.join('.');
+}
+
 function isBlockedAddress(address: string): boolean {
   const normalized = address.split('%', 1)[0] ?? address;
   if (isIP(normalized) === 4) return PRIVATE_ADDRESS_BLOCKLIST.check(normalized, 'ipv4');
-  return isIP(normalized) === 6 && PRIVATE_ADDRESS_BLOCKLIST.check(normalized, 'ipv6');
+  if (isIP(normalized) !== 6) return false;
+  if (PRIVATE_ADDRESS_BLOCKLIST.check(normalized, 'ipv6')) return true;
+  // NAT64/DNS64 内嵌 IPv4：解出后按 IPv4 再判一次
+  const embedded = extractEmbeddedIPv4(normalized);
+  return embedded !== null && PRIVATE_ADDRESS_BLOCKLIST.check(embedded, 'ipv4');
 }
 
 interface SafeFetchTarget {
