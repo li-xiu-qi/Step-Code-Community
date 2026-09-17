@@ -25,8 +25,19 @@ import type { AgentEvent } from './events.js';
 import { type LoopHooks, resolveAuthorization, resolveFinalizeResult, resolvePreOutput } from './hooks.js';
 import { stored, type StoredMessage } from './message.js';
 import { capToolResult } from './toolResultLimit.js';
+import { isToolRegistered } from '../tools/index.js';
 import { ToolScheduler } from './toolScheduler.js';
 import { toWire } from './wire.js';
+import { checkUnknownToolSafety, emptyUnknownToolState, recordToolOutcome, type UnknownToolVerdict } from './unknownToolGuard.js';
+
+/**
+ * 守卫中止时给被中止任务的统一结果文本。与最终落历史的说明消息分工不同：
+ * 这条只回答「为什么没执行」，历史清理由 4.1 段负责。
+ */
+/** 未知工具循环终止时，替剩余未执行工具合成的结果文案。 */
+const UNKNOWN_TOOL_HALT_MSG =
+  '本回合已连续多次调用不存在的工具名，剩余工具调用已终止。'
+  + '请从本回合收到的工具列表中改用一个已注册的工具，或直接结束任务。';
 
 /** 单回合结束原因。overflow = 上下文溢出，交外层循环压缩后重试。max_tokens = 输出达上限被截断。 */
 export type StopReason = 'end_turn' | 'tool_use' | 'aborted' | 'error' | 'overflow' | 'max_tokens' | 'pre_output_blocked';
@@ -34,6 +45,8 @@ export type StopReason = 'end_turn' | 'tool_use' | 'aborted' | 'error' | 'overfl
 /** 单回合执行结果。 */
 export interface TurnOutcome {
   stopReason: StopReason;
+  /** 回合内未知工具循环守卫的触发记录（safe=false）。仅作诊断信息，不进 wire、不落盘。 */
+  unknownToolHalt?: UnknownToolVerdict & { safe: false };
   /** 本回合模型返回的真实 token usage（成功拿到 finalMessage 时带上，供压缩判断）。 */
   usage?: Anthropic.Usage;
   /**
@@ -703,6 +716,22 @@ export async function* runTurn(
   // 执行 + 回收：tool_start 在任务实际启动时发出（onStart），tool_end 按数组顺序随回收发出；
   // 串行场景（单工具或全部冲突）下事件仍是 start→end 逐个交替，与旧串行实现字节级一致。
   const toolResults: Anthropic.ToolResultBlockParam[] = [];
+  // 未知工具循环守卫：本回合内连续命中 UNKNOWN_TOOL 达上限即中止剩余工具。
+  // haltCtrl 桥接外部 signal，守卫自身触发时也走它，复用 scheduler 现成的 skipped 路径。
+  const haltCtrl = new AbortController();
+  if (signal?.aborted) haltCtrl.abort();
+  else signal?.addEventListener('abort', () => haltCtrl.abort(), { once: true });
+  let unknownToolState = emptyUnknownToolState();
+  let unknownToolHalt: (UnknownToolVerdict & { safe: false }) | undefined;
+  /** 触发守卫的那个任务下标；其后所有任务的结果一律换成说明，不看 scheduler 状态。
+   *  不能只靠 haltCtrl.abort()：自驱 drain 在 waitSettled 返回前就放行了下一个任务，
+   *  abort 总是晚一步，那个任务已处于 running，不会被转成 skipped。 */
+  let haltIndex = -1;
+  /** 本轮 UNKNOWN_TOOL 的 tool_use id → 工具名。回合末成对移出历史，换成一条说明消息。
+   *  失败的调用对留在历史里会构成自我强化闭环，详见 unknownToolGuard.ts 头部注释。
+   *  这张表只收执行过的（守卫中止的调用不过 executeTool、拿不到 errorCode，回合末按
+   *  isToolRegistered 名字判并集，见下方移除逻辑）。 */
+  const unknownToolUses = new Map<string, string>();
   // start 事件带批次号：同一批 drain 连续启动的任务（并行）须连在一起产出，
   // 跨批（串行等待）须等前一个 end。notice 不受约束，分队列。
   // batchSeq 必须在 scheduler 构造前声明：onStart 闭包引用它，否则 TDZ 报错。
@@ -745,7 +774,9 @@ export async function* runTurn(
     {
       // 与 workflow 工具一致的缺省 4（config.subagent.maxConcurrent 首次在 runTurn 路径生效）
       maxSubagentConcurrent: ctx.subagentMaxConcurrent ?? 4,
-      signal,
+      // 守卫中止走 haltCtrl：守卫触发时 abort 它，把剩余任务转成 skipped，
+      // 与用户 Esc 复用同一路径，但下方回收处可区分（signal 未置位）。
+      signal: haltCtrl.signal,
       onStart: (i) => {
         const p = prepared[i]!;
         // 批次归属区分两种 drain：
@@ -790,7 +821,18 @@ export async function* runTurn(
   for (let i = 0; i < prepared.length; i++) {
     const p = prepared[i]!;
     const state = await scheduler.waitSettled(i);
+    // halt 之后的任务一律换成说明结果，不看 scheduler 状态（见 haltIndex 注释）。
+    if (haltIndex >= 0 && i > haltIndex) {
+      toolResults.push(makeToolResult(p.tu.id, { content: UNKNOWN_TOOL_HALT_MSG, isError: true }));
+      continue;
+    }
     if (state === 'skipped') {
+      // 守卫触发的中止与用户中断要分开：前者不是用户 Esc，给模型一条明确说明，
+      // 不置 userAborted，回合照常以 tool_use 收尾让它下一轮收敛。
+      if (unknownToolHalt !== undefined && !signal?.aborted) {
+        toolResults.push(makeToolResult(p.tu.id, { content: UNKNOWN_TOOL_HALT_MSG, isError: true }));
+        continue;
+      }
       // 中断时未启动的任务：合成中断结果占槽，不发事件（沿用旧串行实现语义）
       userAborted = true;
       const aborted = p.preset ?? { content: USER_ABORT_TOOL_MSG, isError: true };
@@ -800,8 +842,25 @@ export async function* runTurn(
     const result = p.result!;
     yield { type: 'tool_end', id: p.tu.id, name: p.tu.name, result: result.content, isError: result.isError };
     toolResults.push(makeToolResult(p.tu.id, result));
+    // 4.1 记账：UNKNOWN_TOOL 的 tool_use 不进历史。移除动作在 tool_result 组装后统一做。
+    if (result.errorCode === 'UNKNOWN_TOOL') unknownToolUses.set(p.tu.id, p.tu.name);
+    // 未知工具循环守卫：只认 errorCode==='UNKNOWN_TOOL'，其他结果一律清零计数。
+    if (unknownToolHalt === undefined) {
+      unknownToolState = recordToolOutcome(unknownToolState, result.errorCode, p.tu.name);
+      const verdict = checkUnknownToolSafety(unknownToolState);
+      if (!verdict.safe) {
+        unknownToolHalt = verdict;
+        haltIndex = i;
+        haltCtrl.abort();
+        yield {
+          type: 'notice',
+          message: `已连续 ${verdict.count} 次调用不存在的工具（${verdict.lastName}），本回合剩余工具调用已终止。`,
+        };
+      }
+    }
     // 本任务结束放行下一批：它们的 start 排在本 end 之后，串行交替契约成立。
-    yield* emitBatch();
+    // 守卫已触发时不放行，让剩余任务停在 skipped。
+    if (unknownToolHalt === undefined) yield* emitBatch();
   }
   // 兜底：skipped 任务不产 end，残留的 start 全部吐出。
   // 必须在 messages.push 之前：tool_result 进 history 前，同回合所有 tool_start 都要已产出。
@@ -809,6 +868,57 @@ export async function* runTurn(
   while (pendingStarts.length > 0) {
     const ev = pendingStarts.shift()!;
     yield { type: 'tool_start', id: ev.id, name: ev.name, input: ev.input };
+  }
+  // --- 4.1：无效工具调用不进历史。UNKNOWN_TOOL 的 tool_use/tool_result 对成对移除，
+  //     换成一条 user 说明消息。失败的调用对留在历史里会构成自我强化闭环：模型看到
+  //     「我上次调过这个工具」便按「参数写错了」继续发，且发得更多（2026-09-15 实测
+  //     单条 assistant 消息内含 56 个同一幻觉工具名）。详见 unknownToolGuard.ts 头注。
+  //     保留说明而非静默删除：模型得知道那次调用没有成功。 ---
+  if (unknownToolUses.size > 0 || toolUses.some((tu) => !isToolRegistered(tu.name))) {
+    // 判据取并集：执行时拿到 UNKNOWN_TOOL 的，加上守卫中止根本没执行、只能按名字判的。
+    // 合法工具（含被守卫误伤中止的）名字已注册，保留。
+    const invalidIds = new Set(unknownToolUses.keys());
+    for (const tu of toolUses) {
+      if (!isToolRegistered(tu.name)) invalidIds.add(tu.id);
+    }
+    const names = [...new Set([...unknownToolUses.values(), ...toolUses.filter((tu) => invalidIds.has(tu.id)).map((tu) => tu.name)])];
+    // assistant 侧：摘除对应 tool_use 块。承载本轮 tool_use 的是 messages 里最后一条
+    // assistant 消息，按 id 匹配原地过滤。整条被掏空时整条移除：空 content 的
+    // assistant 消息在投影层会被合并丢弃，留在 storage 里只会干扰压缩切点。
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i]!;
+      if (m.message.role !== 'assistant') continue;
+      const content = m.message.content;
+      if (typeof content === 'string') continue;
+      const kept = content.filter((b) => !(b.type === 'tool_use' && invalidIds.has(b.id)));
+      if (kept.length === content.length) continue; // 不含本轮无效调用，不是那条消息
+      if (kept.length === 0) messages.splice(i, 1);
+      else messages[i] = { ...m, message: { ...m.message, content: kept } };
+      break;
+    }
+    // tool_result 侧：摘掉对应结果块。全部摘掉时不 push 空 user 消息（空 content 会被
+    // 投影层丢弃，留在 storage 里是噪声）。
+    const keptResults = toolResults.filter(
+      (tr) => !invalidIds.has(tr.tool_use_id),
+    );
+    if (keptResults.length > 0) {
+      messages.push(stored({ role: 'user', content: keptResults }, { kind: 'tool' }));
+    }
+    // 说明消息：点名无效工具名、声明调用未执行且记录已移除、给出方向。injection origin：
+    // 压缩时不收集为保真用户输入，UI 重放时按系统自撰纯文本略过（用户侧已有 guard notice）。
+    messages.push(
+      stored(
+        {
+          role: 'user',
+          content:
+            `你刚才尝试调用了不存在的工具：${names.join('、')}。这些调用未执行，`
+            + '相关记录已从对话历史中移除。请从你已收到的工具列表中改用一个存在的工具；'
+            + '重复调用同一个未注册的工具名不会成功，请直接更换工具或结束任务。',
+        },
+        { kind: 'injection' },
+      ),
+    );
+    return { stopReason: userAborted ? 'aborted' : 'tool_use', usage, unknownToolHalt };
   }
   messages.push(stored({ role: 'user', content: toolResults }, { kind: 'tool' }));
 

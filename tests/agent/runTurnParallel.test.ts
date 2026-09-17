@@ -67,12 +67,13 @@ describe('runTurn 并行工具执行', () => {
   });
 
   it('全部冲突时串行：事件序列与旧实现一致（start→end 逐个交替）', async () => {
+    const tmp = join(tmpdir(), 'step-code-conflict-test.txt');
     const { provider } = makeFakeProvider([
       {
         textChunks: [],
         finalContent: [
-          toolUseBlock('c1', 'nonexistent_a', {}), // 未知工具 → access all → 互相冲突
-          toolUseBlock('c2', 'nonexistent_b', {}),
+          toolUseBlock('c1', 'write_file', { path: tmp, content: 'a' }), // access all → 互相冲突
+          toolUseBlock('c2', 'write_file', { path: tmp, content: 'b' }),
         ],
       },
       { textChunks: ['完成'], finalContent: [textBlock('完成')] },
@@ -83,7 +84,7 @@ describe('runTurn 并行工具执行', () => {
     expect(toolTrace(events)).toEqual(['start:c1', 'end:c1', 'start:c2', 'end:c2']);
     const blocks = toolResultBlocks(messages);
     expect(blocks.map((b) => b.tool_use_id)).toEqual(['c1', 'c2']);
-    expect(blocks.every((b) => b.is_error === true)).toBe(true);
+    expect(blocks.every((b) => b.is_error !== true)).toBe(true);
     expect(events.at(-1)!.type).toBe('turn_done');
   });
 
