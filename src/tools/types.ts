@@ -111,6 +111,13 @@ export interface ToolResult {
   /** 导致失败的原始错误对象（内部元数据，不进 wire）：调度层据此识别 429 做重排队。 */
   cause?: unknown;
   /**
+   * 机器可读的错误分类（内部元数据，不进 wire）：调度层据此区分"模型编造了不存在的
+   * 工具名"与"工具存在但执行失败"。后者可能是合法重试（改参数、临时故障），前者不可
+   * 能通过重试解决，需引导模型换工具或在反复出现时终止回合。
+   * 当前取值：`UNKNOWN_TOOL`、`TOOL_TIMEOUT`。
+   */
+  errorCode?: string;
+  /**
    * 返回给模型的图片（可选）。非空时 tool_result 的 content 从纯文本升格为块数组
    * [{type:'text'}, ...imageBlocks]（Anthropic.ToolResultBlockParam.content 官方支持内嵌 image）。
    * 不参与 tool_end 事件（UI 只回 text 部分）。
@@ -145,4 +152,12 @@ export function ok(content: string): ToolResult {
 
 export function fail(content: string): ToolResult {
   return { content, isError: true };
+}
+
+/**
+ * 带错误分类的失败结果。`code` 只作内部元数据（不进 wire），供调度层区分失效性质；
+ * 文本内容仍是模型唯一可见的反馈。
+ */
+export function failWithCode(content: string, code: string): ToolResult {
+  return { content, isError: true, errorCode: code };
 }

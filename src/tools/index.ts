@@ -33,7 +33,7 @@ import { skillSearchTool } from './skillSearch.js';
 import { taskListTool, taskOutputTool, taskStopTool, taskWaitTool } from './task.js';
 import { todoListTool } from './todoList.js';
 import { toolSearchTool } from './toolSearch.js';
-import { fail, type ToolContext, type ToolDef, type ToolResult } from './types.js';
+import { fail, failWithCode, type ToolContext, type ToolDef, type ToolResult } from './types.js';
 import type { ToolAccess } from './access.js';
 import { webFetchTool } from './webFetch.js';
 import { webSearchTool } from './webSearch.js';
@@ -184,7 +184,12 @@ export async function executeTool(
 ): Promise<ToolResult> {
   const tool = TOOL_MAP.get(name) ?? DYNAMIC_TOOLS.get(name);
   if (tool === undefined) {
-    return fail(`未知工具：${name}`);
+    return failWithCode(
+      `未知工具：${name}。该工具未注册，无法调用。`
+        + '请从你已收到的工具列表中改用一个存在的工具；'
+        + '重复调用同一个未注册的工具名不会成功，请直接更换工具或结束任务。',
+      'UNKNOWN_TOOL',
+    );
   }
   const parsed = tool.schema.safeParse(rawInput);
   if (!parsed.success) {
