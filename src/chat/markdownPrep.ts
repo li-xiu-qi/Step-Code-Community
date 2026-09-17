@@ -61,5 +61,45 @@ export function softenBreaks(source: string): string {
 
 /** pi-tui Markdown 的 transform 入口签名适配（忽略可用宽度参数，合并不依赖宽度）。 */
 export function markdownTransform(markdown: string): string {
-  return softenBreaks(markdown);
+  return stripUnsafeLinks(softenBreaks(markdown));
+}
+
+/**
+ * 可安全渲染成 OSC 8 超链接的 URL scheme 白名单。
+ *
+ * 终端在点击超链接时按 scheme 派发 handler，所以渲染成链接等于把「点击即执行」
+ * 的权限交给 URL 的提供方。模型输出、工具结果、以及任何进入正文的外部文本都
+ * 可能携带链接，其中 prompt injection 的典型手法就是塞一个 `ssh:` 或 `vnc:` 之类的
+ * 目标。白名单之外的 scheme 一律降级为纯文本。
+ *
+ * 放行 `step-file:` 与 `step://` 是本项目内部 scheme（`fileLink.ts` 的路径链接与
+ * 轮次跳转），`file://` 与 `https?://` 是用户预期内的两类。
+ *
+ * 参照 DSH TUI 的 urlGuard，其白名单同样是自家 scheme 加 file 与 http(s)。
+ */
+const RENDERABLE_URL_RE = /^(?:step-file:|step:\/\/|file:\/\/|https?:\/\/)/i;
+
+/**
+ * Markdown 行内链接：`[text](url)` 或 `[text](url "title")`。
+ *
+ * URL 主体允许一层嵌套圆括号（`(?:[^()\s]|\([^()\s]*\))+`），否则
+ * `javascript:alert(1)` 这类载荷会在第一个右括号处截断，替换后残留一个孤立的
+ * `)`，既没拦住链接又破坏了正文。title 段可选且必须双引号包裹。
+ */
+const MD_LINK_RE = /\[([^\]\n]*)\]\(\s*((?:[^()\s]|\([^()\s]*\))+)(?:\s+"[^"]*")?\s*\)/g;
+
+/**
+ * 把 scheme 不在白名单的 markdown 链接降级为纯文本。
+ *
+ * 顺序必须在 softenBreaks 之后：软换行可能把一个 URL 折断在两行，先合并才能
+ * 拿到完整的 URL 判定 scheme。
+ *
+ * 显示文本为空时原样保留，避免正则误伤把内容整段吃掉。
+ */
+export function stripUnsafeLinks(markdown: string): string {
+  return markdown.replace(MD_LINK_RE, (whole: string, text: string, url: string) => {
+    if (RENDERABLE_URL_RE.test(url)) return whole;
+    if (text.trim() === '') return whole;
+    return text;
+  });
 }

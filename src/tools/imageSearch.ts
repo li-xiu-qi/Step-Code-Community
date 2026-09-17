@@ -35,6 +35,8 @@ export const imageSearchTool: ToolDef<z.infer<typeof schema>> = {
     '按文字描述联网搜索图片（阶跃官方文搜图，走 Step Plan 通道）。用于为文档/文章/演示稿找配图。返回原图地址、描述（可作 alt）、尺寸与来源网页。',
   schema,
   access: () => ({ kind: 'none' }), // 纯网络调用，无本地副作用
+  /** 上游搜索接口卡住时回合会无限期挂起；挂 per-tool 超时（signal 已传 fetch）。 */
+  timeoutMs: 30_000,
   async execute(input, ctx) {
     const endpoint = resolveSearchToolEndpoint(
       ctx.searchConfig,

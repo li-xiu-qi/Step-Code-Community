@@ -144,6 +144,15 @@ export interface ToolDef<T = unknown> {
    * 缺省 = all（独占串行）：副作用不可判定的工具不声明即为安全行为。
    */
   access?(input: T, ctx: ToolContext): ToolAccess;
+  /**
+   * 单次执行时限（毫秒，声明式）。到点即向工具传入的 ctx.signal 发起 abort，并把
+   * 结果替换为 errorCode='TOOL_TIMEOUT' 的错误（见 executeTool）。
+   *
+   * 缺省 = 不设超时：不承诺监听 ctx.signal 的工具强加时限，只会得到「已中断但
+   * 实际仍在跑」的假象，故只对真正响应 signal 的工具声明。bash 有自管的前台
+   * 超时与自动转后台、monitor 本就设计为长跑，均不声明。
+   */
+  timeoutMs?: number;
 }
 
 export function ok(content: string): ToolResult {

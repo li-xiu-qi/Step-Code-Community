@@ -220,7 +220,7 @@ interface PinnedFetchResult {
   composedAgent: { close: () => Promise<void> };
 }
 
-async function fetchWithSafeRedirects(url: string): Promise<PinnedFetchResult> {
+async function fetchWithSafeRedirects(url: string, signal?: AbortSignal): Promise<PinnedFetchResult> {
   let currentUrl = url;
   let redirects = 0;
 
@@ -246,6 +246,7 @@ async function fetchWithSafeRedirects(url: string): Promise<PinnedFetchResult> {
       headers: { 'User-Agent': DEFAULT_USER_AGENT },
       redirect: 'manual',
       dispatcher: composedAgent,
+      signal,
     });
 
     if (!REDIRECT_STATUSES.has(response.status)) {
@@ -269,8 +270,8 @@ async function fetchWithSafeRedirects(url: string): Promise<PinnedFetchResult> {
   }
 }
 
-async function fetchAndExtract(url: string): Promise<FetchResult> {
-  const { response, composedAgent } = await fetchWithSafeRedirects(url);
+async function fetchAndExtract(url: string, signal?: AbortSignal): Promise<FetchResult> {
+  const { response, composedAgent } = await fetchWithSafeRedirects(url, signal);
   try {
     return await readResponse(response, url);
   } finally {
@@ -399,7 +400,9 @@ export const webFetchTool: ToolDef<z.infer<typeof schema>> = {
     '本工具只返回正文文字，不保存页面截图或图片。返回的文本会标明内容来源（缓存 / 页面提取 / 原样透传）。',
   schema,
   access: () => ({ kind: 'none' }),
-  async execute(input, _ctx) {
+  /** 抓取含 DNS 解析、重定向链与正文提取，慢站点可拖到分钟级；挂 per-tool 超时防单次调用挂死回合。 */
+  timeoutMs: 60_000,
+  async execute(input, ctx) {
     const url = input.url.trim();
     // 优先读缓存（命中且未过期直接返回，省一次网络请求）
     const cached = webResultCache.get(url);
@@ -413,7 +416,7 @@ export const webFetchTool: ToolDef<z.infer<typeof schema>> = {
     }
 
     try {
-      const result = await fetchAndExtract(url);
+      const result = await fetchAndExtract(url, ctx.signal);
       if (!result.content) {
         return ok('The response body is empty.');
       }
@@ -443,6 +446,8 @@ export const webFetchTool: ToolDef<z.infer<typeof schema>> = {
       return ok(`${note}${citeReminder}\n\n${shown}${footer}`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      // 外部中断（用户 Esc）与工具超时都会落到这里：前者不算失败，给明确文案区分
+      if (ctx.signal?.aborted) return fail('抓取已取消（用户中断或超时）。');
       return fail(`Failed to fetch URL: ${url}. ${msg}`);
     }
   },

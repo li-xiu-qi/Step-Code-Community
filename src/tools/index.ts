@@ -184,9 +184,76 @@ export function toolAccessOf(name: string, rawInput: unknown, ctx: ToolContext):
 }
 
 /**
+ * per-tool 声明式超时的执行包装（对齐 DSH timeout-policy 的形态）。
+ *
+ * 三层机制缺一层都会坏：
+ * 1. abort：到点向派生的 ctx.signal 发起 abort，工具内的 fetch / 子进程能收尾；
+ * 2. race：工具若没响应 signal（声明失效），超时点仍把结果交还回合，不挂死整轮——
+ *    底层 promise 的后续 settle 已被 race 消费，不会变成 unhandled rejection；
+ * 3. 归类：超时结果标 errorCode='TOOL_TIMEOUT'，与外部用户中断分开。用户中断时
+ *    timedOut 未置位，工具自己返回的中断结果原样透传，不误标成超时。
+ *
+ * 不声明 timeoutMs 的工具原样执行：bash 有自管的前台超时与自动转后台，
+ * monitor 本就设计为长跑，强加时限只会破坏既有语义。
+ */
+async function runWithToolTimeout(tool: ToolDef<any>, input: unknown, ctx: ToolContext): Promise<unknown> {
+  const deadlineMs = tool.timeoutMs;
+  if (deadlineMs === undefined || !Number.isFinite(deadlineMs) || deadlineMs <= 0) {
+    return await tool.execute(input, ctx);
+  }
+  // 派生 signal：外部中断（用户 Esc / 回合中止）先赢，超时只是补充
+  const ctrl = new AbortController();
+  const onExternalAbort = () => ctrl.abort(ctx.signal?.reason);
+  if (ctx.signal?.aborted) ctrl.abort(ctx.signal.reason);
+  else ctx.signal?.addEventListener('abort', onExternalAbort, { once: true });
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const exec = tool.execute(input, { ...ctx, signal: ctrl.signal });
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        const reason = new Error(`工具 ${tool.name} 执行超时（上限 ${deadlineMs}ms）`);
+        ctrl.abort(reason);
+        reject(reason);
+      }, deadlineMs);
+    });
+    let raced: unknown;
+    try {
+      raced = await Promise.race([exec, timeout]);
+    } catch (e) {
+      // timer 触发时 race 通常拿到 timeout 的 reject；工具若在 abort 监听器里同步
+      // resolve（race 偶发先赢），下面的 timedOut 判定兜底，两条路都归一到超时。
+      if (!timedOut) throw e;
+      raced = undefined;
+    }
+    // 与 DSH timeout-policy 一致：timer 一旦触发即定性为超时，不看 race 谁赢。
+    // 工具在 aborted 状态下返回的内容不可信（可能是半截输出），无条件替换。
+    // timer 未触发（工具正常完成或外部中断）时原样透传，不误标。
+    if (timedOut) {
+      return failWithCode(
+        `工具 ${tool.name} 执行超时（上限 ${deadlineMs}ms），已中止。` +
+          '可稍后重试，或改用后台任务（run_in_background）等方式完成同一任务。',
+        'TOOL_TIMEOUT',
+      );
+    }
+    return raced;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    ctx.signal?.removeEventListener('abort', onExternalAbort);
+  }
+}
+
+/**
  * 执行一次工具调用：校验入参 → 调用 execute。校验失败、未知工具、执行抛异常、
  * 返回畸形值——全部转为 ToolResult（错误以 isError 回灌），绝不抛出，
  * 以便 agent 循环把错误交还给模型自我纠正。
+ *
+ * 未知工具走 failWithCode 标记 `UNKNOWN_TOOL`：它与"工具存在但执行失败"是两种
+ * 失效。后者可能是合法重试（改参数、临时故障），前者是模型编造了工具名，重试不可能
+ * 成功，必须换工具。调度层据此区分，见 ToolResult.errorCode。
+ *
+ * 超时走 runWithToolTimeout：声明了 timeoutMs 的工具到点中止并标 `TOOL_TIMEOUT`。
  */
 export async function executeTool(
   name: string,
@@ -207,7 +274,7 @@ export async function executeTool(
     return fail(`工具 ${name} 入参校验失败：${parsed.error.message}`);
   }
   try {
-    return coerceToolResult(await tool.execute(parsed.data, ctx));
+    return coerceToolResult(await runWithToolTimeout(tool, parsed.data, ctx));
   } catch (e) {
     return fail(`工具 ${name} 执行异常：${(e as Error).message}`);
   }
