@@ -42,6 +42,8 @@ export const webSearchTool: ToolDef<z.infer<typeof schema>> = {
     '联网搜索互联网公开信息（阶跃官方网页搜索）。用于获取最新信息（库版本、API 文档、实时资讯等模型训练后才有的内容）。返回标题、链接与摘要。结果缓存 30 分钟，web_extract 可直接读缓存。',
   schema,
   access: () => ({ kind: 'none' }), // 纯网络调用，无本地副作用
+  /** 上游搜索接口卡住时回合会无限期挂起；挂 per-tool 超时（signal 已传 fetch）。 */
+  timeoutMs: 30_000,
   async execute(input, ctx) {
     const endpoint = resolveSearchToolEndpoint(
       ctx.searchConfig,

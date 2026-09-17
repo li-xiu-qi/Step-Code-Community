@@ -126,6 +126,7 @@ import { sortAgents, AgentsOverlay } from './AgentsOverlay.js';
 import { openProviderManager, runProviderWizard } from './ProviderManager.js';
 import { allTodosDone } from '../chat/chromePanels.js';
 import { ItemBlock, summarizeInput } from './blocks.js';
+import { applyWtKittyOverride } from './imageCaps.js';
 import { openExpandViewer } from './ExpandOverlay.js';
 import { c, editorTheme } from './theme.js';
 
@@ -542,6 +543,9 @@ export class PiChat {
       mouse: true,
       openUrl: (url) => this.handleUrlClick(url),
     });
+    // 终端图片能力修正（WT kitty）：必须在任何 Image 渲染前调，getCapabilities 有缓存。
+    // 幂等：第二次调用时 caps.images 已是 kitty，函数内部直接返回。
+    applyWtKittyOverride();
     // Home/End 留给编辑器做光标导航（行首/行尾）。
     // Ctrl+Home/Ctrl+End 滚 viewport 顶部/底部，Ctrl+↑ 跳上一个 prompt。
     // 这三个键必须绑在 altScreen 全局层而不是 ChatEditor 里：审批/提问等模态弹层会
