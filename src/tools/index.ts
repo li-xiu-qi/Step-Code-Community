@@ -161,6 +161,17 @@ export function allToolNames(): string[] {
 }
 
 /**
+ * 工具名是否已注册（静态表 + 动态表，与 executeTool 的 UNKNOWN_TOOL 判据同源）。
+ *
+ * 供 runTurn 的 4.1（无效工具调用不进历史）使用：守卫中止的调用不经过 executeTool，
+ * 拿不到 errorCode，只能按名字判。判定结果必须与 executeTool 的第一分支一致，
+ * 否则「执行过判定为未知」与「未执行判定为已知」会漏掉同一类调用。
+ */
+export function isToolRegistered(name: string): boolean {
+  return TOOL_MAP.has(name) || DYNAMIC_TOOLS.has(name);
+}
+
+/**
  * 取一次工具调用的资源访问声明（供 runTurn 并行调度冲突判定）。
  * 未知工具 / 未声明 / 入参非法一律按 all（独占串行，安全退化）。
  */

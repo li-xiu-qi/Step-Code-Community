@@ -43,7 +43,7 @@ describe('runAgent', () => {
     expect(messages[1]!.message.role).toBe('assistant');
   });
 
-  it('工具调用回合：未知工具错误回灌，且每个 tool_use 都配对 tool_result', async () => {
+  it('工具调用回合：未知工具不进历史换说明消息，tool_end 照常回传错误', async () => {
     const { provider } = makeFakeProvider([
       { textChunks: [], finalContent: [toolUseBlock('call_1', 'nonexistent_tool', {})] },
       { textChunks: ['已处理'], finalContent: [textBlock('已处理')] },
@@ -51,17 +51,20 @@ describe('runAgent', () => {
     const messages: StoredMessage[] = [sm({ role: 'user', content: 'go' })];
     const events = await collect(runAgent(baseOpts(provider, messages)));
 
+    // 事件层不变：tool_end 仍是错误（用户/UI 看得到这次调用失败了）
     const toolEnd = events.find((e) => e.type === 'tool_end') as
       | { type: 'tool_end'; isError: boolean }
       | undefined;
     expect(toolEnd?.isError).toBe(true);
 
-    expect(messages).toHaveLength(4);
-    const toolResultMsg = messages[2]!.message;
-    expect(toolResultMsg.role).toBe('user');
-    const blocks = toolResultMsg.content as Anthropic.ToolResultBlockParam[];
-    expect(blocks[0]!.type).toBe('tool_result');
-    expect(blocks[0]!.tool_use_id).toBe('call_1');
+    // 4.1：tool_use/tool_result 对移出历史，换成一条 injection 说明消息。
+    // 失败调用对留在历史里会被每次请求喂回给模型，构成自我强化闭环。
+    // assistant 消息（本轮唯一内容是 tool_use）被整条掏空移除，故第 2 条已是说明消息。
+    expect(messages).toHaveLength(3);
+    const note = messages[1]!;
+    expect(note.origin.kind).toBe('injection');
+    expect(note.message.role).toBe('user');
+    expect(note.message.content).toContain('nonexistent_tool');
     expect(events.at(-1)!.type).toBe('turn_done');
   });
 
