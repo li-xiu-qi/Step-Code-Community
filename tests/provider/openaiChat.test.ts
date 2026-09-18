@@ -267,6 +267,68 @@ describe('withStreamIdleWatchdog 流式空闲看门狗', () => {
     // 反向钉住：同文案的裸 Error 不可重试——没有把所有 Error 一并放开
     expect(isRetryableError(new Error('流式响应超过 120s 没有任何数据'))).toBe(false);
   });
+
+  it('看门狗超时 abort fetch 时，StreamIdleTimeoutError 不被 reader 的裸 AbortError 盖掉', async () => {
+    // 2026-09-11 water18-0910 塔防反复 abort 的真因。真实链路：onIdle 调 controller.abort()
+    // 回收底层 socket，abort 会让 pending 的 reader.next() 几乎在同一 tick reject 一个裸
+    // AbortError（name='AbortError'、message='This operation was aborted'、cause 链无网络 code）。
+    // 旧实现里 setTimeout 回调先 onIdle()（把 nextP 的 reject 入队）再 reject(idle)，
+    // 微任务队列中 reader 的 reject 先于 idle settle，Promise.race 抛出去的是裸 AbortError，
+    // StreamIdleTimeoutError 被盖掉。后果：isRetryableError/isTransportAbortError 都接不住这个
+    // 无 code 的裸 AbortError，本应换连接自动重试的看门狗超时变成硬失败，任务静默丢失。
+    const makeSilentBody = () => {
+      let rejectNext: ((e: Error) => void) | undefined;
+      const abortError = (): Error => {
+        const e = new Error('This operation was aborted');
+        e.name = 'AbortError';
+        return e;
+      };
+      return {
+        // 模拟 undici：abort 后 pending 的 read 立刻 reject 裸 AbortError
+        abort(): void {
+          rejectNext?.(abortError());
+        },
+        [Symbol.asyncIterator]() {
+          return {
+            next: (): Promise<IteratorResult<string>> =>
+              new Promise((_resolve, reject) => {
+                rejectNext = reject; // 永不 resolve：上游彻底静默，只有 abort 能终结
+              }),
+            // 模拟 reader.cancel()/return：abort 后关闭，不再抛错
+            return: async (): Promise<IteratorResult<string>> => ({ done: true, value: undefined }),
+          };
+        },
+      };
+    };
+
+    const body = makeSilentBody();
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+    const consume = async (): Promise<void> => {
+      for await (const _ of withStreamIdleWatchdog(body, 30, () => body.abort())) {
+        /* 消费 */
+      }
+    };
+    let err: unknown;
+    try {
+      await consume();
+    } catch (e) {
+      err = e;
+    } finally {
+      // 等一拍，让任何漏接的 rejection 都有机会触发 unhandledRejection
+      await new Promise((r) => setTimeout(r, 0));
+      process.off('unhandledRejection', onUnhandled);
+    }
+    // 必须是看门狗超时，它才可重试、可归因；不能是被盖掉的裸 AbortError
+    expect(err).toBeInstanceOf(StreamIdleTimeoutError);
+    expect((err as Error).name).toBe('StreamIdleTimeoutError');
+    expect(isRetryableError(err)).toBe(true);
+    // abort 唤醒的裸 AbortError 必须被接住，不能冒泡成 unhandledRejection
+    expect(unhandled).toEqual([]);
+  });
 });
 
 describe('toolsToOpenAi 工具定义翻译', () => {

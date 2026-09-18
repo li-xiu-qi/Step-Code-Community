@@ -16,6 +16,12 @@ const imageBlock = {
   source: { type: 'base64', media_type: 'image/png', data: 'x' },
 } as unknown as Anthropic.ImageBlockParam;
 
+/** 视频块（read_media 视频支持引入的非官方块类型，运行时形状）。 */
+const videoBlock = {
+  type: 'video',
+  source: { type: 'base64', media_type: 'video/mp4', data: 'v' },
+} as unknown as Anthropic.ContentBlockParam;
+
 const thinkingBlock = {
   type: 'thinking',
   thinking: '想',
@@ -121,6 +127,18 @@ describe('degradeMessages 主动降级', () => {
     expect(top[0]).toEqual({ type: 'text', text: '[video omitted: model has no video input]' });
   });
 
+  it('image_in=false + video_in=true：视频块不被图片门控误伤（2026-09-14 回归钉）', () => {
+    const out = degradeMessages(
+      [{ role: 'user', content: [imageBlock, videoBlock, { type: 'text', text: '看图看视频' }] }],
+      { ...FULL_CAPABILITY, image_in: false, video_in: true },
+    );
+    const content = out[0]!.content as Anthropic.ContentBlockParam[];
+    // 图片被图片门控换占位；视频只受 video_in 门控（此处为 true），原样保留
+    expect(content[0]).toEqual({ type: 'text', text: '[image omitted: model has no image input]' });
+    expect(content[1]).toBe(videoBlock);
+    expect(content[2]).toEqual({ type: 'text', text: '看图看视频' });
+  });
+
   it('image_in 为 false：tool_result 内嵌图片同样换占位（下钻修复回归钉）', () => {
     const inner: Anthropic.MessageParam[] = [
       {
@@ -190,6 +208,61 @@ describe('applyReprojectionLevel 档位行为', () => {
     const out = applyReprojectionLevel(history, 'media-degraded', 0);
     const content = out[0]!.content as Anthropic.ContentBlockParam[];
     expect(content[0]).toEqual({ type: 'text', text: '[image removed: exceeded API image limit, older images dropped to retry]' });
+  });
+
+  it('media-degraded：视频块换视频味占位（2026-09-14 事故回归钉：端点拒视频）', () => {
+    // 2026-09-14 实录：某模型别名声明 video_in 但 openai 端点拒收（"The amount of
+    // videos you provided exceeds the model's limitation"）。此前 video 不在
+    // MEDIA_BLOCK_TYPES，任何档位都剥不掉，重发必再挂。本测试钉三件事：
+    // 顶层与 tool_result 内嵌视频都被换占位、文案是视频味（不是图片味）、keep 计数只算图片。
+    const msgs: Anthropic.MessageParam[] = [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'call_1',
+            content: [{ type: 'text', text: '已读取视频，原始字节 inline 交付' }, videoBlock],
+          } as Anthropic.ToolResultBlockParam,
+        ],
+      },
+      { role: 'user', content: [imageBlock, videoBlock, { type: 'text', text: '看图看视频' }] },
+    ];
+    const out = applyReprojectionLevel(msgs, 'media-degraded', 3);
+    const trContent = ((out[0]!.content as Anthropic.ToolResultBlockParam[])[0]!.content) as Array<Record<string, unknown>>;
+    expect(trContent[0]).toEqual({ type: 'text', text: '已读取视频，原始字节 inline 交付' });
+    expect(trContent[1]).toEqual({
+      type: 'text',
+      text: '[video removed: endpoint rejected video input, dropped to retry]',
+    });
+    const last = out[1]!.content as Anthropic.ContentBlockParam[];
+    // 图片在保留集内（keep=3 只数图片，视频不参与计数），原样保留
+    expect(last[0]).toBe(imageBlock);
+    expect(last[1]).toEqual({
+      type: 'text',
+      text: '[video removed: endpoint rejected video input, dropped to retry]',
+    });
+    expect(last[2]).toEqual({ type: 'text', text: '看图看视频' });
+  });
+
+  it('media-stripped：视频块被整块移除', () => {
+    const msgs: Anthropic.MessageParam[] = [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'call_1',
+            content: [{ type: 'text', text: '已读取视频' }, videoBlock],
+          } as Anthropic.ToolResultBlockParam,
+        ],
+      },
+      { role: 'user', content: [videoBlock, { type: 'text', text: '看视频' }] },
+    ];
+    const out = applyReprojectionLevel(msgs, 'media-stripped');
+    const trContent = ((out[0]!.content as Anthropic.ToolResultBlockParam[])[0]!.content) as Array<Record<string, unknown>>;
+    expect(trContent).toEqual([{ type: 'text', text: '已读取视频' }]);
+    expect(out[1]!.content).toEqual([{ type: 'text', text: '看视频' }]);
   });
 
   it('media-stripped：tool_result 内嵌媒体同样被移除（下钻修复回归钉）', () => {
@@ -311,11 +384,30 @@ describe('nextReprojectionLevel 错误驱动档位', () => {
       'At most 1 image(s) may be provided in one request.', // vLLM 推理端
       'Image base64 size (8.4 MB) exceeds API limit (5.0 MB).', // OpenAI 兼容网关 issue 实录
       "messages.content.type 参数非法，取值范围 ['text']", // 智谱 BigModel 实测（端点只收 text part）
+      // 视频方言（2026-09-14 实录：某模型别名声明 video_in 但所用 openai 端点拒收视频，连挂两次 400）
+      "400 The amount of videos you provided exceeds the model's limitation.",
+      'too many videos in one request',
+      'video exceeds maximum allowed size',
     ];
     for (const msg of dialects) {
       const err = new Anthropic.APIError(400, undefined, msg, undefined);
       expect(isReprojectableError(err), `方言应可重投影: ${msg}`).toBe(true);
     }
+  });
+
+  it('视频 400 可重投影并逐档剥掉视频（2026-09-14 事故回归钉）', () => {
+    // 事故链路：isReprojectableError 漏配视频方言 → nextReprojectionLevel 返回 null
+    // → adapter 原样重发 → 第二次同样的 400（实录两次间隔 4 秒）。本测试钉住分类
+    // 与档位推进；档位真的能剥掉视频由 applyReprojectionLevel 的视频用例钉住。
+    const videoErr = new Anthropic.APIError(
+      400,
+      undefined,
+      "The amount of videos you provided exceeds the model's limitation.",
+      undefined,
+    );
+    expect(isReprojectableError(videoErr)).toBe(true);
+    const used = new Set<ReprojectionLevel>(['normal']);
+    expect(nextReprojectionLevel(videoErr, used)).toBe('media-degraded');
   });
 
   it('500 / 429 / 无媒体关键词的裸 Error 不重投影', () => {

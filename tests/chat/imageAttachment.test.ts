@@ -3,7 +3,9 @@ import { describe, expect, it } from 'vitest';
 import {
   ImageAttachmentStore,
   extractImageContent,
+  formatImagePathText,
   formatPlaceholder,
+  isImagePathMarker,
 } from '../../src/chat/imageAttachment.js';
 
 describe('formatPlaceholder', () => {
@@ -29,6 +31,20 @@ describe('ImageAttachmentStore', () => {
     s.clear();
     expect(s.size()).toBe(0);
     expect(s.add('Y', 'image/png', 1, 1).id).toBe(1);
+  });
+
+  it('add 带 path 时附件携带落盘路径', () => {
+    const s = new ImageAttachmentStore();
+    const a = s.add('BIG', 'image/png', 1920, 1080, 'C:/x/attachments/abc.png');
+    expect(a.path).toBe('C:/x/attachments/abc.png');
+    expect(s.get(1)!.path).toBe('C:/x/attachments/abc.png');
+  });
+
+  it('add 不传 path 时附件无路径字段（小图内联场景）', () => {
+    const s = new ImageAttachmentStore();
+    const a = s.add('SMALL', 'image/png', 10, 10);
+    expect(a.path).toBeUndefined();
+    expect('path' in a).toBe(false);
   });
 
   it('activeIds 只返回文本里仍存在的占位符 id，按序去重', () => {
@@ -95,5 +111,45 @@ describe('extractImageContent', () => {
     const r = extractImageContent(a.placeholder, s);
     const img = (r.content as Anthropic.ContentBlockParam[]).find((b) => b.type === 'image') as Anthropic.ImageBlockParam;
     expect(img.source).toMatchObject({ media_type: 'image/png' });
+  });
+});
+
+describe('formatImagePathText', () => {
+  it('无路径时返回 undefined', () => {
+    expect(formatImagePathText([])).toBeUndefined();
+  });
+
+  it('单路径一行，固定英文机器标记（含只读语义子句）', () => {
+    expect(formatImagePathText(['C:/x/a.png'])).toBe(
+      'Attached image file: C:/x/a.png (read-only session file; open it with read_media)',
+    );
+  });
+
+  it('多路径各一行，顺序保持', () => {
+    const text = formatImagePathText(['C:/a.png', 'C:/b.png'])!;
+    expect(text.split('\n')).toEqual([
+      'Attached image file: C:/a.png (read-only session file; open it with read_media)',
+      'Attached image file: C:/b.png (read-only session file; open it with read_media)',
+    ]);
+  });
+});
+
+describe('isImagePathMarker', () => {
+  it('整段都是路径标记时为 true', () => {
+    expect(
+      isImagePathMarker('Attached image file: C:/a.png (read-only session file; open it with read_media)'),
+    ).toBe(true);
+    expect(
+      isImagePathMarker(
+        'Attached image file: C:/a.png (read-only session file; open it with read_media)\nAttached image file: C:/b.png (read-only session file; open it with read_media)',
+      ),
+    ).toBe(true);
+  });
+
+  it('混有普通文本、空段、其它前缀时为 false', () => {
+    expect(isImagePathMarker('看这张图\nAttached image file: C:/a.png (...)')).toBe(false);
+    expect(isImagePathMarker('Attached image fileX: C:/a.png')).toBe(false);
+    expect(isImagePathMarker('')).toBe(false);
+    expect(isImagePathMarker('   \n  ')).toBe(false);
   });
 });

@@ -4,6 +4,7 @@
  * 每个块自带缓存（width 未变则复用上次行数组），render() 是取缓存 + 拼接。
  */
 import { Markdown, truncateToWidth, visibleWidth, wrapTextWithAnsi, sliceByColumn, hyperlink } from '@earendil-works/pi-tui';
+import { Image } from '@earendil-works/pi-tui';
 import type { Component } from '@earendil-works/pi-tui';
 import { basename } from 'node:path';
 import type { DisplayItem, WelcomeData } from '../chat/types.js';
@@ -44,6 +45,12 @@ import {
   summarizeToolInput,
   outputStats,
 } from './resultRenderers.js';
+import { linkPath, linkFilePathArg } from './fileLink.js';
+
+/** Image 组件的主题：无图片协议时的降级文本着色（灰色占位说明）。 */
+const imageTheme = {
+  fallbackColor: (s: string) => c.dim(s),
+};
 
 // 顶部 logo：FIGlet "Small" 风格的 S（紧凑双线）。
 const LOGO_LINES = [' ___ ', '/ __|', '\\__ \\', '|___/'];
@@ -336,6 +343,18 @@ export class ItemBlock implements Component {
         // 真人输入仍是高亮黄底，两相对比才分得出「这是你刚说的」还是「那是早先保留下来的」。
         const bodyLines = wrap(it.text, width - 2);
         const bg = c.userBg;
+        // 贴图回显：图片行插在文本下方、收尾空行之前。kitty/iTerm2 序列行不能
+        // 套 SGR（会破坏转义），故图片行不过 bg/indent，用空列占位对齐视觉缩进。
+        const appendImages = (lines: string[]): string[] => {
+          if (it.images === undefined || it.images.length === 0) return lines;
+          const trailing = lines.length > 0 && lines[lines.length - 1] === '' ? lines.pop() : undefined;
+          for (const att of it.images) {
+            const img = new Image(att.base64, att.mediaType, imageTheme, { maxWidthCells: Math.max(20, width - 6) });
+            lines.push(...img.render(width - 2).map((l) => (l === '' ? '  ' : `  ${l}`)));
+          }
+          if (trailing !== undefined) lines.push(trailing);
+          return lines;
+        };
         if (it.turnNum !== undefined) {
           // 带轮次编号的 prompt 可点击：OSC 8 超链接包裹正文，点击后跳转到该轮输入框
           const url = `step://turn/${it.turnNum}`;
@@ -350,17 +369,17 @@ export class ItemBlock implements Component {
             return lines;
           };
           if (it.verbatim === true) {
-            return prependMarker([...hanging(linked, c.dim('┊ 原话 '), 2), '']);
+            return prependMarker(appendImages([...hanging(linked, c.dim('┊ 原话 '), 2), '']));
           }
-          return prependMarker([...indent(linked, bg(c.user('│ '))), '']);
+          return prependMarker(appendImages([...indent(linked, bg(c.user('│ '))), '']));
         }
         // 无轮次编号（开源模型/旧快照不可点）
         if (it.verbatim === true) {
           const body = bodyLines.map((l) => c.dim(l));
-          return [...hanging(body, c.dim('┊ 原话 '), 2), ''];
+          return appendImages([...hanging(body, c.dim('┊ 原话 '), 2), '']);
         }
         const body = bodyLines.map((l) => bg(c.userText(l)));
-        return [...indent(body, bg(c.user('│ '))), ''];
+        return appendImages([...indent(body, bg(c.user('│ '))), '']);
       }
       case 'assistant': {
         // 前缀灰色 ●，第一行带前缀，续行对齐
@@ -482,7 +501,7 @@ export class ItemBlock implements Component {
       // 结果已 offload 到文件：不再有 result 字段，只显示文件路径
       if (it.resultFile !== undefined && it.result === undefined) {
         const fname = basename(it.resultFile);
-        out.push(c.dim(`    ↳ 输出已保存至 ${fname}（Ctrl+O 查看）`));
+        out.push(c.dim(`    ↳ 输出已保存至 ${linkPath(fname, it.resultFile)}（Ctrl+O 查看）`));
         out.push('');
         return clamp(out);
       }
@@ -491,7 +510,7 @@ export class ItemBlock implements Component {
         const cached = offloadLargeResult(it.name, it.result);
         if (cached !== undefined) {
           const fname = basename(cached);
-          out.push(c.dim(`    ↳ 输出 ${formatBytes(it.result.length)} → ${fname}（Ctrl+O 查看）`));
+          out.push(c.dim(`    ↳ 输出 ${formatBytes(it.result.length)} → ${linkPath(fname, cached)}（Ctrl+O 查看）`));
           out.push('');
           return clamp(out);
         }
@@ -585,6 +604,15 @@ export class ItemBlock implements Component {
         }
       }
     }
+    // read_media 等工具的图片载荷：结果文本下方内联。插在收尾空行之前。
+    // kitty/iTerm2 序列行不套 SGR，用空列占位对齐工具卡的缩进。
+    if (it.resultImages !== undefined && it.resultImages.length > 0) {
+      out.pop(); // 去掉上面的收尾空行，图片后重新补
+      for (const img of it.resultImages) {
+        const image = new Image(img.base64, img.mediaType, imageTheme, { maxWidthCells: Math.max(20, width - 8) });
+        out.push(...image.render(width - 4).map((l) => (l === '' ? '    ' : `    ${l}`)));
+      }
+    }
     out.push('');
     // 全局兜底：任何遗漏的超宽行（长无空格串、未来新增分支）都被钳到 width，
     // 避免触发 pi-tui doRender 的宽度断言崩溃。与 pickers.render 同款防线。
@@ -603,7 +631,9 @@ function toolArgText(it: Extract<DisplayItem, { kind: 'tool' }>): string {
   const arg = summarizeInput(it.input);
   if (arg === '') return '';
   // 两个空格：单空格时 `write_file src/x.ts` 读起来像一个词组，双空格才分得出「工具」与「操作对象」
-  return it.name === 'skill' ? c.toolArgSkill(`  ${arg}`) : c.toolArg(`  ${arg}`);
+  // 路径类工具的摘要就是路径：包 file:// 链接，点击交给系统打开（PiChat.handleUrlClick）
+  const linked = linkFilePathArg(it.input, arg);
+  return it.name === 'skill' ? c.toolArgSkill(`  ${linked}`) : c.toolArg(`  ${linked}`);
 }
 
 /**
@@ -659,6 +689,14 @@ function renderToolExpanded(it: Extract<DisplayItem, { kind: 'tool' }>, width: n
     }
     if (isProcessTruncated) {
       out.push(c.dim(`    ↳ 输出过长，仅展示前 ${lines.length} 行`));
+    }
+  }
+  // 展开态同样内联图片载荷（read_media 在查看器里也该看到图）
+  if (it.resultImages !== undefined && it.resultImages.length > 0) {
+    out.pop();
+    for (const img of it.resultImages) {
+      const image = new Image(img.base64, img.mediaType, imageTheme, { maxWidthCells: Math.max(20, width - 8) });
+      out.push(...image.render(width - 4).map((l) => (l === '' ? '    ' : `    ${l}`)));
     }
   }
   out.push('');

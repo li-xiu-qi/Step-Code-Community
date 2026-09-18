@@ -1,4 +1,6 @@
 import type { GoalStatus } from '../agent/goal/mode.js';
+import type { ImageAttachment } from './imageAttachment.js';
+import type { ToolResultImage } from '../tools/types.js';
 /** 嵌套子 agent 的工具调用事件（由 runner onEvent 实时回传，挂到父 spawn_agent 条目下）。 */
 export interface SubagentToolEvent {
   name: string;
@@ -16,7 +18,19 @@ export interface WelcomeData {
 /** UI 展示用的会话条目（独立于回灌给模型的 Anthropic 消息历史）。 */
 export type DisplayItem =
   | { kind: 'welcome'; data: WelcomeData }
-  | { kind: 'user'; text: string; verbatim?: boolean; turnNum?: number }
+  | {
+      kind: 'user';
+      text: string;
+      verbatim?: boolean;
+      turnNum?: number;
+      /**
+       * 本轮贴入的图片（提交时从附件池快照）。终端支持图片协议时渲染真图，
+       * 不支持时回退为占位文本（Image 组件内部处理降级）。
+       * 只存提交时刻的引用：附件池在 /new、会话切换时 clear，但已提交的
+       * 转录条目要保住图片，所以这里持有数据而非 id。
+       */
+      images?: readonly ImageAttachment[];
+    }
   | { kind: 'assistant'; text: string }
   /** 思考（推理过程）定稿块：流式期不进历史区（状态行预览），完成后才落成此条目。 */
   | { kind: 'thinking'; text: string }
@@ -29,6 +43,8 @@ export type DisplayItem =
       result?: string;
       /** 结果已 offload 到文件时持有文件路径（> MAX_INLINE_CHARS 的输出）。 */
       resultFile?: string;
+      /** read_media 等工具返回的图片载荷（tool_end 事件带入）。结果文本下方内联渲染。 */
+      resultImages?: readonly ToolResultImage[];
       /** 结果的字符数（用于显示统计）。 */
       resultSize?: number;
       /** 参数流式中（tool_forming 已挂卡、tool_start 未到）：卡片显示「参数成形中」+ 关键字段预览。 */

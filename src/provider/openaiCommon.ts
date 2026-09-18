@@ -516,24 +516,49 @@ export async function* withStreamIdleWatchdog<T>(
   try {
     for (;;) {
       let timer: ReturnType<typeof setTimeout> | undefined;
+      // 看门狗是否已判定超时。一旦置位，本拍只允许抛出 StreamIdleTimeoutError。
+      let idled = false;
+      let idleError: StreamIdleTimeoutError | undefined;
+      // 单独持有 reader.next() 的引用：超时触发 onIdle→abort 后，这个 pending promise 会被
+      // reject 成裸 AbortError，必须显式接住，否则在「超时先 settle」的顺序下它无人消费、
+      // 变成 unhandled rejection。
+      const nextP: Promise<IteratorResult<T>> = it.next();
       const idle = new Promise<never>((_, reject) => {
         timer = setTimeout(() => {
-          onIdle?.();
-          reject(
-            new StreamIdleTimeoutError(`流式响应超过 ${Math.round(timeoutMs / 1000)}s 没有任何数据，判定上游异常并中止。`),
+          idled = true;
+          idleError = new StreamIdleTimeoutError(
+            `流式响应超过 ${Math.round(timeoutMs / 1000)}s 没有任何数据，判定上游异常并中止。`,
           );
+          // 先标记并构造好看门狗错误，再 abort 底层 fetch。abort 会在同一轮事件循环里把
+          // pending 的 nextP reject 成裸 AbortError（"This operation was aborted"，无网络 code），
+          // 其 rejection 反应回调先于下方 idle 的 reject 入队，Promise.race 会先看到它。
+          onIdle?.();
+          reject(idleError);
         }, timeoutMs);
       });
       try {
-        const result = await Promise.race([it.next(), idle]);
+        const result = await Promise.race([nextP, idle]);
         if (result.done === true) return;
         yield result.value;
+      } catch (err) {
+        if (idled && idleError !== undefined) {
+          // 看门狗已超时：无论 race 抛上来的是 idle 错误还是 abort 唤醒的裸 AbortError，
+          // 都统一抛 StreamIdleTimeoutError。裸 AbortError 无 code、isRetryableError 与
+          // isTransportAbortError 皆接不住，放它出去会把「该换连接重试的上游假死」变成
+          // 不可重试的硬失败（2026-09-11 water18-0910 塔防反复 abort 的真因）。
+          // 接住 nextP 的 rejection 防 unhandled；正常成功路径下它已 resolve，catch 是空操作。
+          nextP.catch(() => {});
+          throw idleError;
+        }
+        throw err;
       } finally {
         if (timer !== undefined) clearTimeout(timer);
       }
     }
   } finally {
-    await it.return?.();
+    // abort 后 reader.return()（释放锁/取消）个别实现也可能 reject；吞掉它，避免清理副作用
+    // 再次掩盖本应抛出的 StreamIdleTimeoutError。
+    await it.return?.().catch(() => {});
   }
 }
 

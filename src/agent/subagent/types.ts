@@ -87,10 +87,30 @@ export interface SpawnSubagentRequest {
   parentSessionId?: string;
 }
 
+/**
+ * 子 agent 的结构化终态。
+ *
+ * 与 isError 的关系：isError 保留兼容（现有消费方不动），语义是 stopReason !== 'completed'。
+ * 存在的理由：'被中断'、'输出超出上限'、'跑出错'、'正常完成'四种终态的后续动作完全不同——
+ * 主控看到 max-tokens 可以换更小任务重试，看到 aborted 该等用户指示，看到 error 该看原因。
+ * 旧的 isError 布尔把这些混为一谈，父侧只能做「成功/失败」二分。
+ *
+ * 枚举取四种终态（completed/aborted/error/max-tokens）。refusal（模型拒绝任务）
+ * 暂不产生：loop 层没有拒绝信号源，等有再接。
+ */
+export type SubagentStopReason = 'completed' | 'aborted' | 'error' | 'max-tokens';
+
 /** 子 agent 执行结果（回灌给父的摘要）。 */
 export interface SubagentResult {
   summary: string;
   isError: boolean;
+  /** 结构化终态；缺省按 isError 推断（'error' 或 'completed'）。 */
+  stopReason?: SubagentStopReason;
+  /**
+   * 失败诊断（结构化原因摘要，≤4096 字节）：区别于 summary 的自然语言结论，
+   * 这条给父侧调度层与日志用（如 provider 错误名、阶段定位）。不进 wire。
+   */
+  diagnostic?: string;
   /** 导致失败的原始错误对象（内部元数据，不进 wire）：父侧调度层据此识别 429 做重排队。 */
   cause?: unknown;
   /** 本次派生落盘的子会话 id（起步前的拒绝路径无此字段）：父侧记住它，供事后查看与后续按 id 恢复。 */

@@ -952,6 +952,11 @@ async function runPrint(prompt: string): Promise<void> {
       maxDepth: config.subagent.maxDepth,
       maxStepsDefault: config.subagent.maxSteps,
       subagentTimeoutMs: config.subagent.timeoutS > 0 ? config.subagent.timeoutS * 1000 : undefined,
+      // 子 agent 的请求级异常落盘：不传则它内部的 retry / error 在 wire 里毫无踪迹，
+      // 出问题时只能看到「零 assistant 输出」而无法归因（2026-09-10 water18-0910 实证）。
+      onWireEvent: (event: import('./agent/wirelog.js').WireEvent) => {
+        store.appendWire(cwd, session.id, [event]);
+      },
       compaction: {
         maxContextSize: config.maxContextSize,
         triggerRatio: config.compaction.triggerRatio,

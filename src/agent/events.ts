@@ -1,4 +1,5 @@
 /** agent 循环向外发出的事件，供 UI（Ink 或非交互打印）消费。 */
+import type { ToolResultImage } from '../tools/types.js';
 export type AgentEvent =
   | { type: 'text'; text: string }
   /**
@@ -20,7 +21,12 @@ export type AgentEvent =
   | { type: 'tool_forming'; id: string; name: string }
   /** 工具参数的流式增量（半截 JSON 片段）。UI 只抠关键字段做预览，不解析全量。 */
   | { type: 'tool_args_delta'; id: string; partialJson: string }
-  | { type: 'tool_end'; id: string; name: string; result: string; isError: boolean }
+  /**
+   * 工具调用结束。images 非空时（read_media 等）UI 侧在结果下方内联渲染图片：
+   * 终端支持图片协议时显示真图，不支持时降级为占位文本。
+   * 不进 wire（与 content 同路但 base64 体积大，wire 只回 text 摘要）。
+   */
+  | { type: 'tool_end'; id: string; name: string; result: string; isError: boolean; images?: ToolResultImage[] }
   /**
    * 重试。hadPartial 为 true 表示本次失败尝试已吐过正文（屏幕上有残文条目），
    * UI 据此在重试前移除该残文（B 方案：撤回气泡，只留重发的完整版）；
@@ -50,7 +56,13 @@ export type AgentEvent =
   | { type: 'aborted' }
   /** goal 等自主续接：本 run 结束，inject 为下一轮注入文本。 */
   | { type: 'continuation'; inject: string }
-  | { type: 'turn_done' }
+  /**
+   * 本 run 正常收尾（不再产出 assistant 输出）。stopReason 为可选诊断字段，取值是
+   * runTurn 的 StopReason 字符串（'end_turn' | 'tool_use' | 'max_tokens' 等），
+   * 由 loop 在各收尾出口带上最后一轮的值；缺省表示未知（历史消费方不受影响）。
+   * 子 agent 运行器据此产出结构化的终态（见 subagent/types.ts 的 SubagentStopReason）。
+   */
+  | { type: 'turn_done'; stopReason?: string }
   | { type: 'notice'; message: string }
   /**
    * 一次模型响应的起点（runTurn 一次迭代）。UI 据此记录转录区块数作为「本次尝试」边界，

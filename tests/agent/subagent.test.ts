@@ -434,7 +434,7 @@ describe('spawn_agent 工具', () => {
     );
     expect(r.isError).toBe(false);
     // 结构化结果头 + 原样 summary 正文（无 sessionId 时头部省略 session 段）
-    expect(r.content).toBe('subagent: explore | status: done\n\ndone:explore');
+    expect(r.content).toBe('subagent: explore | status: completed\n\ndone:explore');
   });
 
   it('description 透传到 runSubagent 请求（进度卡片短标签的数据源）', async () => {
@@ -1199,7 +1199,7 @@ describe('前台子 agent 的转后台（Ctrl+B detach）', () => {
       },
     );
     expect(r.isError).toBe(false);
-    expect(r.content).toBe('subagent: general | status: done\n\nok');
+    expect(r.content).toBe('subagent: general | status: completed\n\nok');
     expect(mgr.list()).toEqual([]); // 没有留下任务
   });
 
@@ -1448,7 +1448,7 @@ describe('subagentListing 角色清单', () => {
 });
 
 describe('子 agent 结果结构化回灌', () => {
-  it('成功：头部含角色、status done 与子会话 id，正文原样保留', async () => {
+  it('成功：头部含角色、status completed 与子会话 id，正文原样保留', async () => {
     const r = await spawnAgentTool.execute(
       { description: 'd', prompt: 'p', subagent_type: 'explore' },
       {
@@ -1459,7 +1459,7 @@ describe('子 agent 结果结构化回灌', () => {
     );
     expect(r.isError).toBe(false);
     expect(r.content).toBe(
-      'subagent: explore | status: done | session: sess-1\n\n调查结论正文',
+      'subagent: explore | status: completed | session: sess-1\n\n调查结论正文',
     );
   });
 
