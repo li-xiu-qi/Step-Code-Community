@@ -20,6 +20,13 @@ export interface ImageAttachment {
   readonly height: number;
   /** 渲染出的占位符文本，如 `[image #1 (1920×1080)]`。 */
   readonly placeholder: string;
+  /**
+   * 粘贴即落盘的附件绝对路径（sessions/<workdirKey>/attachments/<sha256>.<ext>）。
+   * 粘贴时同步 offload 得到；小图（<OFFLOAD_THRESHOLD，内联不落盘）或落盘失败时为
+   * undefined。提交时把它写进模型侧文本（Attached image file: ...），模型据此可直接
+   * read_media 重读，不用翻磁盘猜路径。见 2026-09-13 贴图持久化设计。
+   */
+  readonly path?: string;
 }
 
 /** 匹配输入框里的图片占位符，捕获 id。宽高用非贪婪匹配，兼容用户手打的近似格式。 */
@@ -33,7 +40,7 @@ export class ImageAttachmentStore {
   private nextId = 1;
   private readonly byId = new Map<number, ImageAttachment>();
 
-  add(base64: string, mediaType: string, width: number, height: number): ImageAttachment {
+  add(base64: string, mediaType: string, width: number, height: number, path?: string): ImageAttachment {
     const id = this.nextId;
     this.nextId += 1;
     const att: ImageAttachment = {
@@ -43,6 +50,7 @@ export class ImageAttachmentStore {
       width,
       height,
       placeholder: formatPlaceholder(id, width, height),
+      ...(path !== undefined ? { path } : {}),
     };
     this.byId.set(id, att);
     return att;
@@ -144,6 +152,31 @@ export function extractImageContent(text: string, store: ImageAttachmentStore): 
     imageCount,
     displayText: displayParts.join('').trim(),
   };
+}
+
+/** 模型侧贴图路径标记的行前缀。历史回放据此过滤机器标记（不进用户可见文本）。 */
+const IMAGE_PATH_MARKER_PREFIX = 'Attached image file:';
+
+/**
+ * 组装模型侧的贴图路径文本块：每个落盘路径一行，固定英文机器标记（不随界面语言
+ * 变化，与占位符同族，便于模型稳定识别）。无路径时返回 undefined，调用方不追加。
+ *
+ * 用途：提交时把粘贴即落盘的附件路径附在消息尾部，模型据此可直接 read_media
+ * 重读，不用翻磁盘猜路径（2026-09-13 会话实测：没有路径时模型搜了六轮目录）。
+ *
+ * 只读语义是契约的一部分：附件文件在会话自有目录里，会话存储持 stepref 指针引用它，
+ * 模型移动或删除会让 resume 后 rehydrate 失败、该图变成 [image missing]。需要
+ * 副本时让模型 copy 而非 move。
+ */
+export function formatImagePathText(paths: readonly string[]): string | undefined {
+  if (paths.length === 0) return undefined;
+  return paths.map((p) => `${IMAGE_PATH_MARKER_PREFIX} ${p} (read-only session file; open it with read_media)`).join('\n');
+}
+
+/** 判断一段文本是否整段都是贴图路径机器标记（供历史回放过滤，匹配本模块产出的格式）。 */
+export function isImagePathMarker(text: string): boolean {
+  const lines = text.split('\n').filter((l) => l.trim() !== '');
+  return lines.length > 0 && lines.every((l) => l.startsWith(IMAGE_PATH_MARKER_PREFIX));
 }
 
 /**

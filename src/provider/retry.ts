@@ -192,6 +192,23 @@ export function isTransportAbortError(err: unknown): boolean {
 }
 
 /**
+ * 构造错误 cause 链（顶层在前），每条 message 截断到 300 字。
+ * 让 abort / error 任何错误类型都能事后按 name 归因（看门狗超时 vs 上游断连 vs 连接重置）。
+ * loop.ts 与 runTurn.ts 共用，避免两处各写一份漂移。
+ */
+export function buildCauseChain(err: unknown): Array<{ name: string; message: string }> {
+  const chain: Array<{ name: string; message: string }> = [];
+  const seen = new Set<unknown>();
+  let cur: unknown = err;
+  while (cur instanceof Error && !seen.has(cur)) {
+    seen.add(cur);
+    chain.push({ name: cur.name, message: cur.message.slice(0, 300) });
+    cur = cur.cause;
+  }
+  return chain;
+}
+
+/**
  * 错误码 → 建议用户动作（最小目录，对齐 error.advice.* 文案）：
  * 401/403 → 检查 key 配置；429（重试耗尽后）→ 稍后重试或查配额。其他错误无建议（undefined）。
  */

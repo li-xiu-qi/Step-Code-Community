@@ -16,8 +16,13 @@ import type { ChatProvider } from './types.js';
  * 不改动入参，全部返回新对象。
  */
 
-/** 媒体块类型（当前处理 image / document 两类）。 */
-const MEDIA_BLOCK_TYPES = new Set(['image', 'document']);
+/**
+ * 媒体块类型。image / document / video 三类：
+ * - video 于 2026-08-13 read_media 视频支持引入，2026-09-14 事故后补入本集合——
+ *   此前降级档（applyReprojectionLevel）只认 image/document，video 块在任何档位
+ *   都原样透传，端点拒视频时重投影链剥不掉它，等于安全网没有视频这一格。
+ */
+const MEDIA_BLOCK_TYPES = new Set(['image', 'document', 'video']);
 
 /** 媒体块占位文本：如实告知模型此处有媒体被省略。 */
 const IMAGE_OMITTED_TEXT = '[image omitted: model has no image input]';
@@ -30,6 +35,15 @@ const VIDEO_OMITTED_TEXT = '[video omitted: model has no video input]';
  * 公开 issue 里有「占位语义不清导致模型反复引用已不可见的图」的真实案例）。
  */
 const IMAGE_DEGRADED_TEXT = '[image removed: exceeded API image limit, older images dropped to retry]';
+/** 视频版降级占位（同语义：曾被读到、因端点拒收被移除）。 */
+const VIDEO_DEGRADED_TEXT = '[video removed: endpoint rejected video input, dropped to retry]';
+
+/** 按块类型选主动降级占位文本。 */
+const OMITTED_TEXT_BY_TYPE: Record<string, string> = {
+  image: IMAGE_OMITTED_TEXT,
+  document: DOCUMENT_OMITTED_TEXT,
+  video: VIDEO_OMITTED_TEXT,
+};
 
 /** 重投影档位（数组序即降级顺序）。 */
 export const REPROJECTION_LEVELS = ['normal', 'media-degraded', 'media-stripped', 'strict'] as const;
@@ -40,16 +54,21 @@ type Block = Anthropic.ContentBlockParam;
 function mediaPlaceholder(block: Block): Block {
   return {
     type: 'text',
-    text: block.type === 'document' ? DOCUMENT_OMITTED_TEXT : IMAGE_OMITTED_TEXT,
+    text: OMITTED_TEXT_BY_TYPE[block.type] ?? IMAGE_OMITTED_TEXT,
   };
 }
 
 /** 降级重投影的占位（与主动降级区分文案：这里是「图曾被看到、因超限被移除」）。 */
 function degradedPlaceholder(block: Block): Block {
-  return {
-    type: 'text',
-    text: block.type === 'document' ? DOCUMENT_OMITTED_TEXT : IMAGE_DEGRADED_TEXT,
-  };
+  // video 是运行时形状的非官方块类型（read_media 视频支持引入），按运行时形状判定
+  const type = (block as unknown as { type: string }).type;
+  const text =
+    type === 'video'
+      ? VIDEO_DEGRADED_TEXT
+      : type === 'document'
+        ? DOCUMENT_OMITTED_TEXT
+        : IMAGE_DEGRADED_TEXT;
+  return { type: 'text', text };
 }
 
 function isMediaBlock(block: Block): boolean {
@@ -106,11 +125,13 @@ export function degradeMessages(
   return messages.map((msg) =>
     mapBlocks(msg, (block) => {
       let b: Block | null = block;
-      if (!capability.image_in && isMediaBlock(b)) b = mediaPlaceholder(b);
-      // video 块独立门控（官方类型无此块，按运行时形状判定）：模型未声明 video_in 时
-      // 发送前换占位文本，与 image 投影同一层生效（2026-08-13 read_media 视频支持引入）。
-      if (!capability.video_in && (b as unknown as { type: string }).type === 'video') {
-        b = { type: 'text', text: VIDEO_OMITTED_TEXT };
+      // video 块独立门控（官方类型无此块，按运行时形状判定）：只由 video_in 决定，
+      // 不受 image_in 影响（image_in=false 的模型照样可能收视频），2026-08-13
+      // read_media 视频支持引入，2026-09-14 事故后把判定从 image 门控里独立出来。
+      if ((b as unknown as { type: string }).type === 'video') {
+        if (!capability.video_in) b = { type: 'text', text: VIDEO_OMITTED_TEXT };
+      } else if (!capability.image_in && isMediaBlock(b)) {
+        b = mediaPlaceholder(b);
       }
       if (!capability.reasoning && isThinkingBlock(b)) b = null;
       if (b !== null && !capability.cache_control) b = stripCacheControl(b);
@@ -213,6 +234,14 @@ const MEDIA_ERROR_PATTERNS: readonly RegExp[] = [
   /payload (too )?large/i,
   // 端点只收 text part（智谱等）：我们发出的非 text part 只有图片，命中即媒体问题
   /content\.type.{0,30}(参数非法|取值范围|invalid|not supported|must be)/i,
+  // 视频方言（2026-09-14 事故实测：某模型别名声明了 video_in，但所用 openai 端点
+  // 拒收视频——"The amount of videos you provided exceeds the model's limitation"，
+  // 一条视频即超限即端点的视频额度为 0）。此前只有图片方言，视频 400 不命中任何
+  // 模式 → 不可重投影 → 原样重发再挂一次。
+  /too many videos|videos too many/i,
+  /amount of videos/i,
+  /video(s)? (exceeds?|too (large|many|big))/i,
+  /video.*(limit|maximum)/i,
 ];
 
 /**

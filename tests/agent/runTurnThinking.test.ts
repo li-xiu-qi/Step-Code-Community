@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import type Anthropic from '@anthropic-ai/sdk';
 import { runAgent } from '../../src/agent/loop.js';
 import { stored, type StoredMessage } from '../../src/agent/message.js';
+import type { AgentEvent } from '../../src/agent/events.js';
+import type { ChatProvider } from '../../src/provider/types.js';
 import { collect, makeFakeProvider, textBlock, thinkingBlock, toolUseBlock } from '../helpers/fakeProvider.js';
 
 function sm(text: string): StoredMessage {
@@ -108,5 +111,82 @@ describe('runTurn thinking 事件与历史', () => {
     expect(events.at(-1)!.type).toBe('turn_done');
     const assistant = messages.find((m) => m.origin.kind === 'assistant');
     expect((assistant!.message.content as unknown[])[0]).toMatchObject({ type: 'thinking' });
+  });
+
+  /**
+   * 流被用户中断：吐出若干思考增量后把 signal 置为 aborted（模拟 Esc），
+   * 之后 finalMessage() 永不 resolve（真实 SDK 在 abort 后的行为）。
+   */
+  function makeAbortingProvider(thinkingChunks: string[]) {
+    const provider = {
+      stream(p: { signal?: AbortSignal }) {
+        const s = p.signal;
+        let emitted = 0;
+        async function* iter(): AsyncGenerator<Anthropic.MessageStreamEvent> {
+          yield {
+            type: 'content_block_start',
+            index: 0,
+            content_block: { type: 'thinking', thinking: '', signature: '' },
+          } as unknown as Anthropic.MessageStreamEvent;
+          for (const chunk of thinkingChunks) {
+            if (s?.aborted) return;
+            emitted++;
+            yield {
+              type: 'content_block_delta',
+              index: 0,
+              delta: { type: 'thinking_delta', thinking: chunk },
+            } as unknown as Anthropic.MessageStreamEvent;
+          }
+        }
+        return {
+          [Symbol.asyncIterator]: () => iter(),
+          finalMessage: () => new Promise<Anthropic.Message>((_r, reject) => {
+            // abort 后真实 SDK 的 finalMessage 永不 resolve，此处同样挂住
+            s?.addEventListener('abort', () => reject(new Anthropic.APIUserAbortError()), { once: true });
+          }),
+        };
+      },
+    } as unknown as ChatProvider;
+    return { provider };
+  }
+
+  it('中断时已产出的思考落盘进历史，不因 finalMessage 不 resolve 而丢失', async () => {
+    const ctrl = new AbortController();
+    const { provider } = makeAbortingProvider(['先分析', '这个价值点', '的几种可能']);
+    const messages: StoredMessage[] = [stored({ role: 'user', content: '问' }, { kind: 'user' })];
+
+    // 跑 runAgent，但在第一次 thinking_delta 后触发中断
+    const gen = runAgent({ provider, system: 'sys', ctx: { cwd: process.cwd() }, messages, signal: ctrl.signal });
+    const events: AgentEvent[] = [];
+    for await (const ev of gen) {
+      events.push(ev);
+      if (ev.type === 'thinking_delta' && (ev as { text: string }).text === '这个价值点') ctrl.abort();
+    }
+
+    // 思考事件确实产出了（对应故障现场：TUI 上有思考在滚）
+    const deltas = events.filter((e) => e.type === 'thinking_delta');
+    expect(deltas.length).toBeGreaterThanOrEqual(2);
+
+    // 关键断言：中断后思考进了历史，且是 assistant 角色的 thinking 块
+    const assistant = messages.find((m) => m.origin.kind === 'assistant');
+    expect(assistant).toBeDefined();
+    const content = assistant!.message.content as Array<{ type: string; thinking?: string }>;
+    expect(content[0]!.type).toBe('thinking');
+    expect(content[0]!.thinking).toContain('先分析');
+    expect(content[0]!.thinking).toContain('这个价值点');
+  });
+
+  it('中断且从未产出思考时不落盘空 assistant 消息', async () => {
+    const ctrl = new AbortController();
+    ctrl.abort(); // 进门即中断，一个思考增量都没产出
+    const { provider } = makeFakeProvider([
+      { thinkingChunks: ['这段思考不该被落盘'], textChunks: [], finalContent: [textBlock('不该出现')] },
+    ]);
+    const messages: StoredMessage[] = [stored({ role: 'user', content: '问' }, { kind: 'user' })];
+
+    await collect(runAgent({ provider, system: 'sys', ctx: { cwd: process.cwd() }, messages, signal: ctrl.signal }));
+
+    // 零思考增量 → 不产出任何 assistant 消息（避免历史里长出空壳）
+    expect(messages.filter((m) => m.origin.kind === 'assistant')).toHaveLength(0);
   });
 });

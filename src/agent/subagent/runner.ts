@@ -21,7 +21,7 @@ import { closeDanglingToolUse } from '../wirelog.js';
 import { timeSection } from '../nowContext.js';
 import { memorySection, scanMemory } from '../memory.js';
 import type { SubagentStore } from './store.js';
-import type { AgentDefinition, RunSubagentFn, SpawnSubagentRequest, SubagentResult } from './types.js';
+import type { AgentDefinition, RunSubagentFn, SpawnSubagentRequest, SubagentResult, SubagentStopReason } from './types.js';
 
 const SUMMARY_MIN_LEN = 200;
 const SPAWN_TOOL = 'spawn_agent';
@@ -43,6 +43,27 @@ const SPAWN_TOOL = 'spawn_agent';
  * 一律判为无写入迹象放行——worker 要在工作间里提交，不能误拦。接线前用 21 条 worker
  * 典型命令验证过误报面。
  */
+
+/**
+ * loop 层 StopReason 字符串 → 子 agent 结构化终态。
+ * 映射口径：end_turn/tool_use/roundLoop 硬停都是「结果可用」→ completed；
+ * max_tokens → max-tokens；其余（error/overflow 等异常出口）→ error。
+ * aborted 由调用方按信号单独判（aborted 出口无 turn_done 事件）。
+ */
+function toSubagentStopReason(turnStopReason: string | undefined): SubagentStopReason {
+  if (turnStopReason === 'max_tokens') return 'max-tokens';
+  return 'completed';
+}
+
+/**
+ * 失败诊断摘要（≤4096 字节）：取错误对象的结构化身份（name + message 首行），
+ * 供父侧调度与日志用，区别于 summary 的自然语言结论。
+ */
+function toDiagnostic(e: unknown): string | undefined {
+  if (e instanceof Error) return (e.name + ': ' + e.message.split('\n')[0]).slice(0, 4096);
+  return undefined;
+}
+
 export function wrapWriteGuard(
   base: NonNullable<LoopHooks['authorizeToolCall']>,
   cwd: string,
@@ -141,6 +162,14 @@ export interface SubagentRunnerDeps {
   agentsMd?: string;
   /** 单个子 agent 的墙钟超时（毫秒）。0 = 不限。超时后 abort 该子 agent。 */
   subagentTimeoutMs?: number;
+  /** wire 审计回调（组合根注入）：把子 agent 内部的请求级异常（retry / error）落进 wire.jsonl。
+   *
+   * 为什么必须有：子 agent 此前不传这个回调，它内部的 retry / error 在审计日志里毫无踪迹。
+   * 2026-09-10 排查 water18-0910 塔防 case 反复 abort 时，trace 只有 user 消息、零 assistant
+   * 输出，无法区分「看门狗超时」「上游 5xx」「连接被重置」三种成因，只能靠猜。
+   * 缺省不传 = 维持旧行为（不落盘）。
+   */
+  onWireEvent?: (event: import('../../agent/wirelog.js').WireEvent) => void;
   /** 子 agent 进度事件回调（带子 agent 标识 + 生命周期，供 UI 区分各并行子 agent）。 */
   onEvent?: (id: string | undefined, ev: SubagentProgressEvent) => void;
 }
@@ -244,6 +273,7 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): {
     // 深度硬上限（结构性剔除 spawn_agent 之外的第二道防护）
     if (req.depth + 1 > deps.maxDepth) {
       return {
+        stopReason: 'error',
         summary: `已达子 agent 深度上限（${deps.maxDepth}）。请自己完成该任务，不要再派生子 agent。`,
         isError: true,
       };
@@ -287,6 +317,7 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): {
       const sourceDef = registry.get(sourceSnap.agentType ?? req.subagentType);
       if (sourceDef === undefined) {
         return {
+          stopReason: 'error',
           summary: `子会话「${forkId}」的角色类型「${sourceSnap.agentType ?? req.subagentType}」已不存在，无法 fork。可用类型：${[...registry.keys()].join(', ')}。`,
           isError: true,
         };
@@ -328,6 +359,7 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): {
       const snapDef = registry.get(snap.agentType ?? req.subagentType);
       if (snapDef === undefined) {
         return {
+          stopReason: 'error',
           summary: `子会话「${resumeId}」的角色类型「${snap.agentType ?? req.subagentType}」已不存在，无法恢复。可用类型：${[...registry.keys()].join(', ')}。`,
           isError: true,
         };
@@ -365,6 +397,7 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): {
         const isAllowed = allowedRoots.some((root) => absFile === root || absFile.startsWith(root + sep));
         if (!isAllowed) {
           return {
+            stopReason: 'error',
             summary: `agent_file 路径不在允许的目录内。允许的根目录：${allowedRoots.join(', ')}。`,
             isError: true,
           };
@@ -372,6 +405,7 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): {
         const fileDef = loadAgentFile(req.agentFile);
         if (fileDef === null) {
           return {
+            stopReason: 'error',
             summary: `无法从指定路径加载子 agent 模板「${req.agentFile}」。请确认文件存在且 frontmatter 格式正确（需要 name 和 description 字段）。`,
             isError: true,
           };
@@ -381,6 +415,7 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): {
         const def = registry.get(req.subagentType);
         if (def === undefined) {
           return {
+            stopReason: 'error',
             summary: `未知子 agent 类型「${req.subagentType}」。可用类型：${[...registry.keys()].join(', ')}。`,
             isError: true,
           };
@@ -538,6 +573,8 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): {
       progress({ kind: 'start', id: sid, subagentType: agentDef.name, description: displayDesc });
 
       let hadError = false;
+    /** 最后一轮的 loop stopReason（turn_done 出口带出），映射为结构化终态用。 */
+    let lastTurnStopReason: string | undefined;
       let aborted = false;
       let lastCause: unknown;
       // 累计计费 token（放 runImpl 闭包：摘要过短追加轮的第二次 run() 自然连续累计）；
@@ -573,6 +610,7 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): {
           compactionModel: deps.compactionModel,
           compactionProvider: deps.compactionProvider,
           userMessageBudget: deps.userMessageBudget,
+          ...(deps.onWireEvent !== undefined ? { onWireEvent: deps.onWireEvent } : {}),
         })) {
           if (ev.type === 'tool_start') {
             toolUses += 1;
@@ -593,6 +631,7 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): {
             if (ev.cause !== undefined) lastCause = ev.cause;
           }
           if (ev.type === 'aborted') aborted = true;
+          if (ev.type === 'turn_done' && ev.stopReason !== undefined) lastTurnStopReason = ev.stopReason;
         }
       };
 
@@ -633,21 +672,21 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): {
         persist();
         const abortedText = '子 agent 已被中断。';
         progress({ kind: 'end', id: sid, isError: true, summary: abortedText, ...endStats() });
-        return { summary: abortedText, isError: true, sessionId };
+        return { summary: abortedText, isError: true, stopReason: 'aborted', sessionId };
       }
       if (summary === '') {
         subSession.status = 'error';
         persist();
         const failed = hadError ? '子 agent 执行出错，未产出结果。' : '子 agent 未产出可用结果。';
         progress({ kind: 'end', id: sid, isError: true, summary: failed, ...endStats() });
-        return { summary: failed, isError: true, cause: lastCause, sessionId };
+        return { summary: failed, isError: true, stopReason: 'error', cause: lastCause, diagnostic: toDiagnostic(lastCause), sessionId };
       }
       subSession.status = hadError ? 'error' : 'done';
       // 模板配 standby: true 时进待命（30 分钟无活动自动归档），否则一次性用完即归档
       if (agentDef.standby === true) subSession.standby = true;
       persist();
       progress({ kind: 'end', id: sid, isError: hadError, summary, ...endStats() });
-      return { summary: summary + modelNotice, isError: hadError, cause: hadError ? lastCause : undefined, sessionId };
+      return { summary: summary + modelNotice, isError: hadError, stopReason: toSubagentStopReason(lastTurnStopReason), cause: hadError ? lastCause : undefined, diagnostic: hadError ? toDiagnostic(lastCause) : undefined, sessionId };
     } catch (e) {
       // 未捕获异常（如 provider 层抛出）：同样写终态落盘，保住已有历史
       subSession.status = 'error';

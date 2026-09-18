@@ -5,9 +5,9 @@
  * App.tsx 里那批 xxxRef.current（给闭包提供即时值）随之消失，全部退化成普通字段。
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { Container, ProcessTerminal, TuiAltScreen, matchesKey, getKeybindings } from '@earendil-works/pi-tui';
 import type { Component, KeybindingsConfig, SelectItem } from '@earendil-works/pi-tui';
 import type { AgentEvent, SubagentProgressEvent, WorkflowStepEvent } from '../agent/events.js';
@@ -57,7 +57,6 @@ import type { McpManager } from '../mcp/manager.js';
 import { formatMcpStatus } from '../mcp/status.js';
 import { createProvider } from '../provider/factory.js';
 import type { ChatProvider } from '../provider/types.js';
-import { basename } from 'node:path';
 import { resolveCompactionBinding, type CompactionBinding } from '../provider/compaction.js';
 import { exportDebugBundle } from '../session/debugBundle.js';
 import { deriveTitle, type SessionData, type SessionMeta, type SessionStore } from '../session/store.js';
@@ -86,7 +85,7 @@ import { resolveProviderTarget } from '../chat/providerSwitch.js';
 import { diffConfig, formatConfigChange, planProviderReload, resolveCapabilitiesOnReload, resolveImageLimitsOnReload } from '../chat/reload.js';
 import { computeBacktrack, extractUserText, truncateItemsAtLastUser } from '../chat/backtrack.js';
 import { clearUndoSnapshots, computeUndo, popUndoSnapshots, pushUndoSnapshot, type UndoSnapshot } from '../chat/undo.js';
-import { historyToDisplayItems } from '../chat/historyReplay.js';
+import { historyToDisplayItems, type ReplayImageResolver } from '../chat/historyReplay.js';
 import { planTurnEnd } from '../chat/turnEnd.js';
 import { formatDuration } from '../chat/duration.js';
 import { formatUsageReport } from '../chat/usagePanel.js';
@@ -107,7 +106,7 @@ import {
 import { computeCtrlSSteer } from './steer.js';
 import { ChatAutocompleteProvider } from './completion.js';
 import { clipboardToolHint, readClipboardImage } from '../chat/clipboardImage.js';
-import { countHistoryImages, extractImageContent, ImageAttachmentStore } from '../chat/imageAttachment.js';
+import { countHistoryImages, extractImageContent, formatImagePathText, ImageAttachmentStore } from '../chat/imageAttachment.js';
 import { askLine, modelItems, modelTabs, showPicker, agentItems, sessionItems, thinkItems, type PickerOverlay } from './pickers.js';
 import { StreamBuffer } from '../chat/streamBuffer.js';
 import { appendText, settleThinking } from '../chat/streamReducer.js';
@@ -126,6 +125,7 @@ import { sortAgents, AgentsOverlay } from './AgentsOverlay.js';
 import { openProviderManager, runProviderWizard } from './ProviderManager.js';
 import { allTodosDone } from '../chat/chromePanels.js';
 import { ItemBlock, summarizeInput } from './blocks.js';
+import { FILE_LINK_SCHEME, fileUrlToPath, openWithSystem } from './fileLink.js';
 import { applyWtKittyOverride } from './imageCaps.js';
 import { openExpandViewer } from './ExpandOverlay.js';
 import { c, editorTheme } from './theme.js';
@@ -863,9 +863,19 @@ export class PiChat {
     });
   }
 
+  /**
+   * 历史回放的图片解析器：stepref → base64（附件缺失返回 null，回放回退 [图片] 占位）。
+   * 让 resume 后的历史图片与实时贴图回显走同一渲染路径（images / resultImages 字段）。
+   */
+  private replayImages(): ReplayImageResolver {
+    const attachments = this.deps.store.attachments;
+    const cwd = this.session.cwd;
+    return { rehydrate: (stepref: string) => attachments.rehydrate(cwd, stepref) };
+  }
+
   private replayHistory(): void {
     if (this.session.messages.length === 0) return;
-    const replay = historyToDisplayItems(this.session.messages);
+    const replay = historyToDisplayItems(this.session.messages, undefined, this.replayImages());
     const items = [...replay.items];
     items.push({
       kind: 'note',
@@ -1327,7 +1337,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     // （同一引用），据此重建转录块，旧块失去引用即被 GC。仅 full 压缩发此事件（micro
     // 不发），且 compaction 只在回合边界、无在途条目，重建安全。
     if (event.type === 'context.apply_compaction') {
-      this.transcript.reset(historyToDisplayItems(this.history).items);
+      this.transcript.reset(historyToDisplayItems(this.history, undefined, this.replayImages()).items);
     }
   }
 
@@ -1508,21 +1518,45 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
   /** OSC 8 超链接点击回调：用户点击了某轮 prompt 行 → 将该轮文本载入输入框。 */
   private handleUrlClick(url: string): void {
     const m = url.match(/^step:\/\/turn\/(\d+)$/);
-    if (!m) return;
-    const targetTurn = parseInt(m[1], 10);
-    if (Number.isNaN(targetTurn)) return;
-    // 在转录区找对应轮次的用户消息
-    const item = this.transcript.items().find(
-      (it) => it.kind === 'user' && it.turnNum === targetTurn,
-    );
-    if (item === undefined) return;
-    const text = 'text' in item ? (item as { text: string }).text : '';
-    if (text === '') return;
-    this.editor.setText(text);
-    // 滚动到输入框位置（输入框在底部），让用户看到已载入的 prompt
-    this.tui.scrollToBottom();
-    this.tui.flash(`已载入第 ${targetTurn} 轮输入（Enter 发送 · Esc 取消）`, 2000);
-    this.tui.requestRender();
+    if (m) {
+      const targetTurn = parseInt(m[1], 10);
+      if (Number.isNaN(targetTurn)) return;
+      // 在转录区找对应轮次的用户消息
+      const item = this.transcript.items().find(
+        (it) => it.kind === 'user' && it.turnNum === targetTurn,
+      );
+      if (item === undefined) return;
+      const text = 'text' in item ? (item as { text: string }).text : '';
+      if (text === '') return;
+      this.editor.setText(text);
+      // 滚动到输入框位置（输入框在底部），让用户看到已载入的 prompt
+      this.tui.scrollToBottom();
+      this.tui.flash(`已载入第 ${targetTurn} 轮输入（Enter 发送 · Esc 取消）`, 2000);
+      this.tui.requestRender();
+      return;
+    }
+    // step-file: 链接：转录区里的文件路径（工具卡路径、offload 输出文件）。
+    // 载荷是原始展示路径（可能相对），按会话 cwd 解析。打开 fire-and-forget，
+    // 成功与否只能从 spawn 报错判断。
+    if (url.startsWith(FILE_LINK_SCHEME)) {
+      const path = fileUrlToPath(url, this.session.cwd);
+      if (path === undefined) {
+        this.tui.flash('链接路径无法解析', 2000);
+        this.tui.requestRender();
+        return;
+      }
+      const ok = openWithSystem(path, isDirectoryPath(path));
+      this.tui.flash(ok ? `已请求打开：${basename(path)}` : `打开失败：${basename(path)}`, 2000);
+      this.tui.requestRender();
+      return;
+    }
+    // http(s)：终端里唯一该有浏览器语义的 scheme，其余一律丢弃（urlGuard
+    // 同思路：模型输出可塑形链接，未登记 scheme 不产生动作）。
+    if (/^https?:\/\//i.test(url)) {
+      const ok = openWithSystem(url, false);
+      this.tui.flash(ok ? '已请求在浏览器中打开' : '打开失败', 2000);
+      this.tui.requestRender();
+    }
   }
 
   /**
@@ -2125,7 +2159,17 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       }
       return;
     }
-    const att = this.images.add(image.base64, image.mediaType, image.width, image.height);
+    // 粘贴即落盘：贴图字节同步 offload 进附件仓（内容寻址、去重），路径记在附件上。
+    // 提交时把它写进模型侧文本，模型被要求「用工具重读图」时有真坐标可调，不用翻磁盘
+    // （2026-09-13 会话实测：没有路径时模型搜了六轮目录才撞见 attachments/）。
+    // 失败不阻断：落盘失败（磁盘满等）时无路径，图片照常内联发送。
+    let imagePath: string | undefined;
+    try {
+      imagePath = this.deps.store.attachments.pathFor(this.session.cwd, image.base64, image.mediaType);
+    } catch {
+      imagePath = undefined;
+    }
+    const att = this.images.add(image.base64, image.mediaType, image.width, image.height, imagePath);
     const cur = this.editor.getText();
     this.editor.setText((cur === '' || cur.endsWith(' ') ? cur : `${cur} `) + att.placeholder);
     // 附加成功要有明确回执：占位符插进输入框这一下容易被忽略，尤其贴第二张时
@@ -2667,7 +2711,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     this.baseTokens = 0;
     this.status.setState({ usedTokens: 0 });
     this.persist();
-    const replay = historyToDisplayItems(this.history);
+    const replay = historyToDisplayItems(this.history, undefined, this.replayImages());
     this.transcript.reset(
       [
         ...replay.items,
@@ -2777,7 +2821,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       return;
     }
     const meta = this.deps.subagentStore.list(cwd).find((m) => m.id === subId);
-    const replay = historyToDisplayItems(messages);
+    const replay = historyToDisplayItems(messages, undefined, this.replayImages());
     const label = meta?.name ?? meta?.title ?? subId.slice(0, 8);
     // 保存当前视图快照（浅拷贝 DisplayItem 数组，reset 后旧数组不受影响）
     this.subagentBrowsing = { saved: this.transcript.items() };
@@ -3977,7 +4021,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     // 切会话即换了 delivered 集合的作用域，内存里那份属于旧会话，清掉重来。
     this.deliveredWritten = new Set(r.deliveredNotifications);
     this.reconcileBackground(this.deliveredWritten);
-    const replay = historyToDisplayItems(data.messages);
+    const replay = historyToDisplayItems(data.messages, undefined, this.replayImages());
     // 恢复感知：告诉用户 resume 后挂了多少队列消息与定时任务——此前静默换绑，用户根本不知道
     const restoredParts: string[] = [];
     if (restoredQueue.length > 0) restoredParts.push(`${restoredQueue.length} 条排队消息`);
@@ -4384,10 +4428,38 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       });
     }
     if (opts?.silent !== true) {
+      // 贴图回显：提交时从附件池快照本轮图片（base64 直接进条目，不存 id——
+      // 附件池在 /new、会话切换时 clear，但转录条目要保住图片）。
+      // 快照用 activeIds(text) 而非 store 全量：用户删掉的占位符不显示。
+      const attached =
+        extracted.imageCount > 0
+          ? this.images
+              .activeIds(text)
+              .map((id) => this.images.get(id))
+              .filter((a): a is NonNullable<typeof a> => a !== undefined)
+          : [];
       this.push({
         kind: 'user',
         text: extracted.imageCount > 0 ? `${extracted.displayText} [${extracted.imageCount} 张图]` : text,
+        ...(attached.length > 0 ? { images: attached } : {}),
       });
+    }
+    // 贴图路径告知模型：粘贴时已 offload 到附件仓（内容寻址），把绝对路径附在发给
+    // 模型的文本尾部，每图一行。没有它，模型被要求「用工具重读图」时对位置一无所知，
+    // 只能翻磁盘（2026-09-13 会话实测：六轮搜索才靠 ls 撞见 attachments/）。
+    // 路径只进模型侧文本不进 displayText（转录区不见路径噪声）。
+    // 小图内联未落盘或落盘失败时附件无路径，不追加。
+    if (extracted.imageCount > 0 && Array.isArray(extracted.content)) {
+      const paths = this.images
+        .activeIds(text)
+        .map((id) => this.images.get(id))
+        .filter((a): a is NonNullable<typeof a> => a !== undefined)
+        .map((a) => a.path)
+        .filter((p): p is string => p !== undefined);
+      if (paths.length > 0) {
+        const pathText = formatImagePathText(paths);
+        if (pathText !== undefined) extracted.content.push({ type: 'text', text: pathText });
+      }
     }
     const userMsg = opts?.prepared ??
       stored({ role: 'user', content: extracted.content }, { kind: opts?.silent === true ? 'injection' : 'user' });
@@ -4420,6 +4492,9 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       maxDepth: this.deps.config.subagent.maxDepth,
       maxStepsDefault: this.deps.config.subagent.maxSteps,
       subagentTimeoutMs: this.deps.config.subagent.timeoutS > 0 ? this.deps.config.subagent.timeoutS * 1000 : undefined,
+      // 子 agent 的请求级异常落盘：不传则它内部的 retry / error 在 wire 里毫无踪迹，
+      // 出问题时只能看到「零 assistant 输出」而无法归因（2026-09-10 water18-0910 实证）。
+      onWireEvent: (event: import('../agent/wirelog.js').WireEvent) => this.appendWire(event),
       userMessageBudget: {
         maxTokens: this.deps.config.compaction.userMessageMaxTokens,
         headTokens: this.deps.config.compaction.userMessageHeadTokens,
@@ -4712,6 +4787,8 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
               result: cachedPath !== undefined ? undefined : result,
               resultFile: cachedPath,
               resultSize: result.length,
+              // read_media 等工具的图片载荷：结果下方内联渲染（无协议时降级占位文本）
+              ...(ev.images !== undefined && ev.images.length > 0 ? { resultImages: ev.images } : {}),
             };
           },
         );
@@ -4906,6 +4983,19 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       }
     }
     return null;
+  }
+}
+
+/**
+ * 判定路径是否为目录（决定 Windows 下走 cmd start 还是 Shell COM）。
+ * 不存在或不可 stat 一律按文件处理：交给 start 时其内部会再解析，
+ * 假目录不会误触 COM 路径（COM 对不存在路径同样报错，二者失败等价）。
+ */
+function isDirectoryPath(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
   }
 }
 

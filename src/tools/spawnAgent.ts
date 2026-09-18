@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { SubagentResult } from '../agent/subagent/types.js';
+import type { SubagentResult, SubagentStopReason } from '../agent/subagent/types.js';
 import { subagentParallelKind } from './subagentAccess.js';
 import { fail, ok, type ToolContext, type ToolDef } from './types.js';
 import { resolvePath } from './fsutil.js';
@@ -73,28 +73,46 @@ const schema = z.object({
  * 结构化结果头：让父 agent 能可靠区分「做完了」与「失败但有部分产出」，resume 决策有据可依。
  * 用纯文本 `key: value` 而非 XML 包裹——工具结果是纯文本通道，标签会和正文里的代码块混淆。
  */
+/**
+ * 终态 → 模型可见的行动指引。四种非完成态的行为完全不同，旧的 done/error 二分
+ * 只能表达「成没成」，模型拿到 error 无从判断该重试、该换小任务、还是该等用户。
+ */
+function stopReasonHint(stopReason: SubagentStopReason, sessionId: string | undefined): string {
+  switch (stopReason) {
+    case 'aborted':
+      return '\n\n（子 agent 被中断。这不是失败，等用户指示后再决定是否 resume 续跑。）';
+    case 'max-tokens':
+      return sessionId !== undefined
+        ? `\n\n（子 agent 输出超出模型上限被截断。可换更小的任务范围重试，或用 resume="${sessionId}" 在已有基础上续跑。）`
+        : '\n\n（子 agent 输出超出模型上限被截断。可换更小的任务范围重试。）';
+    case 'error':
+      return sessionId !== undefined
+        ? `\n\n（子 agent 执行出错。需要继续时用 spawn_agent 的 resume="${sessionId}" 续跑；如需带着历史另起炉灶但不影响源会话，用 fork="${sessionId}"。）`
+        : '';
+    case 'completed':
+    default:
+      return '';
+  }
+}
+
 function formatSubagentResult(
   subagentType: string,
-  status: 'done' | 'error',
+  stopReason: SubagentStopReason,
   summary: string,
   sessionId: string | undefined,
   cause?: unknown,
 ): string {
   const head =
     sessionId !== undefined
-      ? `subagent: ${subagentType} | status: ${status} | session: ${sessionId}`
-      : `subagent: ${subagentType} | status: ${status}`;
+      ? `subagent: ${subagentType} | status: ${stopReason} | session: ${sessionId}`
+      : `subagent: ${subagentType} | status: ${stopReason}`;
   // 失败时把真实 provider 报错摘要拼进结果：子 agent 内部的 runTurn 重试已先扛过一轮，
   // 走到 error 终态的都是重试耗尽/不可重试的硬故障。没有这段时，父 agent 与用户只看到
   // 「子 agent 执行出错，未产出结果。」，无从判断是 429 限流、上下文溢出、连接拒绝还是超时，
   // 只能靠翻 session 快照倒推（而快照不含 error cause）。cause 为空时退回原文案。
   const causeLine =
-    status === 'error' && cause !== undefined ? `\n\n失败原因：${summarizeError(cause)}` : '';
-  const tail =
-    status === 'error' && sessionId !== undefined
-      ? `\n\n（需要在它已有工作基础上继续时，用 spawn_agent 的 resume="${sessionId}" 续跑；如需带着历史另起炉灶但不影响源会话，用 fork="${sessionId}"）`
-      : '';
-  return `${head}\n\n${summary}${causeLine}${tail}`;
+    stopReason === 'error' && cause !== undefined ? `\n\n失败原因：${summarizeError(cause)}` : '';
+  return `${head}\n\n${summary}${causeLine}${stopReasonHint(stopReason, sessionId)}`;
 }
 
 export const spawnAgentTool: ToolDef<z.infer<typeof schema>> = {
@@ -173,7 +191,7 @@ export const spawnAgentTool: ToolDef<z.infer<typeof schema>> = {
           agentFile: input.agent_file,
         })
         .then((r) => ({
-          output: formatSubagentResult(subagentType, r.isError ? 'error' : 'done', r.summary, r.sessionId, r.cause),
+          output: formatSubagentResult(subagentType, r.stopReason ?? (r.isError ? 'error' : 'completed'), r.summary, r.sessionId, r.cause),
           ok: !r.isError,
         }));
       try {
@@ -198,11 +216,11 @@ export const spawnAgentTool: ToolDef<z.infer<typeof schema>> = {
     // cause 透传给调度层：429 限流失败时父侧据此重排队尾（第二道防线）
     if (result.isError) {
       return {
-        ...fail(formatSubagentResult(subagentType, 'error', result.summary, result.sessionId, result.cause)),
+        ...fail(formatSubagentResult(subagentType, result.stopReason ?? 'error', result.summary, result.sessionId, result.cause)),
         cause: result.cause,
       };
     }
-    return ok(formatSubagentResult(subagentType, 'done', result.summary, result.sessionId));
+    return ok(formatSubagentResult(subagentType, result.stopReason ?? 'completed', result.summary, result.sessionId));
   },
 };
 

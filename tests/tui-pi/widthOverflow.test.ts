@@ -16,8 +16,12 @@ function checkNoOverflow(label: string, item: DisplayItem, widths: number[]): vo
   for (const w of widths) {
     const lines = block.render(w);
     for (let i = 0; i < lines.length; i++) {
-      // 去掉 ANSI 后测可见宽度
-      const vis = lines[i].replace(/\x1b\[[0-9;]*m/g, '').replace(/\]8;;[^\x07]*\x07/g, '').length;
+      // 去掉 ANSI 后测可见宽度。OSC 8 两种终止符都要剥：pi-tui 的 hyperlink()
+      // 用 ST（\x1b\\），窗口标题等历史序列用 BEL（\x07）。
+      const vis = lines[i]
+        .replace(/\x1b\[[0-9;]*m/g, '')
+        .replace(/\x1b\]8;;[^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+        .length;
       expect(vis, `${label} width=${w} line ${i} 可见宽度 ${vis} > ${w}`).toBeLessThanOrEqual(w);
     }
   }

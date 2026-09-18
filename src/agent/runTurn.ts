@@ -10,6 +10,7 @@ import {
   isRateLimitError,
   isRetryableError,
   isTransportAbortError,
+  buildCauseChain,
   retryAfterMs,
   summarizeError,
   RETRY_MAX_ATTEMPTS,
@@ -28,12 +29,13 @@ import { capToolResult } from './toolResultLimit.js';
 import { isToolRegistered } from '../tools/index.js';
 import { ToolScheduler } from './toolScheduler.js';
 import { toWire } from './wire.js';
-import { checkUnknownToolSafety, emptyUnknownToolState, recordToolOutcome, type UnknownToolVerdict } from './unknownToolGuard.js';
+import {
+  emptyUnknownToolState,
+  recordToolOutcome,
+  checkUnknownToolSafety,
+  type UnknownToolVerdict,
+} from './unknownToolGuard.js';
 
-/**
- * 守卫中止时给被中止任务的统一结果文本。与最终落历史的说明消息分工不同：
- * 这条只回答「为什么没执行」，历史清理由 4.1 段负责。
- */
 /** 未知工具循环终止时，替剩余未执行工具合成的结果文案。 */
 const UNKNOWN_TOOL_HALT_MSG =
   '本回合已连续多次调用不存在的工具名，剩余工具调用已终止。'
@@ -45,8 +47,28 @@ export type StopReason = 'end_turn' | 'tool_use' | 'aborted' | 'error' | 'overfl
 /** 单回合执行结果。 */
 export interface TurnOutcome {
   stopReason: StopReason;
-  /** 回合内未知工具循环守卫的触发记录（safe=false）。仅作诊断信息，不进 wire、不落盘。 */
+  /**
+   * abort 诊断：stopReason='aborted' 时 runTurn 捕获的真实错误（顶层 name + cause 链）。
+   * 不落盘则 abort 在 wire 里毫无踪迹（2026-09-10 water18-0910 塔防实证：零 assistant 输出、
+   * 零 turn.issue），事后分不清是看门狗超时、上游断连还是用户主动 Esc。仅当 signal.aborted
+   * 分支捕获到具体错误时带上；用户主动 Esc 且无错误对象时为 undefined。
+   */
+  errorName?: string;
+  causeChain?: Array<{ name: string; message: string }>;
+  /**
+   * 未知工具循环守卫的终止记录：本回合内连续命中 `UNKNOWN_TOOL` 达上限，剩余工具
+   * 调用被中止并合成说明结果。不设 stopReason='aborted'，因为这不是用户中断，回合
+   * 照常把 tool_result 交还模型让它自行收敛。仅作诊断与测试断言用。
+   */
   unknownToolHalt?: UnknownToolVerdict & { safe: false };
+  /**
+   * abort 发生阶段：signal 已置位但无错误对象可提取时（纯 `if (signal?.aborted) return`
+   * 检查点）的补充定位。entry=回合入口、stream=流式读取中被中断、retry-sleep=重试等待被中断、
+   * caught-error=catch(e) 捕获到具体错误。不落盘则这些 abort 在 wire 里同样毫无踪迹
+   * （2026-09-11 bfb9736a 实证：停在 tool_result 之后，无注入消息、零 turn.issue），
+   * 事后分不清中断发生在哪个阶段。落盘判据见 loop.ts case 'aborted'。
+   */
+  abortSource?: 'entry' | 'stream' | 'retry-sleep' | 'caught-error';
   /** 本回合模型返回的真实 token usage（成功拿到 finalMessage 时带上，供压缩判断）。 */
   usage?: Anthropic.Usage;
   /**
@@ -246,7 +268,36 @@ export async function* runTurn(
 ): AsyncGenerator<AgentEvent, TurnOutcome> {
   const { provider, system, tools, ctx, messages, hooks, signal, allowedTools, model, thinking, providerName } = opts;
 
-  if (signal?.aborted) return { stopReason: 'aborted' };
+  /**
+   * 中断时已产出的思考累积。跨 attempt 保留：重试路径（降档 / think-only 恢复）同样可能被 Esc 打断，
+   * 那些流里的 thinking_delta 也是用户看到过的思考，一并累积。
+   *
+   * 为什么需要它：流被 abort 后 finalMessage() 永不 resolve，而 assistant 消息的落点在流成功之后
+   * （下方 messages.push(final)），于是被中断轮次的思考只在 UI 的 DisplayItem 里存在过，
+ * 不进 messages 也不进 wire——事后复盘看不到「模型当时在想什么」，wire 里也没有任何痕迹。
+   * 落点选 messages 而非新增 wire 事件：历史本就是思考的唯一归宿（成功轮次的 thinking 块
+   * 同样走 messages），resume 后能继续追溯。signature 置空是安全的——openai 适配层回灌
+   * 只取 b.thinking 文本、不看 signature（其自身合成 thinking 块时也用空 signature）。
+   */
+  let interruptedThinking = '';
+  let interruptedThinkingPersisted = false;
+
+  /** 把累积的思考落成一条 assistant 消息。幂等，且零内容时不落盘（避免历史长出空壳）。 */
+  function persistInterruptedThinking(): void {
+    if (interruptedThinkingPersisted || interruptedThinking.length === 0) return;
+    interruptedThinkingPersisted = true;
+    messages.push(
+      stored(
+        {
+          role: 'assistant',
+          content: [{ type: 'thinking', thinking: interruptedThinking, signature: '' }] as Anthropic.ContentBlockParam[],
+        },
+        { kind: 'assistant' },
+      ),
+    );
+  }
+
+  if (signal?.aborted) return { stopReason: 'aborted', abortSource: 'entry' };
 
   // --- 流式请求（边流边 yield 的手动重试：仅在尚未吐字时才重试） ---
   let final: Anthropic.Message | undefined;
@@ -314,6 +365,7 @@ export async function* runTurn(
           // 思考增量上抛给 UI（流式预览）。**不置 emittedText**：思考不是正文，
           // 重试只会让思考重复展示一次，而阻断重试会把偶发空响应变成用户必须手动重发的硬错误。
           yield { type: 'thinking_delta', text: event.delta.thinking };
+          interruptedThinking += event.delta.thinking; // 累积：中断时落盘用（见函数头部注释）
           // thinking 流死循环检测：命中即中止当前流（下方走注入诱导重试）。
           // 已吐正文时不中止：撤回正文违背「正文不进重试」的铁律。
           if (!emittedText && !retriedLoop) {
@@ -338,7 +390,10 @@ export async function* runTurn(
         // signature_delta 不上抛：signature 由 SDK 聚合进 finalMessage 的 thinking 块，
         // 随 assistant 消息进历史并原样回灌（Anthropic 协议要求 tool-use 轮带 signature）。
       }
-      if (signal?.aborted) return { stopReason: 'aborted' };
+      if (signal?.aborted) {
+        persistInterruptedThinking();
+        return { stopReason: 'aborted', abortSource: 'stream' };
+      }
       // thinking 流死循环命中：中止当前流，构造「诱导跳出」注入消息，重试 1 次。
       // 注入放在新请求的 user 消息尾部（客户端可控的最后位置），明确要求直接给答案。
       // 用「终止+新请求」而非同流续写：注入会污染上下文，原流已陷入循环不可救。
@@ -395,6 +450,7 @@ export async function* runTurn(
                 yield { type: 'tool_forming', id: block.id, name: block.name };
               } else if (event.type === 'content_block_delta' && event.delta.type === 'thinking_delta') {
                 yield { type: 'thinking_delta', text: event.delta.thinking };
+                interruptedThinking += event.delta.thinking; // 累积：中断时落盘用（见函数头部注释）
               } else if (
                 event.type === 'content_block_start' &&
                 (event.content_block.type === 'thinking' || event.content_block.type === 'redacted_thinking')
@@ -406,7 +462,10 @@ export async function* runTurn(
                 yield { type: 'thinking_end' };
               }
             }
-            if (signal?.aborted) return { stopReason: 'aborted' };
+            if (signal?.aborted) {
+              persistInterruptedThinking();
+              return { stopReason: 'aborted', abortSource: 'stream' };
+            }
             const retryMsg = await retryStream.finalMessage();
             if (isEmptyResponse(retryMsg) && retryMsg.stop_reason === 'max_tokens') {
               // 降级重试后仍耗尽：尝试 think-only 自动恢复（落盘 thinking + 注入直接回答）
@@ -447,6 +506,7 @@ export async function* runTurn(
                     yield { type: 'text', text: event.delta.text };
                   } else if (event.type === 'content_block_delta' && event.delta.type === 'thinking_delta') {
                     yield { type: 'thinking_delta', text: event.delta.thinking };
+                    interruptedThinking += event.delta.thinking; // 累积：中断时落盘用（见函数头部注释）
                   } else if (
                     event.type === 'content_block_start' &&
                     (event.content_block.type === 'thinking' || event.content_block.type === 'redacted_thinking')
@@ -459,7 +519,10 @@ export async function* runTurn(
                   }
                 }
                 // 中断：thinking 与注入消息已落盘（中止前轮已落定），正文未成不落盘，直接 aborted。
-                if (signal?.aborted) return { stopReason: 'aborted' };
+                if (signal?.aborted) {
+                  persistInterruptedThinking();
+                  return { stopReason: 'aborted', abortSource: 'stream' };
+                }
                 const recoverMsg = await recoverStream.finalMessage();
                 // 恢复成功（拿到了正文或工具调用）：即时落盘为独立 assistant 消息，回合结束。
                 // 这里原本缺了这个判断——无论恢复成功与否都往下走兜底，导致恢复成功后
@@ -498,7 +561,10 @@ export async function* runTurn(
                       yield { type: 'text', text: event.delta.text };
                     }
                   }
-                  if (signal?.aborted) return { stopReason: 'aborted' };
+                  if (signal?.aborted) {
+                    persistInterruptedThinking();
+                    return { stopReason: 'aborted', abortSource: 'stream' };
+                  }
                   const finalMsg = await finalStream.finalMessage();
                   if (!isEmptyResponse(finalMsg)) {
                     messages.push(stored({ role: 'assistant', content: finalMsg.content }, { kind: 'assistant' }));
@@ -557,7 +623,10 @@ export async function* runTurn(
                 yield { type: 'text', text: event.delta.text };
               }
             }
-            if (signal?.aborted) return { stopReason: 'aborted' };
+            if (signal?.aborted) {
+              persistInterruptedThinking();
+              return { stopReason: 'aborted', abortSource: 'stream' };
+            }
             const finalMsg = await finalStream.finalMessage();
             if (!isEmptyResponse(finalMsg)) {
               messages.push(stored({ role: 'assistant', content: finalMsg.content }, { kind: 'assistant' }));
@@ -590,7 +659,10 @@ export async function* runTurn(
       // 这种「传输层中断」若被当作用户取消处理，会走「立刻停手不重试」，表现为回合静默放弃、
       // 弹「This operation was aborted」、任务丢失（water18-new 线上实证）。故用 isTransportAbortError
       // 排除：传输层中断交下方重试逻辑，只有 signal 主动置位且非传输层中断才是用户按了 Esc。
-      if (signal?.aborted && !isTransportAbortError(e)) return { stopReason: 'aborted' };
+      if (signal?.aborted && !isTransportAbortError(e)) {
+        persistInterruptedThinking();
+        return { stopReason: 'aborted', ...(e instanceof Error ? { errorName: e.name } : {}), causeChain: buildCauseChain(e), abortSource: 'caught-error' };
+      }
       // 上下文溢出：不报错，交给外层循环压缩历史后重试本回合（仅在尚未吐字时才有意义）
       if (!emittedText && isContextOverflowError(e)) {
         return { stopReason: 'overflow' };
@@ -622,8 +694,9 @@ export async function* runTurn(
       };
       try {
         await abortableSleep(delay, signal);
-      } catch {
-        return { stopReason: 'aborted' };
+      } catch (e) {
+        persistInterruptedThinking();
+        return { stopReason: 'aborted', ...(e instanceof Error ? { errorName: e.name } : {}), causeChain: buildCauseChain(e), abortSource: 'retry-sleep' };
       }
     }
   }
@@ -728,9 +801,11 @@ export async function* runTurn(
    *  abort 总是晚一步，那个任务已处于 running，不会被转成 skipped。 */
   let haltIndex = -1;
   /** 本轮 UNKNOWN_TOOL 的 tool_use id → 工具名。回合末成对移出历史，换成一条说明消息。
-   *  失败的调用对留在历史里会构成自我强化闭环，详见 unknownToolGuard.ts 头部注释。
+   *  只在 4.1（无效工具调用不进历史）用：失败的调用对留在历史里会构成自我强化闭环，
+   *  详见 unknownToolGuard.ts 头部注释与产品设计文档「未知工具处理与回合内循环防护设计」。
    *  这张表只收执行过的（守卫中止的调用不过 executeTool、拿不到 errorCode，回合末按
-   *  isToolRegistered 名字判并集，见下方移除逻辑）。 */
+   *  isToolRegistered 名字判并集，见下方移除逻辑）。合法工具被守卫误伤中止的结果不在此列——
+   *  模型需要知道那些调用没执行。 */
   const unknownToolUses = new Map<string, string>();
   // start 事件带批次号：同一批 drain 连续启动的任务（并行）须连在一起产出，
   // 跨批（串行等待）须等前一个 end。notice 不受约束，分队列。
@@ -774,8 +849,8 @@ export async function* runTurn(
     {
       // 与 workflow 工具一致的缺省 4（config.subagent.maxConcurrent 首次在 runTurn 路径生效）
       maxSubagentConcurrent: ctx.subagentMaxConcurrent ?? 4,
-      // 守卫中止走 haltCtrl：守卫触发时 abort 它，把剩余任务转成 skipped，
-      // 与用户 Esc 复用同一路径，但下方回收处可区分（signal 未置位）。
+      // 守卫的中止源：桥接外部 signal 的中止，另叠加未知工具循环守卫自身的触发。
+      // 不直接改外部 signal，那个还管着请求流的其他检查点。
       signal: haltCtrl.signal,
       onStart: (i) => {
         const p = prepared[i]!;
@@ -822,6 +897,7 @@ export async function* runTurn(
     const p = prepared[i]!;
     const state = await scheduler.waitSettled(i);
     // halt 之后的任务一律换成说明结果，不看 scheduler 状态（见 haltIndex 注释）。
+    // 顺序必须在本分支之前：这些任务可能已跑完，state 不是 skipped。
     if (haltIndex >= 0 && i > haltIndex) {
       toolResults.push(makeToolResult(p.tu.id, { content: UNKNOWN_TOOL_HALT_MSG, isError: true }));
       continue;
@@ -840,11 +916,13 @@ export async function* runTurn(
       continue;
     }
     const result = p.result!;
-    yield { type: 'tool_end', id: p.tu.id, name: p.tu.name, result: result.content, isError: result.isError };
+    yield { type: 'tool_end', id: p.tu.id, name: p.tu.name, result: result.content, isError: result.isError, images: result.images };
     toolResults.push(makeToolResult(p.tu.id, result));
-    // 4.1 记账：UNKNOWN_TOOL 的 tool_use 不进历史。移除动作在 tool_result 组装后统一做。
+    // 4.1 记账：UNKNOWN_TOOL 的 tool_use 不进历史。移除动作在 tool_result 组装后统一做
+    //（那时才拿得到本轮全部结果）。preset 拒绝与守卫 halt 的结果不带 errorCode，不记账。
     if (result.errorCode === 'UNKNOWN_TOOL') unknownToolUses.set(p.tu.id, p.tu.name);
     // 未知工具循环守卫：只认 errorCode==='UNKNOWN_TOOL'，其他结果一律清零计数。
+    // 首次达限即中止后续工具（pending 转 skipped，走下方 skipped 分支合成说明）。
     if (unknownToolHalt === undefined) {
       unknownToolState = recordToolOutcome(unknownToolState, result.errorCode, p.tu.name);
       const verdict = checkUnknownToolSafety(unknownToolState);
@@ -875,16 +953,18 @@ export async function* runTurn(
   //     单条 assistant 消息内含 56 个同一幻觉工具名）。详见 unknownToolGuard.ts 头注。
   //     保留说明而非静默删除：模型得知道那次调用没有成功。 ---
   if (unknownToolUses.size > 0 || toolUses.some((tu) => !isToolRegistered(tu.name))) {
-    // 判据取并集：执行时拿到 UNKNOWN_TOOL 的，加上守卫中止根本没执行、只能按名字判的。
-    // 合法工具（含被守卫误伤中止的）名字已注册，保留。
+    // 判据取并集：执行时拿到 UNKNOWN_TOOL 的（回合内可能被动态注册/反注册，结果更可信），
+    // 加上守卫中止根本没执行、只能按名字判的。合法工具（含被守卫误伤中止的）名字已注册，保留。
     const invalidIds = new Set(unknownToolUses.keys());
     for (const tu of toolUses) {
       if (!isToolRegistered(tu.name)) invalidIds.add(tu.id);
     }
     const names = [...new Set([...unknownToolUses.values(), ...toolUses.filter((tu) => invalidIds.has(tu.id)).map((tu) => tu.name)])];
     // assistant 侧：摘除对应 tool_use 块。承载本轮 tool_use 的是 messages 里最后一条
-    // assistant 消息，按 id 匹配原地过滤。整条被掏空时整条移除：空 content 的
-    // assistant 消息在投影层会被合并丢弃，留在 storage 里只会干扰压缩切点。
+    // assistant 消息（正常路径统一 push，skipFinalPush 路径即时落盘），按 id 匹配原地过滤。
+    // 过滤生成新数组、不改 final.content 原数组（final 已不再被读，但保持不可变更干净）。
+    // 整条被掏空时（本轮全是无效调用）整条移除：空 content 的 assistant 消息在投影层
+    // 会被合并丢弃，留在 storage 里只会干扰压缩切点。
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i]!;
       if (m.message.role !== 'assistant') continue;
@@ -922,7 +1002,7 @@ export async function* runTurn(
   }
   messages.push(stored({ role: 'user', content: toolResults }, { kind: 'tool' }));
 
-  return { stopReason: userAborted ? 'aborted' : 'tool_use', usage };
+  return { stopReason: userAborted ? 'aborted' : 'tool_use', usage, unknownToolHalt };
 }
 
 /**

@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -86,5 +86,40 @@ describe('AttachmentStore', () => {
     store.offload('D:/other', b64, 'image/png');
     expect(readdirSync(join(base, workdirKey(cwd), 'attachments'))).toHaveLength(1);
     expect(readdirSync(join(base, workdirKey('D:/other'), 'attachments'))).toHaveLength(1);
+  });
+});
+
+describe('AttachmentStore.pathFor', () => {
+  it('大图 offload 后返回附件绝对路径，且路径存在', () => {
+    const b64 = bigBase64();
+    const p = store.pathFor(cwd, b64, 'image/png');
+    expect(typeof p).toBe('string');
+    expect(existsSync(p!)).toBe(true);
+    // 路径形如 <base>/<workdirKey>/attachments/<sha256>.png
+    expect(p!.endsWith('.png')).toBe(true);
+    expect(p!.startsWith(attachmentsDir())).toBe(true);
+  });
+
+  it('幂等：同内容两次 pathFor 返回同一路径、不重复写文件', () => {
+    const b64 = bigBase64();
+    const p1 = store.pathFor(cwd, b64, 'image/png');
+    const p2 = store.pathFor(cwd, b64, 'image/png');
+    expect(p1).toBe(p2);
+    expect(readdirSync(attachmentsDir())).toHaveLength(1);
+  });
+
+  it('路径内容与 offload 结果一致：rehydrate(offload) 字节等于 pathFor 落盘文件', () => {
+    const b64 = bigBase64(5000);
+    const p = store.pathFor(cwd, b64, 'image/jpeg');
+    const ref = store.offload(cwd, b64, 'image/jpeg');
+    expect(store.rehydrate(cwd, ref)).toBe(b64);
+    expect(p!.endsWith('.jpeg')).toBe(true);
+    expect(readFileSync(p!).toString('base64')).toBe(b64);
+  });
+
+  it('小图（<阈值）返回 undefined、不建目录', () => {
+    const small = Buffer.alloc(100, 1).toString('base64');
+    expect(store.pathFor(cwd, small, 'image/png')).toBeUndefined();
+    expect(existsSync(attachmentsDir())).toBe(false);
   });
 });

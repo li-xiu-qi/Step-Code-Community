@@ -1,8 +1,12 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import { isSystemAuthoredUser, type MessageOrigin, type StoredMessage } from '../agent/message.js';
 import { sliceRecentTurns } from '../agent/turns.js';
+import { isStepref } from '../session/attachments.js';
+import { parseImageMeta } from '../tools/imageMeta.js';
 import { t } from '../i18n.js';
+import { isImagePathMarker, type ImageAttachment } from './imageAttachment.js';
 import type { DisplayItem } from './types.js';
+import type { ToolResultImage } from '../tools/types.js';
 
 /**
  * 会话回放：把恢复的历史消息（StoredMessage[]）投影成可渲染的 DisplayItem[]。
@@ -13,26 +17,70 @@ import type { DisplayItem } from './types.js';
  *
  * 关键处理：
  * - assistant 的 text 块拼成一条 assistant，thinking 块落成 thinking，tool_use 落成 tool；
- * - tool_result 按 tool_use_id 配对回填到对应 tool 的 result/status（Map 配对）；
+ * - tool_result 按 tool_use_id 配对回填到对应 tool 的 result/status（Map 配对），
+ *   内嵌图片经解析器还原后挂 resultImages（与实时 read_media 结果同渲染路径）；
  * - 非真人输入的 user 角色消息不渲染成用户气泡（见 isSystemAuthoredUser）；
- * - 图片块转成 [图片] 占位（resume 时图片是 stepref 指针，历史区不实际渲染）；
+ * - 用户消息的图片块经解析器从 stepref 还原成真图挂 images 字段（与实时贴图回显同形），
+ *   解析失败（附件缺失/无解析器）回退 [图片] 占位文本；
+ * - 模型侧的贴图路径机器标记（Attached image file: ...）过滤出用户可见文本；
  * - 按轮次截断（sliceRecentTurns），避免长会话一次性刷屏。
  */
 
 /** 回放默认保留的最近轮数（一轮 = 一次真人输入到下次输入前）。超出的折叠。 */
 export const REPLAY_TURN_LIMIT = 15;
 
-/** 从 tool_result 块的 content 提取纯文本（content 可能是 string 或块数组）。 */
-function toolResultText(content: Anthropic.ToolResultBlockParam['content']): string {
-  if (content === undefined) return '';
-  if (typeof content === 'string') return content;
-  return content
-    .map((b) => {
-      if (b.type === 'text') return b.text;
-      if (b.type === 'image') return '[图片]';
-      return '';
-    })
-    .join('');
+/**
+ * 回放图片解析器：把存储态 stepref 指针还原成 base64。
+ * 缺省不传（无附件上下文的调用，如单测）时图片一律回退 [图片] 占位。
+ */
+export interface ReplayImageResolver {
+  rehydrate(stepref: string): string | null;
+}
+
+/** 图片块 → 回放用附件：stepref 经解析器还原、字节解析宽高；任何一步失败返回 null。 */
+function replayImageAttachment(
+  block: Anthropic.ImageBlockParam,
+  resolver: ReplayImageResolver | undefined,
+): ImageAttachment | null {
+  const source = block.source;
+  if (source.type !== 'base64') return null;
+  let base64 = source.data;
+  if (isStepref(base64)) {
+    if (resolver === undefined) return null;
+    const rehydrated = resolver.rehydrate(base64);
+    if (rehydrated === null) return null;
+    base64 = rehydrated;
+  }
+  const meta = parseImageMeta(Buffer.from(base64, 'base64'));
+  if (meta === null) return null;
+  return {
+    id: 0,
+    base64,
+    mediaType: source.media_type,
+    width: meta.width,
+    height: meta.height,
+    placeholder: '',
+  };
+}
+
+/** tool_result 的 content（string 或块数组）→ 展示文本 + 可还原的内嵌图片。 */
+function toolResultContent(
+  content: Anthropic.ToolResultBlockParam['content'],
+  resolver: ReplayImageResolver | undefined,
+): { text: string; images: ToolResultImage[] } {
+  if (content === undefined) return { text: '', images: [] };
+  if (typeof content === 'string') return { text: content, images: [] };
+  let text = '';
+  const images: ToolResultImage[] = [];
+  for (const b of content) {
+    if (b.type === 'text') text += b.text;
+    else if (b.type === 'image') {
+      const att = replayImageAttachment(b, resolver);
+      if (att !== null) images.push({ mediaType: att.mediaType, base64: att.base64 });
+      else text += '[图片]';
+    }
+  }
+  return { text, images };
 }
 
 type ToolItem = Extract<DisplayItem, { kind: 'tool' }>;
@@ -79,10 +127,12 @@ export function assembleResumeItems(
 /**
  * 把历史消息转成 DisplayItem 列表。
  * keepTurns 控制回放的最近轮数；<=0 表示全量。
+ * images 为图片解析器（stepref → base64）；不传时图片块回退 [图片] 占位文本。
  */
 export function historyToDisplayItems(
   messages: StoredMessage[],
   keepTurns = REPLAY_TURN_LIMIT,
+  images?: ReplayImageResolver,
 ): ReplayResult {
   const sliced = sliceRecentTurns(messages, keepTurns);
   const items: DisplayItem[] = [];
@@ -178,34 +228,50 @@ export function historyToDisplayItems(
       continue;
     }
 
-    // role === 'user'：可能是真人输入（text/image 块）或 tool_result 回灌（origin.kind:'tool'）。
+    // role === 'user'：同一消息的 text/image 块缓冲成一个用户条目（与实时回显同形：
+    // 正文 + [N 张图] 标签 + images 字段），tool_result 块即时回填到 tool 条目。
+    let bufText: string[] = [];
+    let bufImages: ImageAttachment[] = [];
+    const flushUserItem = (): void => {
+      if (bufText.length === 0 && bufImages.length === 0) return;
+      const body = bufText.join('').trim();
+      const text = bufImages.length > 0 ? `${body} [${bufImages.length} 张图]` : body;
+      if (text.trim() !== '') {
+        items.push(
+          origin.kind === 'user_verbatim'
+            ? { kind: 'user', text, verbatim: true, turnNum: ++turnNum, ...(bufImages.length > 0 ? { images: bufImages } : {}) }
+            : { kind: 'user', text, turnNum: ++turnNum, ...(bufImages.length > 0 ? { images: bufImages } : {}) },
+        );
+      }
+      bufText = [];
+      bufImages = [];
+    };
     for (const block of content) {
       if (block.type === 'tool_result') {
-        // 回填到对应的 tool 条目。
+        // 回填到对应的 tool 条目（含内嵌图片的还原）。
+        flushUserItem();
         const tool = toolById.get(block.tool_use_id);
         if (tool !== undefined) {
-          tool.result = toolResultText(block.content);
+          const { text, images: resultImages } = toolResultContent(block.content, images);
+          tool.result = text;
           tool.status = block.is_error === true ? 'error' : 'ok';
+          if (resultImages.length > 0) tool.resultImages = resultImages;
         }
       } else if (block.type === 'text') {
         // 系统自撰消息里夹带的文本块不成用户气泡（如 tool origin 消息里的补充说明）。
-        if (!systemAuthored && block.text.trim() !== '') {
-          items.push(
-            origin.kind === 'user_verbatim'
-              ? { kind: 'user', text: block.text, verbatim: true, turnNum: ++turnNum }
-              : { kind: 'user', text: block.text, turnNum: ++turnNum },
-          );
+        // 模型侧的贴图路径机器标记是发给模型的元数据，同样不进用户可见文本。
+        if (!systemAuthored && !isImagePathMarker(block.text) && block.text.trim() !== '') {
+          bufText.push(block.text);
         }
       } else if (block.type === 'image') {
         if (!systemAuthored) {
-          items.push(
-            origin.kind === 'user_verbatim'
-              ? { kind: 'user', text: '[图片]', verbatim: true, turnNum: ++turnNum }
-              : { kind: 'user', text: '[图片]', turnNum: ++turnNum },
-          );
+          const att = replayImageAttachment(block, images);
+          if (att !== null) bufImages.push(att);
+          else bufText.push(' [图片]'); // 附件缺失或无解析器：回退占位文本（前导空格分隔前文）
         }
       }
     }
+    flushUserItem();
   }
 
   return { items, totalTurns: sliced.totalTurns, foldedTurns: sliced.foldedTurns };

@@ -210,8 +210,8 @@ export type WireEvent =
        */
       type: 'turn.issue';
       ts: string;
-      /** 异常类别：empty（空响应）/ retry（重试）/ error（不可重试错误）。 */
-      kind: 'empty' | 'retry' | 'error';
+      /** 异常类别：empty（空响应）/ retry（重试）/ error（不可重试错误）/ aborted（被中断，带诊断）。 */
+      kind: 'empty' | 'retry' | 'error' | 'aborted';
       /** 人类可读摘要（errorMessageWithAdvice 的同源文案）。 */
       message: string;
       /** 重试第几次（kind=retry 时有值）。 */
@@ -225,6 +225,19 @@ export type WireEvent =
       maxTokens?: number;
       model?: string;
       provider?: string;
+      /**
+       * 顶层错误名（如 `StreamIdleTimeoutError` / `AbortError` / `APIError`）。
+       *
+       * 为什么必须落盘：`message` 常被 cause 链里的标准消息盖掉，看不出真正的成因。
+       * 2026-09-10 排查 water18-0910 塔防反复 abort 时，wire 里只有
+       * "This operation was aborted"（undici 标准 AbortError 文案），真正的
+       * `StreamIdleTimeoutError` 完全不可见，三种可能成因无法区分。
+       */
+      errorName?: string;
+      /** cause 链（顶层在前），每条 message 截断到 300 字。让任何错误类型都可事后归因。 */
+      causeChain?: Array<{ name: string; message: string }>;
+      /** abort 归因来源。kind=aborted 时来自 runTurn 8 处 signal 检查点：entry/stream/retry-sleep/caught-error；kind=error 时若 cause 是传输层 abort（走重试路径后耗尽），标 retry（2026-09-11 补，water-0910 实测传输层 abort 全落 error 分支）。 */
+      abortSource?: 'entry' | 'stream' | 'retry-sleep' | 'caught-error' | 'retry';
     };
 
 /**

@@ -55,9 +55,15 @@ class FakeTerminal implements Terminal {
   }
 }
 
+/**
+ * 剥 SGR 与 OSC 8（两种终止符）后取可见文本。OSC 8 用 ST（\x1b\\）结尾，
+ * 只剥 SGR 会让超链接序列残留在断言文本里（路径链接化后「工具名  参数」
+ * 的连续断言会因中间夹着 \x1b]8;;... 而失配）。
+ */
+// eslint-disable-next-line no-control-regex
+const STRIP_ANSI = /\x1b\[[0-9;]*m|\x1b\]8;;[^\x07\x1b]*(?:\x07|\x1b\\)/g;
 function plain(lines: readonly string[]): string[] {
-  // eslint-disable-next-line no-control-regex
-  return lines.map((l) => l.replace(/\x1b\[[0-9;]*m/g, ''));
+  return lines.map((l) => l.replace(STRIP_ANSI, ''));
 }
 
 describe('ItemBlock 渲染', () => {
@@ -141,14 +147,14 @@ describe('ItemBlock 渲染', () => {
       expect(wf, '参数应为 gray(90)').toContain('\x1b[90m');
       expect(wf).toContain('src/x.ts');
       // 工具名与参数之间两个空格
-      expect(wf.replace(/\x1b\[[0-9;]*m/g, '')).toContain('write_file  src/x.ts');
+      expect(wf.replace(STRIP_ANSI, '')).toContain('write_file  src/x.ts');
 
       // skill 的参数着黄（33），与普通参数区分
       const sk = head({ name: 'skill', input: { skill: 'academic-figure' } });
       expect(sk, 'skill 参数应为 yellow(33)').toContain('\x1b[33m');
 
       // 字段覆盖：这些工具此前全都只显示工具名
-      const plain = (o: Record<string, unknown>): string => head(o).replace(/\x1b\[[0-9;]*m/g, '');
+      const plain = (o: Record<string, unknown>): string => head(o).replace(STRIP_ANSI, '');
       expect(plain({ name: 'web_search', input: { query: 'pi-tui 源码', n: 10 } })).toContain('pi-tui 源码');
       expect(plain({ name: 'web_fetch', input: { url: 'https://example.com/d' } })).toContain('https://example.com/d');
       expect(plain({ name: 'task_output', input: { task_id: 'tm-541' } })).toContain('tm-541');
@@ -165,7 +171,7 @@ describe('ItemBlock 渲染', () => {
         { kind: 'tool', id: 't', name: 'write_file', status: 'ok', input: { path: 'src/x.ts' }, result: 'ok' } as never,
         78,
       )[0]!;
-      expect(expanded.replace(/\x1b\[[0-9;]*m/g, '')).toContain('write_file  src/x.ts');
+      expect(expanded.replace(STRIP_ANSI, '')).toContain('write_file  src/x.ts');
     } finally {
       chalk.level = prev;
     }
@@ -785,7 +791,7 @@ describe('ChatEditor 的 Esc / Ctrl+C 路由', () => {
     expect(withFooter.length, 'footer 应多占一行').toBe(base.length + 1);
     // 必须在下边框之后（框内会让输入框高度抖动）
     // Editor 的边框是横线（不是 welcome 框的圆角），footer 必须落在它之后
-    expect(withFooter[withFooter.length - 2]!.replace(/\x1b\[[0-9;]*m/g, ''), '倒数第二行应是下边框').toMatch(/^─+$/);
+    expect(withFooter[withFooter.length - 2]!.replace(STRIP_ANSI, ''), '倒数第二行应是下边框').toMatch(/^─+$/);
     expect(withFooter[withFooter.length - 1]).toContain('再按一次 Esc');
     // 超宽 footer 被截断，不撑破行宽
     ed.footerText = () => 'x'.repeat(200);
@@ -940,7 +946,7 @@ describe('输入框提示符', () => {
     });
   }
   /** 剥 ANSI，便于按可见字符断言。 */
-  const plain = (s: string): string => s.replace(/\x1b\[[0-9;]*m/g, '');
+  const plain = (s: string): string => s.replace(STRIP_ANSI, '');
 
   it('首个内容行以 “› ” 开头', () => {
     const ed = mk();
@@ -1016,7 +1022,7 @@ describe('输入框占位文案', () => {
       },
     });
   }
-  const plain = (s: string): string => s.replace(/\x1b\[[0-9;]*m/g, '');
+  const plain = (s: string): string => s.replace(STRIP_ANSI, '');
 
   it('空输入时显示，且排在光标之后', () => {
     const ed = mk();
@@ -1273,7 +1279,7 @@ describe('dynamic_workflow 阶段渲染', () => {
       const lines = a.render(w);
       for (const line of lines) {
         // plain() 去掉 ANSI 后测可见宽度
-        const vis = line.replace(/\x1b\[[0-9;]*m/g, '').length;
+        const vis = line.replace(STRIP_ANSI, '').length;
         expect(vis, `width=${w} 时某行可见宽度 ${vis} > ${w}`).toBeLessThanOrEqual(w);
       }
     }
@@ -1490,7 +1496,7 @@ describe('ActivityLine renderCache', () => {
     const a = new ActivityLine();
     a.setBusy(true);
     a.setThinking(true, 'thinking content');
-    const plain = (s: string): string => s.replace(/\x1b\[[0-9;]*m/g, '');
+    const plain = (s: string): string => s.replace(STRIP_ANSI, '');
     const head1 = plain(a.render(80)[0]!);
     // tick 推进帧号并失效 renderCache——render 会重算 head 行（spinner 字符变），
     // 但 thinking 预览文本没变，render 内部复用 cachedTail，预览行不随帧重渲染。

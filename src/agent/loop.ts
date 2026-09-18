@@ -16,7 +16,7 @@ import {
   usageTotalTokens,
   type CompactionThresholds,
 } from './compaction/compact.js';
-import { EmptyResponseError } from '../provider/retry.js';
+import { EmptyResponseError, buildCauseChain, isTransportAbortError } from '../provider/retry.js';
 import type { AgentEvent } from './events.js';
 import { type LoopHooks, resolveContinuation } from './hooks.js';
 import { type StoredMessage, stored } from './message.js';
@@ -24,7 +24,7 @@ import { buildSettleMessage } from './background/notify.js';
 import { buildStreamMessage } from './background/monitorStream.js';
 import { crossedLocalMidnight, formatLocalNow } from './nowContext.js';
 import type { WireEvent } from './wirelog.js';
-import { runTurn } from './runTurn.js';
+import { runTurn, type StopReason } from './runTurn.js';
 import { emptyContinuationState, advanceContinuation, checkContinuationSafety } from './continuation.js';
 import { createRoundLoopDetector, fingerprintRound } from './roundLoop.js';
 import { EmissionGuard, runAdvisorReview } from './advisor/index.js';
@@ -325,6 +325,8 @@ export async function* runAgent(opts: RunAgentOptions): AsyncGenerator<AgentEven
    * 一半，于是单回合的纯对话轮永远按被低估的数字判断，长会话能一路涨到接近满窗仍不压缩。
    */
   let lastUsage: { total: number; measuredLength: number } | undefined = opts.initialUsage;
+  /** 最后一轮的 stopReason（turn_done 出口带出，供子 agent 结构化终态）。 */
+  let lastTurnStopReason: StopReason | undefined;
   /**
    * 框架侧固定开销（system prompt + tools schema）的估算值。
    *
@@ -563,6 +565,12 @@ export async function* runAgent(opts: RunAgentOptions): AsyncGenerator<AgentEven
       } else if (ev.type === 'error') {
         const cause = ev.cause;
         const emptyCtx = cause instanceof EmptyResponseError ? cause.context : undefined;
+        // 通用错误诊断：不只 EmptyResponseError 需要可归因。
+        // 2026-09-10 排查 water18-0910 塔防反复 abort 时，error 只记了 message
+        // （"This operation was aborted"），真正的 StreamIdleTimeoutError 被 cause 链里的
+        // 标准 AbortError message 盖掉，事后无法区分「看门狗超时」「上游 5xx」「连接被重置」。
+        // 这里把 error name 与 cause 链上的 name/message 一并落盘，任何错误类型都可归因。
+        const causeChain = buildCauseChain(cause);
         opts.onWireEvent?.({
           type: 'turn.issue',
           ts: new Date().toISOString(),
@@ -574,6 +582,15 @@ export async function* runAgent(opts: RunAgentOptions): AsyncGenerator<AgentEven
           ...(emptyCtx?.maxTokens !== undefined ? { maxTokens: emptyCtx.maxTokens } : {}),
           ...(emptyCtx?.model !== undefined ? { model: emptyCtx.model } : model !== undefined ? { model } : {}),
           ...(emptyCtx?.provider !== undefined ? { provider: emptyCtx.provider } : {}),
+          // 错误链归因：顶层 name/message 加 cause 链（截断到 300 字，避免日志膨胀）
+          ...(cause instanceof Error ? { errorName: cause.name } : {}),
+          ...(causeChain.length > 0 ? { causeChain } : {}),
+          // 传输层 abort（undici AbortError / 连接类网络 code）走的是「重试」路径：runTurn 把它
+          // 归入 retryable，重试耗尽后才落到这个 error 分支。若不打标，wire 里只有 errorName=AbortError，
+          // 分不清是看门狗/上游断连/连接重置（2026-09-11 water-0910 实测：传输层 abort 全落这里，
+          // abortSource 缺失导致无法归因）。传输层中断来源标 retry（区别于 runTurn 8 处 signal 检查点的
+          // entry/stream/retry-sleep/caught-error）。
+          ...(isTransportAbortError(cause) ? { abortSource: 'retry' } : {}),
         });
       }
       yield step.value;
@@ -627,6 +644,9 @@ export async function* runAgent(opts: RunAgentOptions): AsyncGenerator<AgentEven
     // goal token 计量：每回合拿到真实 usage 即按计费口径累计（仅 active 累计，见 GoalMode.addTokens）
     if (outcome.usage !== undefined) ctx.goal?.addTokens(outcome.usage);
 
+    // 记录最后一轮的 stopReason：各 turn_done 收尾出口带上它，供子 agent 运行器产出
+    // 结构化终态（SubagentStopReason）。aborted/error 出口无 turn_done，走各自事件。
+    lastTurnStopReason = outcome.stopReason;
     switch (outcome.stopReason) {
       case 'aborted':
         messages.push(
@@ -638,6 +658,21 @@ export async function* runAgent(opts: RunAgentOptions): AsyncGenerator<AgentEven
             { kind: 'injection' },
           ),
         );
+        // abort 可归因落盘：runTurn 的 abort return 点统一带上诊断（errorName/causeChain/abortSource）。
+        // 不落盘则 abort 在 wire 里毫无踪迹，事后分不清是看门狗超时、上游断连、用户主动 Esc，
+        // 还是中断发生在哪个阶段。catch(e) 的点有 errorName/causeChain，纯信号检查点只有 abortSource。
+        // 两者有其一即落盘；控制流与注入消息不变。
+        if (outcome.errorName !== undefined || outcome.abortSource !== undefined) {
+          opts.onWireEvent?.({
+            type: 'turn.issue',
+            ts: new Date().toISOString(),
+            kind: 'aborted',
+            message: outcome.causeChain?.[0]?.message ?? `子 agent 在 ${outcome.abortSource ?? '未知'} 阶段被中断`,
+            errorName: outcome.errorName,
+            ...(outcome.causeChain !== undefined && outcome.causeChain.length > 0 ? { causeChain: outcome.causeChain } : {}),
+            ...(outcome.abortSource !== undefined ? { abortSource: outcome.abortSource } : {}),
+          });
+        }
         yield { type: 'aborted' };
         return;
       case 'error':
@@ -752,7 +787,7 @@ export async function* runAgent(opts: RunAgentOptions): AsyncGenerator<AgentEven
           if (contEx !== null) {
             yield { type: 'continuation', inject: contEx.inject };
           }
-          yield { type: 'turn_done' };
+          yield { type: 'turn_done', stopReason: lastTurnStopReason };
           return;
         }
         // A 类：正文被截断。有实质产出，续写会推进，交循环守卫决定能不能续。
@@ -777,7 +812,7 @@ export async function* runAgent(opts: RunAgentOptions): AsyncGenerator<AgentEven
         if (contStop !== null) {
           yield { type: 'continuation', inject: contStop.inject };
         }
-        yield { type: 'turn_done' };
+        yield { type: 'turn_done', stopReason: lastTurnStopReason };
         return;
       }
       case 'end_turn': {
@@ -800,7 +835,7 @@ export async function* runAgent(opts: RunAgentOptions): AsyncGenerator<AgentEven
         if (cont !== null) {
           yield { type: 'continuation', inject: cont.inject };
         }
-        yield { type: 'turn_done' };
+        yield { type: 'turn_done', stopReason: lastTurnStopReason };
         return;
       }
       case 'tool_use': {
@@ -828,7 +863,7 @@ export async function* runAgent(opts: RunAgentOptions): AsyncGenerator<AgentEven
         if (loopVerdict.action === 'stop') {
           // 第 4 轮仍相同：硬停（模型行为问题，不是系统故障，不用 error 事件）
           yield { type: 'notice', message: t('loop.roundLoop.stop') };
-          yield { type: 'turn_done' };
+          yield { type: 'turn_done', stopReason: lastTurnStopReason };
           return;
         }
         // ── Advisor 旁路审查 ──
@@ -868,7 +903,7 @@ export async function* runAgent(opts: RunAgentOptions): AsyncGenerator<AgentEven
   const cont = await resolveContinuation(hooks);
   if (cont !== null) {
     yield { type: 'continuation', inject: cont.inject };
-    yield { type: 'turn_done' };
+    yield { type: 'turn_done', stopReason: lastTurnStopReason };
     return;
   }
 

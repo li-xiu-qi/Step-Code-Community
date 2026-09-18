@@ -323,8 +323,9 @@ describe('PiChat 接线：compaction 后重建 Transcript（OOM 根因修复）'
   it('appendWire 的 compaction 分支重建了 Transcript', () => {
     // 接线点 1：appendWire 里识别 compaction 事件
     wired(piChat, "event.type === 'context.apply_compaction'", 'compaction 事件识别');
-    // 接线点 2：命中后用压缩后 history 重建转录块（旧块失引用即 GC）
-    wired(piChat, 'this.transcript.reset(historyToDisplayItems(this.history)', 'compaction 后重建 Transcript');
+    // 接线点 2：命中后用压缩后 history 重建转录块（旧块失引用即 GC；
+    // 第三参是 resume 图片恢复的解析器，见 2026-09-13 贴图持久化设计）
+    wired(piChat, 'this.transcript.reset(historyToDisplayItems(this.history, undefined, this.replayImages())', 'compaction 后重建 Transcript');
     // 接线点 3：historyToDisplayItems 已导入（否则上面那行编译不过，但显式守住接线意图）
     wired(piChat, "historyToDisplayItems", 'historyToDisplayItems 导入');
   });

@@ -153,7 +153,7 @@ describe('spawn_agent 后台派生的生命周期', () => {
     await spawnAgentTool.execute({ prompt: 'x', run_in_background: true }, ctx);
     const settled = await capturedRun!;
     expect(settled.ok).toBe(true);
-    expect(settled.output).toContain('status: done');
+    expect(settled.output).toContain('status: completed');
     expect(settled.output).not.toContain('失败原因');
   });
 });

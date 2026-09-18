@@ -88,4 +88,19 @@ export class AttachmentStore {
       return null;
     }
   }
+
+  /**
+   * 贴图落盘路径查询：offload（幂等）后返回附件文件的绝对路径。
+   * 小图（<OFFLOAD_THRESHOLD，未落盘、内联在消息里）返回 undefined。
+   *
+   * 用途：贴图提交时把路径写进发给模型的文本，模型据此可直接 read_media 重读。
+   * 没有它，模型被要求「用工具重读图」时对附件位置一无所知，只能翻磁盘
+   * （2026-09-13 会话实测：搜了 Pictures/Desktop/剪贴板/output-cache/sessions
+   * 六轮，靠 ls 撞见 attachments/ 才找到）。
+   */
+  pathFor(cwd: string, base64: string, mediaType: string): string | undefined {
+    const ref = this.offload(cwd, base64, mediaType);
+    if (!isStepref(ref)) return undefined;
+    return join(this.dirFor(cwd), `${ref.slice(STEPREF_PREFIX.length)}.${extFor(mediaType)}`);
+  }
 }

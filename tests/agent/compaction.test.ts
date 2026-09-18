@@ -15,7 +15,7 @@ import {
   usageTotalTokens,
 } from '../../src/agent/compaction/compact.js';
 import { stored, type StoredMessage } from '../../src/agent/message.js';
-import { makeFakeProvider, textBlock } from '../helpers/fakeProvider.js';
+import { makeFakeProvider, textBlock, toolUseBlock } from '../helpers/fakeProvider.js';
 
 /** 取压缩产物里的摘要消息（保真消息排在它之前，故不能再假定它是 out[0]）。 */
 function summaryOf(out: StoredMessage[]): StoredMessage {
@@ -26,6 +26,17 @@ function summaryOf(out: StoredMessage[]): StoredMessage {
 
 function toolResultMsg(id: string, content: string): StoredMessage {
   return stored({ role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content }] }, { kind: 'tool' });
+}
+
+/** 构造一次 todo_list 写调用（带 todos 整体替换）+ 它的结果，成对出现才不会让切点把它切开。 */
+function todoWritePair(
+  id: string,
+  todos: { title: string; status: string }[],
+): [StoredMessage, StoredMessage] {
+  return [
+    stored({ role: 'assistant', content: [toolUseBlock(id, 'todo_list', { todos })] }, { kind: 'assistant' }),
+    toolResultMsg(id, '已更新任务清单'),
+  ];
 }
 
 /**
@@ -347,6 +358,77 @@ describe('fullCompact', () => {
     const content = summaryOf(out).message.content as string;
     expect(content).toContain('## TODO List');
     expect(content).toContain('实现登录');
+  });
+
+  it('最后一次清单写入落在保留窗口内 → 当实时清单，标题不带降级声明', async () => {
+    const { provider } = makeFakeProvider([
+      { textChunks: [], finalContent: [textBlock('摘要正文')] },
+    ]);
+    const [write, result] = todoWritePair('t1', [
+      { title: '修登录 bug', status: 'in_progress' },
+    ]);
+    // keepRecent=2 → 保留最后两条；写入对正好落进保留窗口
+    const msgs: StoredMessage[] = [
+      stored({ role: 'user', content: '开始' }, { kind: 'user' }),
+      stored({ role: 'assistant', content: [textBlock('好')] }, { kind: 'assistant' }),
+      write,
+      result,
+    ];
+    const out = await fullCompact(provider, msgs, 2, [
+      { title: '修登录 bug', status: 'in_progress' },
+    ]);
+    const content = summaryOf(out).message.content as string;
+    expect(content).toContain('## TODO List\n- [in_progress] 修登录 bug');
+    expect(content).not.toContain('快照');
+  });
+
+  it('最后一次清单写入落在被压缩段内 → 标注为快照，声明与笔记冲突时以笔记为准', async () => {
+    const { provider } = makeFakeProvider([
+      { textChunks: [], finalContent: [textBlock('摘要正文')] },
+    ]);
+    const [write, result] = todoWritePair('t1', [
+      { title: '用中文领域地图实战验证', status: 'in_progress' },
+    ]);
+    // keepRecent=2 → 保留最后两条，写入对被压掉
+    const msgs: StoredMessage[] = [
+      stored({ role: 'user', content: '开始' }, { kind: 'user' }),
+      write,
+      result,
+      stored({ role: 'assistant', content: [textBlock('最近1')] }, { kind: 'assistant' }),
+      stored({ role: 'user', content: '最近2' }, { kind: 'user' }),
+    ];
+    const out = await fullCompact(provider, msgs, 2, [
+      { title: '用中文领域地图实战验证', status: 'in_progress' },
+    ]);
+    const content = summaryOf(out).message.content as string;
+    expect(content).toContain('## TODO List（进度快照，可能滞后；与上方笔记不一致时以上方笔记为准）');
+    expect(content).toContain('- [in_progress] 用中文领域地图实战验证');
+  });
+
+  it('todo_list 读取调用（无 todos 参数）不算写入，不刷新新鲜度', async () => {
+    const { provider } = makeFakeProvider([
+      { textChunks: [], finalContent: [textBlock('摘要正文')] },
+    ]);
+    const [oldWrite, oldResult] = todoWritePair('t0', [
+      { title: '旧任务', status: 'in_progress' },
+    ]);
+    // 读取调用紧邻保留窗口，但它不改变 store 内容，不能把更早那次写入洗成「新鲜」
+    const readCall = stored(
+      { role: 'assistant', content: [toolUseBlock('t1', 'todo_list', {})] },
+      { kind: 'assistant' },
+    );
+    const msgs: StoredMessage[] = [
+      stored({ role: 'user', content: '开始' }, { kind: 'user' }),
+      oldWrite,
+      oldResult,
+      readCall,
+      stored({ role: 'user', content: '最近' }, { kind: 'user' }),
+    ];
+    const out = await fullCompact(provider, msgs, 2, [
+      { title: '旧任务', status: 'in_progress' },
+    ]);
+    const content = summaryOf(out).message.content as string;
+    expect(content).toContain('进度快照，可能滞后');
   });
 
   it('摘要 prompt 里图片渲染为带 hash 的 marker（不降级成字面 [image]、不内联 base64）', async () => {

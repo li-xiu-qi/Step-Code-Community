@@ -680,8 +680,11 @@ const SUMMARY_INSTRUCTION = [
   '6. 对不确定性诚实：若之前声称「测试通过」「已修好」「文件已创建」但从未验证，明确写成未验证，' +
     '不要当作事实，下一轮依赖前必须重新核对。',
   '',
-  'TODO 清单会从实时来源自动附在笔记下方，不要抄写它；清单装不下的是任务之间的推理——' +
-  '为什么某项被重排或放弃、某项的决定如何约束另一项，记这些。',
+  'TODO 清单会原样附在笔记下方，不要抄写它。它是进度快照而非实时状态——你在本段历史里切换过任务'
+  + '却没更新它时，它描述的就是旧任务（实测事故：压缩后同一条摘要里同时写着「验证听悟配额」正文和'
+  + '「中文领域地图」清单，两个当前任务）。所以笔记必须自己写清当前任务是什么，不依赖那份清单；'
+  + '读者看到清单与笔记不一致时，以笔记为准。清单装不下的是任务之间的推理——'
+  + '为什么某项被重排或放弃、某项的决定如何约束另一项，记这些。',
   '',
   '保持简洁并与任务规模成比例：多步长任务值得详细，接近收尾的琐碎交流一两句就够，不要注水。',
   '只输出笔记正文。',
@@ -896,7 +899,15 @@ export async function fullCompact(
   }
 
   // TODO 本体存独立 store（不占 messages），压缩不丢；把当前清单拼进摘要尾部，让压缩后模型立刻看到进度
-  const todoBlock = todos !== undefined ? renderTodoList(todos) : '';
+  //
+  // **新鲜度门槛**：清单只在最后一次写操作落在保留窗口内时才当实时状态，否则标注为快照。
+  // 实测事故（2026-09-10，会话 20260909090557-5fa679）：最后一次 todo_list 在压缩前 9 分钟，
+  // 其间模型已从「中文领域地图」切到「验证听悟配额」却没再更新清单；压缩把那份旧清单原样拼上去，
+  // 摘要里于是并列着两个互相矛盾的「当前任务」。清单是模型显式调用 todo_list 时才变的 store，
+  // 「任务切换但不调工具」是高频行为，不能当实时来源。陈旧清单不丢（仍有进度价值），只降级为快照。
+  const todoWriteIdx = lastTodoWriteIndex(messages);
+  const todoStale = todoWriteIdx >= 0 && todoWriteIdx < cutoff;
+  const todoBlock = todos !== undefined ? renderTodoList(todos, { stale: todoStale }) : '';
   const summaryText = [`[早期对话摘要]\n${summary.trim()}`, todoBlock].filter((s) => s !== '').join('\n\n');
 
   /**
@@ -932,9 +943,49 @@ export async function fullCompact(
   return build(worthKeeping);
 }
 
-/** 把 TODO 清单渲染成 markdown，供压缩摘要尾部拼接（TODO 本体存 store，压缩不丢）。 */
-export function renderTodoList(todos: readonly { title: string; status: string }[], heading = '## TODO List'): string {
+/**
+ * 找最后一次**写** TODO 清单的消息下标（`todo_list` 带 `todos` 参数的调用）。
+ *
+ * 只认写调用：`todo_list` 省略参数是「读取当前清单」，不改变 store 内容，拿它当最后一次
+ * 更新会把「读过」误判成「改过」。
+ *
+ * 返回 -1 的两种情形：本段历史里从没写过清单；或最后一次写入发生在更早的会话（本会话的
+ * store 是 resume 时从磁盘恢复的，那次写入不在本段 messages 里）。两者都判「无法判定新鲜度」，
+ * 由调用方按新鲜处理（不标注），避免给本来正确的清单乱加免责声明。
+ */
+function lastTodoWriteIndex(messages: readonly StoredMessage[]): number {
+  let found = -1;
+  for (let i = 0; i < messages.length; i++) {
+    const content = messages[i]!.message.content;
+    if (typeof content === 'string') continue;
+    for (const b of content) {
+      if (b.type !== 'tool_use') continue;
+      if (b.name !== 'todo_list') continue;
+      const input = (b as Anthropic.ToolUseBlock & { input?: unknown }).input;
+      if (input === null || typeof input !== 'object') continue;
+      if (!('todos' in (input as Record<string, unknown>))) continue;
+      found = i;
+    }
+  }
+  return found;
+}
+
+/**
+ * 把 TODO 清单渲染成 markdown，供压缩摘要尾部拼接（TODO 本体存 store，压缩不丢）。
+ *
+ * `stale` 为真时标题带上降级声明。这是本函数唯一的防误判机制：清单尾部紧接在笔记之后，
+ * 位置和 `## TODO List` 标题都让它看起来与笔记等权，而陈旧清单的 in_progress 项会直接
+ * 与笔记正文陈述的当前任务冲突。降级声明把裁决权交给笔记，见 fullCompact 的新鲜度门槛。
+ */
+export function renderTodoList(
+  todos: readonly { title: string; status: string }[],
+  opts: { stale?: boolean } = {},
+): string {
   if (todos.length === 0) return '';
+  const heading =
+    opts.stale === true
+      ? '## TODO List（进度快照，可能滞后；与上方笔记不一致时以上方笔记为准）'
+      : '## TODO List';
   const lines = todos.map((t) => `- [${t.status}] ${t.title}`);
   return `${heading}\n${lines.join('\n')}`;
 }
