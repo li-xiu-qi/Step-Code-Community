@@ -75,7 +75,8 @@ export function markdownTransform(markdown: string): string {
  * 放行 `step-file:` 与 `step://` 是本项目内部 scheme（`fileLink.ts` 的路径链接与
  * 轮次跳转），`file://` 与 `https?://` 是用户预期内的两类。
  *
- * 参照 DSH TUI 的 urlGuard，其白名单同样是自家 scheme 加 file 与 http(s)。
+ * 白名单只放自家 scheme 与用户预期内的两类协议（file 与 http(s)），
+ * 其余一律不建链。
  */
 const RENDERABLE_URL_RE = /^(?:step-file:|step:\/\/|file:\/\/|https?:\/\/)/i;
 

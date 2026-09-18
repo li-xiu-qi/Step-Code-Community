@@ -184,7 +184,7 @@ export function toolAccessOf(name: string, rawInput: unknown, ctx: ToolContext):
 }
 
 /**
- * per-tool 声明式超时的执行包装（对齐 DSH timeout-policy 的形态）。
+ * per-tool 声明式超时的执行包装：超时表按工具名声明，缺省走全局限额。
  *
  * 三层机制缺一层都会坏：
  * 1. abort：到点向派生的 ctx.signal 发起 abort，工具内的 fetch / 子进程能收尾；
@@ -227,7 +227,7 @@ async function runWithToolTimeout(tool: ToolDef<any>, input: unknown, ctx: ToolC
       if (!timedOut) throw e;
       raced = undefined;
     }
-    // 与 DSH timeout-policy 一致：timer 一旦触发即定性为超时，不看 race 谁赢。
+    // timer 一旦触发即定性为超时，不看 race 谁赢。
     // 工具在 aborted 状态下返回的内容不可信（可能是半截输出），无条件替换。
     // timer 未触发（工具正常完成或外部中断）时原样透传，不误标。
     if (timedOut) {

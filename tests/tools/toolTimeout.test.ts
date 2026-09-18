@@ -68,7 +68,7 @@ describe('per-tool 超时', () => {
     });
     const r = await executeTool('signal_tool', {}, ctx);
     // 工具响应了 signal 并自行返回：race 先拿到的是工具的结果，
-    // 但超时已触发，结果仍被替换为 TOOL_TIMEOUT（对齐 DSH：谁触发谁定性）
+    // 但超时已触发，结果仍被替换为 TOOL_TIMEOUT（谁触发谁定性）
     expect(sawAbort).toBe(true);
     expect(r.errorCode).toBe('TOOL_TIMEOUT');
   });
