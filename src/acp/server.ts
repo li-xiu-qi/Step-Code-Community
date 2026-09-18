@@ -3,7 +3,7 @@
  *
  * 让 IDE / 编辑器（Zed、Neovim、JetBrains 等）通过 stdin/stdout 驱动 step-code。
  * 协议规范：agentclientprotocol.com。协议字段以官方 @agentclientprotocol/sdk
- * 的形状为准（参照 DSH 的 packages/acp 实现），不自行发明字段名。
+ * 的形状为准，不自行发明字段名。
  *
  * 支持的方法（client → server）：
  * - initialize: 版本协商 + agentInfo / agentCapabilities
@@ -21,12 +21,12 @@
  *   tool_call / tool_call_update / usage_update
  * - session/request_permission（request）: 写/执行类工具运行前向编辑器请求一次性授权
  *
- * 设计对齐 DSH：从 agent 事件单向投影成 ACP update；权限只发一次性选项，
+ * 从 agent 事件单向投影成 ACP update；权限只发一次性选项，
  * 客户端报错/断开一律降级为拒绝，绝不从未知响应推断持久授权。
  *
  * 已知边界（诚实声明，不声明对应 capability）：
- * - fs/read_text_file / fs/write_text_file：DSH 也未实现，文件改动经 tool_call 的
- *   content 回传给编辑器渲染，协议无专门 diff 字段，step-code 同样不做。
+ * - fs/read_text_file / fs/write_text_file：协议无专门 diff 字段，文件改动经
+ *   tool_call 的 content 回传给编辑器渲染，step-code 不单独实现这两个方法。
  * - 会话级 mcpServers 动态挂载：ACP 允许在 session/new 传 mcpServers，但 step-code
  *   的 MCP 走 config.toml / 插件统一管理、在应用启动时装配，不支持向运行中的 agent
  *   会话热挂外部 MCP。传入的 mcpServers 当前不生效（不静默假装）；需要额外工具用
@@ -342,7 +342,7 @@ function handleSetConfigOption(
   const optionId = String(params.id ?? params.optionId ?? '');
   const rawValue = params.value;
   if (optionId === 'model') {
-    // 兼容裸 model id 字符串与 DSH 风格 JSON.stringify([provider, model])。
+    // 兼容裸 model id 字符串与 JSON 序列化的 [provider, model] 二元数组。
     let model: string | undefined;
     if (typeof rawValue === 'string') {
       model = rawValue;
@@ -495,7 +495,7 @@ function announceToolCall(server: JsonRpcServer, session: AcpSession, req: ToolC
 
 /**
  * 把 agent 事件单向投影成 ACP update。appendText 累积正文（用于落盘 assistant 消息）。
- * 字段形状对齐 DSH updates.ts（官方 sdk 类型）。
+ * 字段形状以官方 sdk 的类型为准。
  */
 function projectEvent(
   server: JsonRpcServer,

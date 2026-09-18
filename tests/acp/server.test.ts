@@ -6,7 +6,7 @@ import { SessionStore } from '../../src/session/store.js';
 /**
  * ACP 协议层测试：不跑真实 agent（prompt 端到端依赖 provider/文件系统），
  * 用 PassThrough 双向流驱动 JSON-RPC，验证握手字段、会话生命周期、错误形状。
- * 字段形状对齐官方 Agent Client Protocol（参照 DSH 的 acp 实现）。
+ * 字段形状以官方 Agent Client Protocol 规范为准。
  */
 
 interface Harness {
