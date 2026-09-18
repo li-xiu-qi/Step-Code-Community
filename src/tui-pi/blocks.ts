@@ -46,6 +46,7 @@ import {
   outputStats,
 } from './resultRenderers.js';
 import { linkPath, linkFilePathArg } from './fileLink.js';
+import { linkifyAbsolutePaths } from './textPaths.js';
 
 /** Image 组件的主题：无图片协议时的降级文本着色（灰色占位说明）。 */
 const imageTheme = {
@@ -251,6 +252,15 @@ export function subagentStats(it: Extract<DisplayItem, { kind: 'tool' }>, now = 
 }
 
 /** 单条 DisplayItem 的渲染组件。 */
+/**
+ * 正文渲染的 transform 链：markdownTransform（软换行合并 + 不安全链接降级）
+ * 之后接绝对路径建链。顺序不可换——软换行合并要把 URL 折断的两行拼回去，
+ * 拼完才有完整 URL 给路径扫描判前导字符。
+ */
+function mdTransformWithPaths(md: string): string {
+  return linkifyAbsolutePaths(markdownTransform(md));
+}
+
 export class ItemBlock implements Component {
   private item: DisplayItem;
   private cachedWidth = -1;
@@ -300,7 +310,7 @@ export class ItemBlock implements Component {
 
   private renderMarkdown(text: string, width: number, dim: boolean): string[] {
     if (this.markdown === undefined) {
-      this.markdown = new Markdown(text, 0, 0, dim ? thinkingMarkdownTheme : markdownTheme, undefined, { transform: markdownTransform });
+      this.markdown = new Markdown(text, 0, 0, dim ? thinkingMarkdownTheme : markdownTheme, undefined, { transform: mdTransformWithPaths });
     } else {
       this.markdown.setText(text);
     }
@@ -537,7 +547,7 @@ export class ItemBlock implements Component {
       // （bash 失败只剩一行统计曾把错误输出整个吞掉，M1 起的测试钉住错误预览行为）。
       if (it.status === 'error') {
         for (const l of lines.slice(0, ERROR_PREVIEW_LINES)) {
-          out.push(...indent(wrap(c.error(l), width - 4), '    '));
+          out.push(...indent(wrap(c.error(linkifyAbsolutePaths(l)), width - 4), '    '));
         }
         if (resultTotalLines > ERROR_PREVIEW_LINES) {
           out.push(c.dim(`    ↳ 还有 ${resultTotalLines - ERROR_PREVIEW_LINES} 行（Ctrl+O 查看）`));
@@ -591,11 +601,11 @@ export class ItemBlock implements Component {
           const hidden = resultTotalLines - previewLines;
           out.push(c.dim(`    ↳ …(${hidden} earlier lines)`));
           for (const l of lines.slice(-previewLines)) {
-            out.push(...indent(wrap(l, width - 4), '    '));
+            out.push(...indent(wrap(linkifyAbsolutePaths(l), width - 4), '    '));
           }
         } else {
           for (const l of lines.slice(0, previewLines)) {
-            out.push(...indent(wrap(l, width - 4), '    '));
+            out.push(...indent(wrap(linkifyAbsolutePaths(l), width - 4), '    '));
           }
           if (resultTotalLines > previewLines) {
             const remaining = resultTotalLines - previewLines;
@@ -679,13 +689,13 @@ function renderToolExpanded(it: Extract<DisplayItem, { kind: 'tool' }>, width: n
     const lines = processText.split('\n');
 
     if (it.status === 'error') {
-      for (const l of lines) out.push(...indent(wrap(c.error(l), width - 4), '    '));
+      for (const l of lines) out.push(...indent(wrap(c.error(linkifyAbsolutePaths(l)), width - 4), '    '));
     } else if (looksLikeDiff(lines)) {
       for (const l of lines) {
         out.push(...indent(wrap(colorDiffLine(l), width - 4), '    '));
       }
     } else {
-      for (const l of lines) out.push(...indent(wrap(l, width - 4), '    '));
+      for (const l of lines) out.push(...indent(wrap(linkifyAbsolutePaths(l), width - 4), '    '));
     }
     if (isProcessTruncated) {
       out.push(c.dim(`    ↳ 输出过长，仅展示前 ${lines.length} 行`));
