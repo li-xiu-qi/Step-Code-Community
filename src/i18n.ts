@@ -56,6 +56,18 @@ const zh = {
   'choice.hint': '↑↓ 选择 · Enter 确认 · 数字直选 · Esc 取消',
   'choice.feedbackPlaceholder': '（输入原因后回车）',
 
+  // --- 路径动作菜单（单击路径链接弹出的浮层）---
+  'pathAction.title': '路径操作',
+  'pathAction.open': '打开',
+  'pathAction.reveal': '在文件夹中显示',
+  'pathAction.copy': '复制路径',
+  'pathAction.hint': '↑↓ 选择 · Enter 确认 · 数字直选 · Esc 取消',
+  'pathAction.opened': '已请求打开：{name}',
+  'pathAction.openFailed': '打开失败：{name}',
+  'pathAction.revealed': '已在文件管理器中定位',
+  'pathAction.revealFailed': '定位失败',
+  'pathAction.copied': '路径已复制到剪贴板',
+
   // --- 询问用户（QuestionPrompt）---
   'question.other': 'Other（自由输入）',
   'question.counter': '(第 {index}/{total} 题) ',
@@ -866,6 +878,17 @@ const en: Record<keyof typeof zh, string> = {
   // --- 选项基类（ChoiceBlock）---
   'choice.hint': '↑↓ select · Enter confirm · number keys direct · Esc cancel',
   'choice.feedbackPlaceholder': '(enter reason and press Enter)',
+
+  'pathAction.title': 'Path actions',
+  'pathAction.open': 'Open',
+  'pathAction.reveal': 'Reveal in file manager',
+  'pathAction.copy': 'Copy path',
+  'pathAction.hint': '↑↓ select · Enter confirm · number keys direct · Esc cancel',
+  'pathAction.opened': 'Open requested: {name}',
+  'pathAction.openFailed': 'Open failed: {name}',
+  'pathAction.revealed': 'Located in file manager',
+  'pathAction.revealFailed': 'Reveal failed',
+  'pathAction.copied': 'Path copied to clipboard',
 
   'input.placeholder.busy': 'Thinking… input will join the send queue',
   'input.placeholder.idle': 'Type a command, Enter to send',

@@ -126,6 +126,8 @@ import { openProviderManager, runProviderWizard } from './ProviderManager.js';
 import { allTodosDone } from '../chat/chromePanels.js';
 import { ItemBlock, summarizeInput } from './blocks.js';
 import { FILE_LINK_SCHEME, fileUrlToPath, openWithSystem } from './fileLink.js';
+import { copyTextToClipboard, revealInFolder } from './pathActions.js';
+import { PathActionMenu, type PathAction } from './PathActionMenu.js';
 import { applyWtKittyOverride } from './imageCaps.js';
 import { openExpandViewer } from './ExpandOverlay.js';
 import { c, editorTheme } from './theme.js';
@@ -1535,9 +1537,9 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       this.tui.requestRender();
       return;
     }
-    // step-file: 链接：转录区里的文件路径（工具卡路径、offload 输出文件）。
-    // 载荷是原始展示路径（可能相对），按会话 cwd 解析。打开 fire-and-forget，
-    // 成功与否只能从 spawn 报错判断。
+    // step-file: 链接：单击不直接打开，弹动作菜单（打开 / 在文件夹中显示 / 复制路径）
+    // ——点击意图有三种，直接打开会把「复制路径」这类需求压掉。菜单用完即走，
+    // 不留在转录区。载荷是原始展示路径（可能相对），按会话 cwd 解析。
     if (url.startsWith(FILE_LINK_SCHEME)) {
       const path = fileUrlToPath(url, this.session.cwd);
       if (path === undefined) {
@@ -1545,9 +1547,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
         this.tui.requestRender();
         return;
       }
-      const ok = openWithSystem(path, isDirectoryPath(path));
-      this.tui.flash(ok ? `已请求打开：${basename(path)}` : `打开失败：${basename(path)}`, 2000);
-      this.tui.requestRender();
+      this.openPathActionMenu(path, isDirectoryPath(path));
       return;
     }
     // http(s)：终端里唯一该有浏览器语义的 scheme，其余一律丢弃（urlGuard
@@ -1557,6 +1557,51 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       this.tui.flash(ok ? '已请求在浏览器中打开' : '打开失败', 2000);
       this.tui.requestRender();
     }
+  }
+
+  /**
+   * 路径动作菜单浮层：单击 step-file: 链接后弹出。
+   *
+   * 浮层而非转录区条目：菜单是一次性交互，留在历史里点几次路径就积几条残骸。
+   * 关闭路径统一（选完动作 / Esc 取消 / 出错）都 hide + 归还编辑器焦点。
+   */
+  private openPathActionMenu(path: string, isDir: boolean): void {
+    if (this.promptActive) return;
+    const name = basename(path);
+    const menu = new PathActionMenu({
+      path,
+      isDir,
+      onAction: (action: PathAction) => {
+        handle.hide();
+        this.tui.setFocus(this.editor);
+        this.tui.requestRender();
+        if (action === 'copy') {
+          // OSC 52 写剪贴板：终端收到与否无法回传，flash 只表示已写入终端
+          copyTextToClipboard(path, (data) => this.tui.terminal.write(data));
+          this.tui.flash(t('pathAction.copied'), 2000);
+          return;
+        }
+        const ok = action === 'reveal' ? revealInFolder(path, isDir) : openWithSystem(path, isDir);
+        const key =
+          action === 'reveal'
+            ? ok
+              ? 'pathAction.revealed'
+              : 'pathAction.revealFailed'
+            : ok
+              ? 'pathAction.opened'
+              : 'pathAction.openFailed';
+        this.tui.flash(t(key, { name }), 2000);
+      },
+      onCancel: () => {
+        handle.hide();
+        this.tui.setFocus(this.editor);
+        this.tui.requestRender();
+      },
+      requestRender: () => this.tui.requestRender(),
+    });
+    const handle = this.tui.showOverlay(menu, { anchor: 'top-center', maxHeight: '30%', margin: 2 });
+    handle.focus();
+    this.tui.requestRender();
   }
 
   /**
