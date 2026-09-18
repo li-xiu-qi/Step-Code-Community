@@ -3,7 +3,7 @@
  * 行级差分渲染下，未变化的行不重画，所以定稿块与在途块共用同一组件。
  * 每个块自带缓存（width 未变则复用上次行数组），render() 是取缓存 + 拼接。
  */
-import { Markdown, truncateToWidth, visibleWidth, wrapTextWithAnsi, sliceByColumn, hyperlink } from '@earendil-works/pi-tui';
+import { Markdown, getCapabilities, truncateToWidth, visibleWidth, wrapTextWithAnsi, sliceByColumn, hyperlink } from '@earendil-works/pi-tui';
 import { Image } from '@earendil-works/pi-tui';
 import type { Component } from '@earendil-works/pi-tui';
 import { basename } from 'node:path';
@@ -261,6 +261,48 @@ function mdTransformWithPaths(md: string): string {
   return linkifyAbsolutePaths(markdownTransform(md));
 }
 
+/**
+ * 图片实例缓存（两级：尺寸键 → base64 → Image）。
+ *
+ * 为什么按实例缓存而不是按 id：pi-tui 的 kitty 去重以 Image 实例为单位——实例的
+ * render() 有行缓存，重复渲染不再调 registerKittyImageMetadata，imageId 的
+ * transmissionGeneration 保持不变，TUI 全量重绘（会话切换/缩放）时才把它降级成
+ * placement-only（不重传数据）。每次 new Image 都会重新分配随机 id 并重新注册，
+ * 会话切换重建 ItemBlock 时会把同一张图重新上传一遍。
+ *
+ * 同内容同尺寸复用实例后：多个条目引用同一张图（用户回显 + 工具结果）共用一次
+ * 上传，同屏第二处自动降级为 placement；全量重绘也只重发 placement。
+ * 上限防内存膨胀：尺寸键 8 个 × 每键 16 张，超出按插入序淘汰。
+ */
+const imageInstanceCache = new Map<string, Map<string, Image>>();
+const IMAGE_CACHE_MAX_SIZES = 8;
+const IMAGE_CACHE_MAX_PER_SIZE = 16;
+
+/** 取（或建）缓存的 Image 实例。缓存键含终端图片能力、maxWidthCells 与渲染宽度：
+ *  实例的行缓存按能力分化（kitty 传输行 vs 占位文本），能力进键才能保证换能力
+ *  时不拿到旧渲染；尺寸不同的同一张图本就需要不同的 placement 控制参数，各自上传。 */
+function cachedImage(base64: string, mediaType: string, maxWidthCells: number, renderWidth: number): Image {
+  const sizeKey = `${getCapabilities().images ?? 'none'}|${maxWidthCells}|${renderWidth}`;
+  let byContent = imageInstanceCache.get(sizeKey);
+  if (byContent === undefined) {
+    if (imageInstanceCache.size >= IMAGE_CACHE_MAX_SIZES) {
+      const oldest = imageInstanceCache.keys().next().value;
+      if (oldest !== undefined) imageInstanceCache.delete(oldest);
+    }
+    byContent = new Map();
+    imageInstanceCache.set(sizeKey, byContent);
+  }
+  const hit = byContent.get(base64);
+  if (hit !== undefined) return hit;
+  const img = new Image(base64, mediaType, imageTheme, { maxWidthCells });
+  if (byContent.size >= IMAGE_CACHE_MAX_PER_SIZE) {
+    const oldest = byContent.keys().next().value;
+    if (oldest !== undefined) byContent.delete(oldest);
+  }
+  byContent.set(base64, img);
+  return img;
+}
+
 export class ItemBlock implements Component {
   private item: DisplayItem;
   private cachedWidth = -1;
@@ -359,7 +401,7 @@ export class ItemBlock implements Component {
           if (it.images === undefined || it.images.length === 0) return lines;
           const trailing = lines.length > 0 && lines[lines.length - 1] === '' ? lines.pop() : undefined;
           for (const att of it.images) {
-            const img = new Image(att.base64, att.mediaType, imageTheme, { maxWidthCells: Math.max(20, width - 6) });
+            const img = cachedImage(att.base64, att.mediaType, Math.max(20, width - 6), width - 2);
             lines.push(...img.render(width - 2).map((l) => (l === '' ? '  ' : `  ${l}`)));
           }
           if (trailing !== undefined) lines.push(trailing);
@@ -619,7 +661,7 @@ export class ItemBlock implements Component {
     if (it.resultImages !== undefined && it.resultImages.length > 0) {
       out.pop(); // 去掉上面的收尾空行，图片后重新补
       for (const img of it.resultImages) {
-        const image = new Image(img.base64, img.mediaType, imageTheme, { maxWidthCells: Math.max(20, width - 8) });
+        const image = cachedImage(img.base64, img.mediaType, Math.max(20, width - 8), width - 4);
         out.push(...image.render(width - 4).map((l) => (l === '' ? '    ' : `    ${l}`)));
       }
     }
@@ -705,7 +747,7 @@ function renderToolExpanded(it: Extract<DisplayItem, { kind: 'tool' }>, width: n
   if (it.resultImages !== undefined && it.resultImages.length > 0) {
     out.pop();
     for (const img of it.resultImages) {
-      const image = new Image(img.base64, img.mediaType, imageTheme, { maxWidthCells: Math.max(20, width - 8) });
+      const image = cachedImage(img.base64, img.mediaType, Math.max(20, width - 8), width - 4);
       out.push(...image.render(width - 4).map((l) => (l === '' ? '    ' : `    ${l}`)));
     }
   }
