@@ -371,6 +371,14 @@ export interface StepCodeConfig {
   dream?: DreamConfig;
   /** 禁用的工具名列表（config.toml disabled_tools）。合并到 tools 阶段后统一过滤。 */
   disabledTools?: string[];
+  /**
+   * 启用的工具白名单（config.toml enabled_tools）。仅 ACP 模式生效：非空时
+   * agent 只能看到并调用名单内的工具（执行层 runTurn 同步拒绝名单外调用）。
+   * 与 disabled_tools 的关系：白名单优先，二者同时配置时取交集。
+   * 典型用途是嵌入式驱动（如 HearSight 问答 agent 只准用 MCP 领域工具）：
+   * MCP 工具是 deferred 机制，名单需含 tool_search 供模型发现它们。
+   */
+  enabledTools?: string[];
   /** [models.<别名>] 模型别名表（渠道与模型分离）。未配置或全部无效时键不进结果对象。 */
   models?: Record<string, ModelEntry>;
   /** [providers.<id>] 渠道表（自定义服务商端点/密钥）。未配置或全部无效时键不进结果对象。 */
@@ -605,6 +613,7 @@ interface TomlConfigShape {
   extra_skill_dirs?: unknown;
   disabled_skills?: unknown;
   disabled_tools?: unknown;
+  enabled_tools?: unknown;
   skill_listing_budget?: unknown;
   models?: unknown;
   providers?: unknown;
@@ -1398,6 +1407,9 @@ export function loadConfig(
   // 禁用的工具名列表：数组格式 ["bash", "web_search"]
   const disabledTools = resolveStringArray(toml.disabled_tools);
   if (disabledTools !== undefined) cfg.disabledTools = disabledTools;
+  // 启用的工具白名单：数组格式 ["tool_search", "mcp__hearsight__search"]，仅 ACP 模式生效
+  const enabledTools = resolveStringArray(toml.enabled_tools);
+  if (enabledTools !== undefined) cfg.enabledTools = enabledTools;
   // 自定义加载路径：未配置或非法时键不进结果对象（下游 toEqual 精确断言依赖此形态）
   const agentsPaths = resolveStringArray(toml.agents_paths);
   if (agentsPaths !== undefined) cfg.agentsPaths = agentsPaths;

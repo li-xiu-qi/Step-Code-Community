@@ -409,7 +409,15 @@ async function handleSessionPrompt(
   const { allToolNames } = await import('../tools/index.js');
 
   const system = buildSystemPrompt(session.cwd, { pureMode: true });
-  const toolNames = allToolNames();
+  // 工具白名单（config enabled_tools，仅 ACP 模式）：非空时 agent 只能看到并调用
+  // 名单内的工具，执行层 runTurn 对名单外调用直接拒。供嵌入式驱动方（如 HearSight
+  // 问答 agent）收窄工具面用。注意 MCP 工具是 deferred 机制，名单需含 tool_search，
+  // 模型才能发现并加载它们。未配置时行为不变（全量工具）。
+  const enabledTools = opts.config.enabledTools;
+  const toolNames =
+    enabledTools !== undefined && enabledTools.length > 0
+      ? allToolNames().filter((n) => enabledTools.includes(n))
+      : allToolNames();
 
   // 工具授权：只读放行；写/执行类向编辑器发一次性权限请求。
   const hooks: LoopHooks = {
