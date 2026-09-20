@@ -50,6 +50,21 @@ interface PendingRequest {
   reject: (error: Error) => void;
 }
 
+/**
+ * 工具白名单硬门（config enabled_tools，仅 ACP 模式）：名单非空且 name 不在名单内时
+ * 返回拒绝授权；未配置或名单为空时返回 null（交后续授权流程，行为不变）。
+ *
+ * 与可见性过滤互补：过滤只决定每轮送给模型的工具清单，模型仍可能幻觉调用名单外
+ * 工具，而 executeTool 只校验「是否已注册」不校验白名单。在执行前兜底拒掉，
+ * 白名单才是硬边界而非提示。
+ */
+export function whitelistDeny(name: string, enabledTools: string[] | undefined): Authorization | null {
+  if (enabledTools !== undefined && enabledTools.length > 0 && !enabledTools.includes(name)) {
+    return { decision: 'deny', reason: `工具 ${name} 不在 enabled_tools 白名单内` };
+  }
+  return null;
+}
+
 /** newline-delimited JSON-RPC server，支持处理 client 请求、发通知、发请求等响应。 */
 class JsonRpcServer {
   private buffer = '';
@@ -409,10 +424,12 @@ async function handleSessionPrompt(
   const { allToolNames } = await import('../tools/index.js');
 
   const system = buildSystemPrompt(session.cwd, { pureMode: true });
-  // 工具白名单（config enabled_tools，仅 ACP 模式）：非空时 agent 只能看到并调用
-  // 名单内的工具，执行层 runTurn 对名单外调用直接拒。供嵌入式驱动方（如 HearSight
-  // 问答 agent）收窄工具面用。注意 MCP 工具是 deferred 机制，名单需含 tool_search，
-  // 模型才能发现并加载它们。未配置时行为不变（全量工具）。
+  // 工具白名单（config enabled_tools，仅 ACP 模式）：非空时收窄 agent 工具面。
+  // 两层生效：toolNames 过滤决定每轮可见清单（名单外工具模型看不到）；
+  // authorizeToolCall 里的 whitelistDeny 在执行前硬拒名单外调用。供嵌入式驱动方
+  // （如 HearSight 问答 agent）用。注意 MCP 工具是 deferred 机制，名单需含
+  // tool_search，模型才能发现并加载它们；已加载的 MCP 工具也建议显式列名
+  // （mcp__server__tool），否则下一轮过滤会把它移出可见清单。未配置时行为不变。
   const enabledTools = opts.config.enabledTools;
   const toolNames =
     enabledTools !== undefined && enabledTools.length > 0
@@ -424,6 +441,9 @@ async function handleSessionPrompt(
     async authorizeToolCall(req: ToolCallRequest): Promise<Authorization> {
       // 先确保 tool_call(in_progress) 已建立，权限请求里的 toolCallId 客户端能关联上。
       announceToolCall(server, session, req);
+      // 白名单硬门先于只读放行与权限弹窗：名单外调用直接拒，不问编辑器。
+      const denied = whitelistDeny(req.name, enabledTools);
+      if (denied !== null) return denied;
       if (isReadOnly(req.name)) return { decision: 'allow' };
       try {
         const res = await server.request('session/request_permission', {
