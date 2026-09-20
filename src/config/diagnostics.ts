@@ -41,6 +41,7 @@ export const CONFIG_TOP_LEVEL_KEYS = [
   'extra_skill_dirs',
   'disabled_skills',
   'disabled_tools',
+  'enabled_tools',
   'skill_listing_budget',
   'models',
   'providers',
