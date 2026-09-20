@@ -49,18 +49,21 @@ export async function composeAcpRuntime(config: StepCodeConfig, cwd: string): Pr
 
   const manager = new McpManager();
   const deferred: DeferredTool[] = [];
+  const registerMcpTool = (tool: { qualifiedName: string; description: string; inputSchema: unknown }): void => {
+    registerDynamicTool({
+      name: tool.qualifiedName,
+      description: tool.description,
+      schema: mcpInputSchemaToZod(tool.inputSchema),
+      execute: async (input) => manager.callTool(tool.qualifiedName, input as Record<string, unknown>),
+    });
+  };
   const toolSearch: ToolSearchRegistry = {
     deferred,
     load: (names) => {
       for (const n of names) {
         const found = manager.find(n);
         if (found === undefined) continue;
-        registerDynamicTool({
-          name: found.info.qualifiedName,
-          description: found.info.description,
-          schema: mcpInputSchemaToZod(found.info.inputSchema),
-          execute: async (input) => manager.callTool(n, input as Record<string, unknown>),
-        });
+        registerMcpTool(found.info);
       }
     },
   };
@@ -81,6 +84,15 @@ export async function composeAcpRuntime(config: StepCodeConfig, cwd: string): Pr
       }
     })
     .catch(() => {});
+
+  // 嵌入式驱动方信号：enabled_tools 非空 = 调用方已显式声明工具契约。此时白名单内的
+  // MCP 工具直接注册，不等 tool_search 发现——省一轮慢速往返（本地模型一轮几十秒），
+  // 也避免模型漏走发现步骤。未配白名单（TUI/IDE 常规路径）保持 deferred 原样。
+  if (config.enabledTools !== undefined && config.enabledTools.length > 0) {
+    for (const tool of manager.allTools()) {
+      if (config.enabledTools.includes(tool.qualifiedName)) registerMcpTool(tool);
+    }
+  }
 
   return {
     skills,
