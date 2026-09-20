@@ -49,6 +49,7 @@ const UPDATE_CONFIG_BODY = `# update-config：step-code 自身配置的查询与
 | extra_skill_dirs | string[] | 无 | 追加的 skill 扫描目录，同名 skill 追加目录胜出 |
 | disabled_skills | string[] | 无 | 按名排除的 skill 清单，任何来源的同名 skill 都不加载 |
 | disabled_tools | string[] | 无 | 按名排除的工具清单（如 ["bash", "web_search"]） |
+| enabled_tools | string[] | 无 | 工具白名单，仅 ACP 模式生效：非空时 agent 只能看到并调用名单内的工具（MCP 工具须显式列全名 mcp__server__tool，并保留 tool_search 供发现）。与 disabled_tools 同时配置时取交集。供嵌入式驱动方收窄工具面 |
 | skill_listing_budget | number | 8000 | system prompt 中可用技能清单的字符预算；超预算先压缩描述，再截断尾部技能。技能较多时可调大（如 20000），让更多技能名称和描述常驻；也可始终用 skill_search 工具搜索被截断的技能 |
 | continuation | table | 无 | 输出截断自动续写配置（[continuation] 段） |
 | git | table | 无 | Git 集成配置（[git] 段），未配置时 auto_commit 默认 false |

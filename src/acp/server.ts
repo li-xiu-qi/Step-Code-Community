@@ -28,9 +28,10 @@
  * - fs/read_text_file / fs/write_text_file：协议无专门 diff 字段，文件改动经
  *   tool_call 的 content 回传给编辑器渲染，step-code 不单独实现这两个方法。
  * - 会话级 mcpServers 动态挂载：ACP 允许在 session/new 传 mcpServers，但 step-code
- *   的 MCP 走 config.toml / 插件统一管理、在应用启动时装配，不支持向运行中的 agent
- *   会话热挂外部 MCP。传入的 mcpServers 当前不生效（不静默假装）；需要额外工具用
- *   config/插件配置。mcpCapabilities 因此保持空。
+ *   的 MCP 走 ~/.step-code/mcp.json / 插件统一管理、在进程启动时装配（ACP 模式经
+ *   composeAcpRuntime 注入），不支持向运行中的 agent 会话热挂外部 MCP。传入的
+ *   mcpServers 当前不生效（不静默假装）；需要额外工具用 mcp.json/插件配置。
+ *   mcpCapabilities 因此保持空。
  */
 
 import type { Readable, Writable } from 'node:stream';
@@ -41,6 +42,7 @@ import { stored, type StoredMessage } from '../agent/message.js';
 import type { LoopHooks, ToolCallRequest, Authorization } from '../agent/hooks.js';
 import { isReadOnly } from '../agent/permission/mode.js';
 import type { SessionStore } from '../session/store.js';
+import type { AcpRuntime } from './compose.js';
 
 // ─── JSON-RPC 传输（newline-delimited，server 端） ─────────────────────────
 
@@ -54,9 +56,10 @@ interface PendingRequest {
  * 工具白名单硬门（config enabled_tools，仅 ACP 模式）：名单非空且 name 不在名单内时
  * 返回拒绝授权；未配置或名单为空时返回 null（交后续授权流程，行为不变）。
  *
- * 与可见性过滤互补：过滤只决定每轮送给模型的工具清单，模型仍可能幻觉调用名单外
- * 工具，而 executeTool 只校验「是否已注册」不校验白名单。在执行前兜底拒掉，
- * 白名单才是硬边界而非提示。
+ * 层次说明（勿高估本函数的作用）：主门是 runTurn 的 allowedSet——ACP 每轮 prompt
+ * 把 toolNames（白名单过滤 + deferred 白名单名补全后的集合）交给 runTurn，名单外
+ * 调用在执行前就被拒（「当前 agent 不可用」），到不了 authorizeToolCall。本函数是
+ * 二道门：防止未来 allowedTools 传参路径变化（如改成 live getter）时白名单被绕过。
  */
 export function whitelistDeny(name: string, enabledTools: string[] | undefined): Authorization | null {
   if (enabledTools !== undefined && enabledTools.length > 0 && !enabledTools.includes(name)) {
@@ -174,6 +177,12 @@ export interface AcpServerOptions {
    * initialize 会声明 sessionCapabilities.list/resume；不注入（如测试）则这些方法报 unsupported。
    */
   store?: SessionStore;
+  /**
+   * ACP 运行时组合（skill 注册表 + MCP 接入）。注入后 system prompt 拼 skill 清单、
+   * ToolContext 带 skills/toolSearch，模型可激活领域 skill 并经 tool_search 发现
+   * MCP 工具。不注入（如协议层测试）时行为与原先一致：无 skill 清单、MCP 不可用。
+   */
+  runtime?: AcpRuntime;
 }
 
 export interface AcpServerStreams {
@@ -240,7 +249,9 @@ export async function startAcpServer(
       for (const [, session] of sessions) {
         session.controller?.abort();
       }
-      resolve();
+      // MCP server 是本进程拉起的 stdio 子进程：先断开连接（kill 子进程）再 resolve，
+      // 否则进程退出时子进程成孤儿。
+      void (opts.runtime?.close() ?? Promise.resolve()).finally(() => resolve());
     });
   });
 }
@@ -423,7 +434,7 @@ async function handleSessionPrompt(
   const { buildSystemPrompt } = await import('../agent/systemPrompt.js');
   const { allToolNames } = await import('../tools/index.js');
 
-  const system = buildSystemPrompt(session.cwd, { pureMode: true });
+  const system = buildSystemPrompt(session.cwd, { pureMode: true }) + (opts.runtime?.skillSection ?? '');
   // 工具白名单（config enabled_tools，仅 ACP 模式）：非空时收窄 agent 工具面。
   // 两层生效：toolNames 过滤决定每轮可见清单（名单外工具模型看不到）；
   // authorizeToolCall 里的 whitelistDeny 在执行前硬拒名单外调用。供嵌入式驱动方
@@ -431,10 +442,19 @@ async function handleSessionPrompt(
   // tool_search，模型才能发现并加载它们；已加载的 MCP 工具也建议显式列名
   // （mcp__server__tool），否则下一轮过滤会把它移出可见清单。未配置时行为不变。
   const enabledTools = opts.config.enabledTools;
-  const toolNames =
-    enabledTools !== undefined && enabledTools.length > 0
-      ? allToolNames().filter((n) => enabledTools.includes(n))
-      : allToolNames();
+  const whitelist = enabledTools !== undefined && enabledTools.length > 0 ? enabledTools : null;
+  const toolNames = whitelist !== null ? allToolNames().filter((n) => whitelist.includes(n)) : allToolNames();
+  if (whitelist !== null) {
+    // 白名单显式列了 MCP 工具名，但 MCP 工具走 deferred：tool_search 命中前不在
+    // allToolNames() 里，会被上面的过滤丢掉，而 runTurn 的 allowedSet 由本名单生成，
+    // 于是模型加载后调用仍被拒（「当前 agent 不可用」）。把名单里尚未注册的名字补进
+    // 可见集：模型经 tool_search 加载后即可调用；未经加载就调用则走 executeTool 的
+    // UNKNOWN_TOOL 正常错误路径，由模型自行重试。
+    const listed = new Set(toolNames);
+    for (const n of whitelist) {
+      if (!listed.has(n)) toolNames.push(n);
+    }
+  }
 
   // 工具授权：只读放行；写/执行类向编辑器发一次性权限请求。
   const hooks: LoopHooks = {
@@ -478,6 +498,8 @@ async function handleSessionPrompt(
         signal: controller.signal,
         depth: 0,
         capabilities: opts.config.capabilities,
+        skills: opts.runtime?.skills,
+        toolSearch: opts.runtime?.toolSearch,
       },
       messages: session.messages,
       signal: controller.signal,
