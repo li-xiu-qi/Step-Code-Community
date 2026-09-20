@@ -269,6 +269,10 @@ export function summarizeError(err: unknown): string {
  * 判断错误是否为上下文溢出（超出模型窗口）。这类错误重试无益，需先压缩历史再重试。
  * StepFun 走 Anthropic 协议，溢出通常是 400 invalid_request_error，消息含 "prompt is too long" 等。
  * 识别不到只退化为普通错误（现有行为），不会更糟；故用相对具体的关键词，避免把别的 400 误判成溢出。
+ * llama.cpp llama-server 的溢出报文是另一套措辞（2026-09-21 实录）：
+ * "request (9923 tokens) exceeds the available context size (8192 tokens)" +
+ * type "exceed_context_size_error"。不识别它就会被当普通 400 重试耗尽后硬报错，
+ * 循环内压缩与溢出重试两条自救路径全部失活，表现为「空答案 + 一条看不懂的 400」。
  */
 export function isContextOverflowError(err: unknown): boolean {
   if (err instanceof Anthropic.APIError && err.status === 400) {
@@ -278,7 +282,11 @@ export function isContextOverflowError(err: unknown): boolean {
       msg.includes('too many tokens') ||
       msg.includes('context_length') ||
       msg.includes('context window') ||
-      msg.includes('maximum context')
+      msg.includes('maximum context') ||
+      msg.includes('exceed_context_size_error') ||
+      msg.includes('exceeds the available context') ||
+      msg.includes('context length exceeded') ||
+      msg.includes('exceeds the context length')
     );
   }
   return false;

@@ -503,6 +503,17 @@ async function handleSessionPrompt(
       },
       messages: session.messages,
       signal: controller.signal,
+      // 压缩阈值与 TUI 同源：ACP 模式不传就等于关掉循环内压缩，本地小窗口模型
+      // （如 8K 上下文的推理服务）多轮工具循环必爆 400。max_context_size 由驱动方
+      // 在 config.toml 按实际服务窗口配置。
+      compaction: {
+        maxContextSize: opts.config.maxContextSize,
+        triggerRatio: opts.config.compaction.triggerRatio,
+        reservedTokens: opts.config.compaction.reservedTokens,
+        blockRatio: opts.config.compaction.blockRatio,
+        maxCompactionPerTurn: opts.config.compaction.maxCompactionPerTurn,
+        preserveThinking: opts.config.compaction.preserveThinking,
+      },
       model: session.model ?? opts.model ?? opts.config.model,
       maxIterations: 50,
       allowedTools: toolNames,
@@ -601,8 +612,20 @@ function projectEvent(
         });
       }
       break;
+    case 'error':
+      // agent 循环内的错误（provider 报错、空响应重试耗尽等）必须投影给客户端：
+      // 否则嵌入式驱动方只看到「空答案 + end_turn」，无从区分「模型没话说」
+      // 与「请求失败」。2026-09-21 实录：本地推理服务上下文超限返回 400，
+      // 错误事件被 default 分支吞掉，前端拿到空 final_answer 无任何线索。
+      server.notify('session/update', {
+        sessionId: sid,
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: `\n[error: ${ev.message}]` },
+      });
+      break;
     default:
-      // thinking_start/end、tool_forming、tool_args_delta、retry、notice、aborted 等不投影。
+      // thinking_start/end、tool_forming、tool_args_delta、retry、notice、aborted 等不投影
+      // （error 已投影，见上）。
       break;
   }
 }
