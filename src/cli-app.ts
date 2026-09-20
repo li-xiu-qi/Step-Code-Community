@@ -410,9 +410,13 @@ async function runBrokenConfigRecovery(
 if (opts.acp === true) {
   configureLogger({ mode: 'headless' });
   const { startAcpServer } = await import('./acp/server.js');
+  const { composeAcpRuntime } = await import('./acp/compose.js');
   // 注入会话持久化：开启 session/list、session/resume、session/set_config_option。
   const acpStore = new SessionStore();
-  await startAcpServer({ config, cwd, provider, model: opts.model, providerName: opts.provider, store: acpStore });
+  // skill 注册表 + MCP 接入（工作区 cwd 相对的 .step-code/skills 与 ~/.step-code/mcp.json，
+  // HOME 可被驱动方改写到隔离工作区）。不注入则模型看不到领域 skill、MCP 工具不可发现。
+  const runtime = await composeAcpRuntime(config, cwd);
+  await startAcpServer({ config, cwd, provider, model: opts.model, providerName: opts.provider, store: acpStore, runtime });
   process.exit(0);
 }
 
