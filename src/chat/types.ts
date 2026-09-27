@@ -1,4 +1,5 @@
 import type { GoalStatus } from '../agent/goal/mode.js';
+import type { ImageAttachment } from './imageAttachment.js';
 /** 嵌套子 agent 的工具调用事件（由 runner onEvent 实时回传，挂到父 spawn_agent 条目下）。 */
 export interface SubagentToolEvent {
   name: string;
@@ -21,6 +22,12 @@ export type DisplayItem =
       text: string;
       verbatim?: boolean;
       turnNum?: number;
+      /**
+       * 本轮附带的图片附件（粘贴/拖放）。渲染期由 ItemBlock 解码成 half-block 字符画
+       * （见 tui-pi/imageBlock.ts）。缺省时只显示 text 里的 [N 张图] 计数标签。
+       * 历史回放不挂此字段（原图 base64 不在快照里），回放条目只有计数标签。
+       */
+      images?: ImageAttachment[];
     }
   | { kind: 'assistant'; text: string }
   /** 思考（推理过程）定稿块：流式期不进历史区（状态行预览），完成后才落成此条目。 */
