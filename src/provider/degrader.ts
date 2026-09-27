@@ -37,6 +37,12 @@ const VIDEO_OMITTED_TEXT = '[video omitted: model has no video input]';
 const IMAGE_DEGRADED_TEXT = '[image removed: exceeded API image limit, older images dropped to retry]';
 /** 视频版降级占位（同语义：曾被读到、因端点拒收被移除）。 */
 const VIDEO_DEGRADED_TEXT = '[video removed: endpoint rejected video input, dropped to retry]';
+/**
+ * 视频数超限占位：保留最近 N 个之外的历史视频换这个。
+ * 与 VIDEO_DEGRADED_TEXT 分开是因为诱因不同：那个是端点拒收（数量可能没超），
+ * 这个是已知的单请求视频数上限。模型需要能区分「被降级链剥掉」和「超上限被截」。
+ */
+const VIDEO_OVER_LIMIT_TEXT = '[video removed: exceeded per-request video limit]';
 
 /** 按块类型选主动降级占位文本。 */
 const OMITTED_TEXT_BY_TYPE: Record<string, string> = {
@@ -111,8 +117,53 @@ function mapBlocks(msg: Anthropic.MessageParam, fn: (block: Block) => Block | nu
 }
 
 /**
+ * 按 maxVideos 上限裁剪视频块：保留最近 maxVideos 个，更早的换成占位文本。
+ *
+ * 背景（2026-09-24 事故）：agent 在一个会话里先后 read_media 两个视频，两个 video
+ * 块都留在历史里，之后每一轮请求都带 2 个视频，StepFun 端点单请求只收 1 个，于是
+ * 每轮都 400 `The amount of videos you provided exceeds the model's limitation`，
+ * 切模型无效（视频块在历史里），会话直接卡死。
+ *
+ * 下钻 tool_result 内嵌块：read_media 回灌的视频在内层，只看顶层会漏数。
+ * maxVideos <= 0 时全部换占位（一个都不发）；undefined 或未超限时原样返回同一引用。
+ * 不改动入参，全部返回新对象（与 degradeMessages 的口径一致）。
+ */
+export function capVideos(
+  messages: Anthropic.MessageParam[],
+  maxVideos: number | undefined,
+): Anthropic.MessageParam[] {
+  if (maxVideos === undefined || maxVideos < 0) return messages;
+  // 先按出现顺序收集全部视频块（含 tool_result 内层）。
+  const all: Block[] = [];
+  const collect = (block: Block): void => {
+    if ((block as unknown as { type: string }).type === 'video') all.push(block);
+  };
+  for (const msg of messages) {
+    if (typeof msg.content === 'string') continue;
+    for (const block of msg.content) {
+      collect(block);
+      if (block.type === 'tool_result' && Array.isArray(block.content)) {
+        for (const inner of block.content) collect(inner as Block);
+      }
+    }
+  }
+  if (all.length <= maxVideos) return messages;
+  // 保留末尾 maxVideos 个（最近的），更早的进 drop 集合。用块对象身份判等，
+ // 与 applyReprojectionLevel 的 keep Set 同一机制（同一块不会被多条消息共享，防御性去重）。
+  const drop = new Set<Block>(all.slice(0, all.length - Math.max(0, maxVideos)));
+  return messages.map((msg) =>
+    mapBlocks(msg, (block) =>
+      (block as unknown as { type: string }).type === 'video' && drop.has(block)
+        ? { type: 'text', text: VIDEO_OVER_LIMIT_TEXT }
+        : block,
+    ),
+  );
+}
+
+/**
  * 主动降级：按能力声明整形消息。
  * - image_in 为 false：媒体块换成占位文本（保留轮次结构，模型知道这里本来有图）。
+ * - max_videos：视频块超过单请求上限时保留最近的、更早的换占位（见 {@link capVideos}）。
  * - cache_control 为 false：剥掉所有块的 cache_control（不兼容个案在此收敛，
  *   请求代码不再特判）。
  * - reasoning 为 false：剥掉 thinking / redacted_thinking 块（模型不做推理，
@@ -122,7 +173,10 @@ export function degradeMessages(
   messages: Anthropic.MessageParam[],
   capability: ModelCapability,
 ): Anthropic.MessageParam[] {
-  return messages.map((msg) =>
+  // 视频数裁剪在能力门控之前做：video_in=false 时下面会把视频全换占位，
+  // 那时再数数量已无意义；先裁上限保证「保留最近 N 个」的选取稳定。
+  const capped = capVideos(messages, capability.max_videos);
+  return capped.map((msg) =>
     mapBlocks(msg, (block) => {
       let b: Block | null = block;
       // video 块独立门控（官方类型无此块，按运行时形状判定）：只由 video_in 决定，

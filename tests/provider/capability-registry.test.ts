@@ -130,6 +130,7 @@ describe('CAPABILITY_KEYS', () => {
     expect([...CAPABILITY_KEYS]).toEqual([
       'image_in',
       'video_in',
+      'video_max',
       'audio_in',
       'thinking',
       'tool_use',

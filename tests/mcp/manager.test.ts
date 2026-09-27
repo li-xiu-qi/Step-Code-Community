@@ -59,15 +59,18 @@ class FakeManager extends McpManager {
   protected override async connectAndListTools(
     _client: Client,
     config: McpServerConfig,
-  ): Promise<Array<{ name: string; description?: string; inputSchema?: unknown }>> {
+  ): Promise<{ tools: Array<{ name: string; description?: string; inputSchema?: unknown }>; pid: number | null }> {
     this.calls.push(config.command);
     const b = this.behavior[config.command] ?? 'ok';
     if (b === 'fail') throw new Error('spawn failed\nsecond line');
     if (b === 'hang') await new Promise((r) => setTimeout(r, 200));
-    return [
-      { name: 'echo', description: 'echo tool', inputSchema: { type: 'object' } },
-      { name: 'ping' },
-    ];
+    return {
+      tools: [
+        { name: 'echo', description: 'echo tool', inputSchema: { type: 'object' } },
+        { name: 'ping' },
+      ],
+      pid: null,
+    };
   }
 }
 

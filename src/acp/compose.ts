@@ -54,7 +54,10 @@ export async function composeAcpRuntime(config: StepCodeConfig, cwd: string): Pr
       name: tool.qualifiedName,
       description: tool.description,
       schema: mcpInputSchemaToZod(tool.inputSchema),
-      execute: async (input) => manager.callTool(tool.qualifiedName, input as Record<string, unknown>),
+      execute: async (input) => {
+        const r = await manager.callTool(tool.qualifiedName, input as Record<string, unknown>);
+        return { content: r.content, isError: r.isError, images: r.images };
+      },
     });
   };
   const toolSearch: ToolSearchRegistry = {

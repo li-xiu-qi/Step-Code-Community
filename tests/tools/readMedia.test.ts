@@ -67,6 +67,9 @@ describe('read_media', () => {
     expect(r.images).toHaveLength(1);
     expect(r.content).toContain('已降采样');
     expect(r.content).toContain('3000×2000'); // 原始尺寸仍标注
+    // 坐标换算指引：等比缩放给单系数，模型把副本坐标乘回原图用
+    expect(r.content).toContain('坐标换算');
+    expect(r.content).toContain('1.91'); // 3000/1568 = 2000/1045 ≈ 1.91
     const delivered = Buffer.from(r.images![0]!.base64, 'base64');
     const meta = parseImageMeta(delivered);
     expect(meta).not.toBeNull();
@@ -89,6 +92,37 @@ describe('read_media', () => {
     const meta = parseImageMeta(delivered);
     expect(meta!.width).toBe(400);
     expect(meta!.height).toBe(300);
+  });
+
+  it('降采样后短边 <8px（极端长宽比）→ 显式失败并引导 probe 分块，不交付退化图', async () => {
+    // 极端条状 region：裁 3000×2 后按长边规则缩到 1568×1，短边低于下限。
+    // provider 侧实测拒收 ≤2px 的退化图，交付它等于让模型读到空内容。
+    writePng('strip.png', await pngBytes(3000, 2000));
+
+    const r = await executeTool(
+      'read_media',
+      { path: 'strip.png', region: { x: 0, y: 0, width: 3000, height: 2 } },
+      ctx,
+    );
+    expect(r.isError).toBe(true);
+    expect(r.content).toContain('短边');
+    expect(r.content).toContain('probe');
+  });
+
+  it('region 裁剪后降采样：换算指引带裁剪起点偏移，坐标可映回原图', async () => {
+    writePng('crop2.png', await pngBytes(3000, 2000));
+
+    const r = await executeTool(
+      'read_media',
+      { path: 'crop2.png', region: { x: 100, y: 50, width: 2000, height: 1000 } },
+      ctx,
+    );
+    expect(r.isError).toBe(false);
+    // 副本 1568×784，系数 2000/1568 ≈ 1.28；region 起点 (100,50) 必须进指引，
+    // 否则换算结果落在裁剪区而不是原图
+    expect(r.content).toContain('坐标换算');
+    expect(r.content).toContain('1.28');
+    expect(r.content).toContain('加 (100, 50)');
   });
 
   it('region 超出图片范围 → 明确报错', async () => {
@@ -283,6 +317,42 @@ describe('read_media · 视频', () => {
   it('capabilities 为 undefined → 不拒绝，正常构造 videos（由投影/降级链兜底）', async () => {
     writeFileSync(join(dir, 'clip.mp4'), mp4Bytes());
     const r = await executeTool('read_media', { path: 'clip.mp4' }, { cwd: dir });
+    expect(r.isError).toBe(false);
+    expect(r.videos).toHaveLength(1);
+  });
+
+  it('上下文视频数已达上限 → 拒绝并给替代方案（2026-09-24 事故回归钉）', async () => {
+    writeFileSync(join(dir, 'clip.mp4'), mp4Bytes());
+    // video_max=1（默认口径）+ 上下文已有 1 个视频：第二个视频进历史会让后续每轮 400。
+    const r = await executeTool(
+      'read_media',
+      { path: 'clip.mp4' },
+      { cwd: dir, capabilities: ['image_in', 'video_in', 'video_max=1'], countVideosInContext: () => 1 },
+    );
+    expect(r.isError).toBe(true);
+    expect(r.content).toContain('单次请求上限');
+    expect(r.content).toContain('抽帧');
+    expect(r.videos).toBeUndefined();
+  });
+
+  it('别名声明 video_max=2 且上下文只有 1 个 → 放行', async () => {
+    writeFileSync(join(dir, 'clip.mp4'), mp4Bytes());
+    const r = await executeTool(
+      'read_media',
+      { path: 'clip.mp4' },
+      { cwd: dir, capabilities: ['image_in', 'video_in', 'video_max=2'], countVideosInContext: () => 1 },
+    );
+    expect(r.isError).toBe(false);
+    expect(r.videos).toHaveLength(1);
+  });
+
+  it('countVideosInContext 缺失（子 agent 等无历史上下文）→ 不门控，沿用降级链兜底', async () => {
+    writeFileSync(join(dir, 'clip.mp4'), mp4Bytes());
+    const r = await executeTool(
+      'read_media',
+      { path: 'clip.mp4' },
+      { cwd: dir, capabilities: ['image_in', 'video_in', 'video_max=1'] },
+    );
     expect(r.isError).toBe(false);
     expect(r.videos).toHaveLength(1);
   });

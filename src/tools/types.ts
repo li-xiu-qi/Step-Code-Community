@@ -86,6 +86,14 @@ export interface ToolContext {
   imageBudgetBytes?: number;
   /** 当前模型的单视频交付字节预算（来自别名 video_budget_bytes）。缺省由 read_media 回退 32MB。 */
   videoBudgetBytes?: number;
+  /**
+   * 当前上下文里已交付给模型的视频块数量（组合根注入的动态查询）。
+   * read_media 用它做「单请求视频数上限」门控：端点实测一个视频即上限，第二个
+   * 视频进历史会让后续每一轮都被服务端 400 拒掉（2026-09-24 事故），且 degrader
+   * 发送前裁剪是静默替换，不如在读的当场就说清楚。缺失表示不统计（子 agent 等
+   * 无会话历史的上下文）。
+   */
+  countVideosInContext?: () => number;
   /** git 自动提交配置（来自 [git] auto_commit）。缺省视为 undefined（不启用）。 */
   gitConfig?: { autoCommit?: boolean };
 }

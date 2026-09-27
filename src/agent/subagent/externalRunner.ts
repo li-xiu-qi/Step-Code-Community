@@ -8,6 +8,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import type { SubagentResult } from './types.js';
 import { CodexAppServerWire } from './codexWire.js';
+import { terminateProcTree } from '../background/manager.js';
 
 /** 外部 agent 驱动方式。 */
 type ExternalDriver = 'claude-stream-json' | 'codex';
@@ -123,8 +124,11 @@ function runClaudeCode(
     }
 
     signal?.addEventListener('abort', () => {
-      try { child.kill('SIGTERM'); } catch { /* already exited */ }
-      setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already exited */ } }, disposeGrace);
+      // 树杀而非 child.kill：Windows 上命令一旦经壳包装，单 kill 只杀壳，孙进程变孤儿
+      // 继续占着 stdio。terminateProcTree 内部已 best-effort（各步自带 catch，不会抛），
+      // Windows 走 taskkill /T /F，POSIX 走进程组。
+      terminateProcTree(child, 'SIGTERM');
+      setTimeout(() => terminateProcTree(child, 'SIGKILL'), disposeGrace);
     });
   });
 }
@@ -175,8 +179,10 @@ async function runCodex(
     const killTimer = (): void => {
       if (killed) return;
       killed = true;
-      try { child.kill('SIGTERM'); } catch { /* */ }
-      setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* */ } }, disposeGrace);
+      // codex 在 Windows 上经 cmd.exe /d /s /c 包装（见上面 spawn 的 argv），child.kill
+      // 只杀 cmd.exe 这个壳，codex app-server 孙进程会逃逸继续跑。必须树杀。
+      terminateProcTree(child, 'SIGTERM');
+      setTimeout(() => terminateProcTree(child, 'SIGKILL'), disposeGrace);
     };
     signal?.addEventListener('abort', killTimer, { once: true });
 

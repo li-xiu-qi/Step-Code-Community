@@ -1,5 +1,6 @@
 import { readFileSync, statSync } from 'node:fs';
 import { z } from 'zod';
+import { videoLimitFromCapabilities } from '../provider/capability-registry.js';
 import { resolvePath } from './fsutil.js';
 import { parseImageMeta, type ImageMeta } from './imageMeta.js';
 import { fail, type ToolContext, type ToolDef } from './types.js';
@@ -14,6 +15,12 @@ export const READ_MEDIA_MAX_BYTES = 100 * 1024 * 1024;
 export const READ_MEDIA_IMAGE_BYTE_BUDGET = 256 * 1024;
 /** 交付图片的长边像素上限：超出则等比降采样（对齐主流视觉模型的推荐输入尺寸）。 */
 export const READ_MEDIA_MAX_EDGE_PX = 1568;
+/**
+ * 交付副本的短边下限：等比缩到短边 <8px 的图在 provider 侧会被拒（生产网关实测
+ * ≤2px 拒绝、测试网关 ≤4px 拒绝），模型读到它也提炼不出任何信息。降采样结果低于
+ * 此值时显式失败并引导分块，不交付退化图。
+ */
+export const READ_MEDIA_MIN_DELIVERY_EDGE_PX = 8;
 /**
  * 交付给模型的视频字节预算（原始字节）：超出直接拒绝。
  * 32MB：覆盖常见社媒视频与录屏片段；视频只能 inline base64（v1 无文件上传通道），
@@ -144,6 +151,42 @@ function buildNote(meta: ImageMeta, rawBytes: number, delivery: string): string 
 }
 
 /**
+ * 组装降采样后的坐标换算指引。模型在交付副本上定位到的坐标必须换算回原图才能用
+ * （指给用户看、或作为后续 region/crop 的输入），没有这句它只能猜，所以这里显式
+ * 给出系数与偏移。
+ *
+ * srcW/srcH 是「被缩放的那张图的尺寸」：无裁剪时是原图，region 裁剪后是裁剪区
+ * （缩放发生在裁剪结果上，用原图尺寸算系数会错——2000×1000 裁到 1568×784 的
+ * 系数是 1.28，用 3000×2000 算会得出 1.91/2.55 两个错值）。region 场景的指引
+ * 还带裁剪起点偏移，否则换算结果落在裁剪区而不是原图。
+ */
+function scaleAdvice(
+  srcW: number,
+  srcH: number,
+  outW: number,
+  outH: number,
+  region?: { x: number; y: number },
+): string {
+  if (outW === srcW && outH === srcH) return '';
+  const fx = srcW / outW;
+  const fy = srcH / outH;
+  const same = Math.abs(fx - fy) < 0.005;
+  const factor =
+    region === undefined
+      ? same
+        ? `副本坐标各乘 ${fx.toFixed(2)}
+`
+        : `副本 x 乘 ${fx.toFixed(2)}、y 乘 ${fy.toFixed(2)}
+`
+      : same
+        ? `副本坐标乘 ${fx.toFixed(2)} 后加 (${region.x}, ${region.y})
+`
+        : `副本 x 乘 ${fx.toFixed(2)} 加 ${region.x}、y 乘 ${fy.toFixed(2)} 加 ${region.y}
+`;
+  return `坐标换算：副本自 ${srcW}×${srcH}${region === undefined ? '' : `区域 (${region.x},${region.y}) 起`}缩至 ${outW}×${outH}，${factor}即为原图坐标。`;
+}
+
+/**
  * 组装 probe 旁注：元数据 + 建议分块方案。
  *
  * 建议分块的口径：按交付预算反推每个 region 的最大边长，让单次 region 读取
@@ -244,6 +287,20 @@ export const readMediaTool: ToolDef<Input> = {
           );
         }
         const videoBudget = ctx.videoBudgetBytes ?? READ_MEDIA_VIDEO_BYTE_BUDGET;
+        // 单请求视频数门控（2026-09-24 事故）：端点一个视频即上限，第二个视频进历史
+        // 会让后续每轮都被 400 拒掉、切模型无效。degrader 发送前会按上限裁剪，但那是
+        // 静默替换（模型以为自己读到了）；在读的当场拒绝并给出可执行替代，代价小得多。
+        // 上限来自别名 video_max=N，未声明时不门控（沿用投影/降级链兜底的口径）。
+        const maxVideos = videoLimitFromCapabilities(ctx.capabilities);
+        const inContext = ctx.countVideosInContext?.();
+        if (maxVideos !== undefined && inContext !== undefined && inContext >= maxVideos) {
+          return fail(
+            `当前上下文已有 ${inContext} 个视频，已达到单次请求上限 ${maxVideos}` +
+              `（StepFun 端点实测一个视频即上限，再读会让后续每一轮都被服务端拒绝）。` +
+              `请先基于已读视频完成分析；确需多看一个，可在别名声明 video_max=2，` +
+              `或用 ffmpeg 抽帧后按图片读取。`,
+          );
+        }
         if (st.size > videoBudget) {
           return fail(
             `视频过大（${st.size} 字节，超过交付预算 ${videoBudget}），无法用 read_media 交付给模型。` +
@@ -371,12 +428,23 @@ export const readMediaTool: ToolDef<Input> = {
       const dw = image.bitmap.width;
       const dh = image.bitmap.height;
       const resized = dw !== (input.region?.width ?? meta.width) || dh !== (input.region?.height ?? meta.height);
+      // 退化图保护：见 READ_MEDIA_MIN_DELIVERY_EDGE_PX 注释。只拦降采样路径——
+      // full_resolution 与直通路径是模型显式选择或本就在预算内，不代它裁决。
+      if (Math.min(dw, dh) < READ_MEDIA_MIN_DELIVERY_EDGE_PX) {
+        return fail(
+          `降采样后交付副本仅 ${dw}×${dh}（短边低于 ${READ_MEDIA_MIN_DELIVERY_EDGE_PX}px 下限），该尺寸无法被视觉模型读取。` +
+            '原图长宽比过于极端：请用 probe:true 拿分块方案，按块读取局部区域。',
+        );
+      }
+      const advice = input.region === undefined
+        ? scaleAdvice(meta.width, meta.height, dw, dh)
+        : scaleAdvice(input.region.width, input.region.height, dw, dh, input.region);
       if (input.region !== undefined) {
         delivery = resized
-          ? `已裁剪区域 (x=${input.region.x},y=${input.region.y},w=${input.region.width},h=${input.region.height}) 并降采样到 ${dw}×${dh} 交付。`
+          ? `已裁剪区域 (x=${input.region.x},y=${input.region.y},w=${input.region.width},h=${input.region.height}) 并降采样到 ${dw}×${dh} 交付。${advice}`
           : `已裁剪区域 (x=${input.region.x},y=${input.region.y},w=${input.region.width},h=${input.region.height}) 交付。`;
       } else {
-        delivery = resized ? `已降采样到 ${dw}×${dh} 交付。` : '原图未改动交付。';
+        delivery = resized ? `已降采样到 ${dw}×${dh} 交付。${advice}` : '原图未改动交付。';
       }
       return offloadMedia({
         content: buildNote(meta, buf.length, delivery),
