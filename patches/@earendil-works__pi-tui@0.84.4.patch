@@ -1,0 +1,630 @@
+diff --git a/dist/components/loader.js b/dist/components/loader.js
+index a916fdd60a03a42403a4e581c7156e7364a75fbd..7aa92d88b07d85d56478214ce9770593c9afdb86 100644
+--- a/dist/components/loader.js
++++ b/dist/components/loader.js
+@@ -14,6 +14,7 @@ export class Loader extends Text {
+     spinnerColorFn;
+     messageColorFn;
+     message = "Loading...";
++    cache;
+     constructor(ui, spinnerColorFn, messageColorFn, message = "Loading...", indicator) {
+         super("", 1, 0);
+         this.ui = ui;
+@@ -23,7 +24,14 @@ export class Loader extends Text {
+         this.setIndicator(indicator);
+     }
+     render(width) {
+-        return ["", ...super.render(width)];
++        const native = super.render(width);
++        const cached = this.cache;
++        if (cached !== undefined && cached.width === width && cached.native === native) {
++            return cached.lines;
++        }
++        const lines = ["", ...native];
++        this.cache = { width, native, lines };
++        return lines;
+     }
+     start() {
+         this.updateDisplay();
+diff --git a/dist/components/scroll-view.d.ts b/dist/components/scroll-view.d.ts
+index 1cee44687eab05edf7f629a7cae54cd301af12eb..be4d3125ef85f5aebd192e0c2a529ec6d8694211 100644
+--- a/dist/components/scroll-view.d.ts
++++ b/dist/components/scroll-view.d.ts
+@@ -8,6 +8,7 @@ export interface ScrollViewOptions {
+     overscroll?: "chain" | "contain";
+     scrollbar?: ScrollViewScrollbar;
+     scrollbarStyle?: (text: string) => string;
++    scrollbarTrackStyle?: (text: string) => string;
+     scrollbarHideDelayMs?: number;
+ }
+ export interface ScrollViewScrollToOptions {
+@@ -20,6 +21,7 @@ export declare class ScrollView extends Container {
+     readonly primary: boolean;
+     readonly overscroll: "chain" | "contain";
+     readonly scrollbarStyle: (text: string) => string;
++    readonly scrollbarTrackStyle: (text: string) => string;
+     private currentScrollbar;
+     private readonly scrollbarHideDelayMs;
+     private currentScrollTop;
+diff --git a/dist/components/scroll-view.js b/dist/components/scroll-view.js
+index d6daf16e4df7a99172b2d62803e1ca6fc6c6fd33..780c027097ff2b444a35f2ff1390605c17349d20 100644
+--- a/dist/components/scroll-view.js
++++ b/dist/components/scroll-view.js
+@@ -6,6 +6,7 @@ export class ScrollView extends Container {
+     primary;
+     overscroll;
+     scrollbarStyle;
++    scrollbarTrackStyle;
+     currentScrollbar;
+     scrollbarHideDelayMs;
+     currentScrollTop = 0;
+@@ -30,6 +31,9 @@ export class ScrollView extends Container {
+         this.overscroll = options.overscroll ?? "chain";
+         this.currentScrollbar = options.scrollbar ?? "hidden";
+         this.scrollbarStyle = options.scrollbarStyle ?? ((text) => `\x1b[100m${text}\x1b[49m`);
++        // 轨道样式默认值对齐 Kimi Code 的 @moonshot-ai/pi-tui：轨道用亮黑（SGR 90），
++        // thumb 默认用白（SGR 37）。早前本站没有轨道概念，只有 thumb 一条线。
++        this.scrollbarTrackStyle = options.scrollbarTrackStyle ?? ((text) => `\x1b[90m${text}\x1b[39m`);
+         this.scrollbarHideDelayMs = Math.max(0, Math.floor(options.scrollbarHideDelayMs ?? 1000));
+     }
+     get scrollTop() {
+diff --git a/dist/components/text.js b/dist/components/text.js
+index 9afcf791da5eba0e30e90191f108702293cf76e9..19b5a97e334f182b5a57c75e91c0499d8812a769 100644
+--- a/dist/components/text.js
++++ b/dist/components/text.js
+@@ -83,8 +83,8 @@ export class Text {
+         // Update cache
+         this.cachedText = this.text;
+         this.cachedWidth = width;
+-        this.cachedLines = result;
+-        return result.length > 0 ? result : [""];
++        this.cachedLines = result.length > 0 ? result : [""];
++        return this.cachedLines;
+     }
+ }
+ //# sourceMappingURL=text.js.map
+\ No newline at end of file
+diff --git a/dist/layout.js b/dist/layout.js
+index 6661b31cfacfef8e3385fd12da9626e851d97e96..b18fb5d5c1617bb209b3605072c3fd810f9ddc11 100644
+--- a/dist/layout.js
++++ b/dist/layout.js
+@@ -156,7 +156,26 @@ function layoutComponent(context, component, x, y, width, height, clip) {
+     }
+     return box;
+ }
+-function styleScrollbarCell(line, column, totalWidth, style) {
++/**
++ * 滚动条绘制：对齐 Kimi Code 的 @moonshot-ai/pi-tui 方案（packages/pi-tui/src/layout.ts）。
++ *
++ * 与本站早前自绘方案（左四分之一块 U+258E + hover 扩到 2 列）的差异，也是换成它的理由：
++ *   - 列位固定为最右一列，不随 hover 左右位移。旧方案 hover 时 column 左移，thumb 位置
++ *     跳变，是「一会儿长一会儿短」观感的一部分。
++ *   - 整条轨道都画字符（thumb 用 ┃/█，轨道用 │），有可见参照；旧方案只有 thumb 一条线。
++ *   - hover 只换字符（┃ → █），不换宽度。块字符宽度变化在字符格子里只有 1/2 列两档，
++ *     跳变生硬；换字符是同一格内的填充变化，过渡自然。
++ *   - 保留目标格原有背景色（消息气泡底色不被滚动条擦掉），旧方案直接覆盖。
++ */
++const SCROLLBAR_THUMB_IDLE_GLYPH = "\u2503";
++const SCROLLBAR_THUMB_ACTIVE_GLYPH = "\u2588";
++const SCROLLBAR_TRACK_GLYPH = "\u2502";
++/** 从一段 ANSI 前缀里取出最后生效的背景色码，供滚动条格保留原背景。 */
++function activeBackgroundAnsi(prefix) {
++    const matches = prefix.match(/\x1b\[(?:48;5;\d+|48;2;\d+;\d+;\d+|4[0-9]|10[0-7])m/g);
++    return matches ? matches[matches.length - 1] : "";
++}
++function replaceScrollbarCell(line, column, totalWidth, replacement, preserveBackground) {
+     if (isImageLine(line))
+         return line;
+     const graphemeRange = getGraphemeCellRange(line, column);
+@@ -174,20 +193,46 @@ function styleScrollbarCell(line, column, totalWidth, style) {
+         targetPrefix += ansi.code;
+         targetIndex += ansi.length;
+     }
+-    const targetText = target.slice(targetIndex) || " ".repeat(end - start);
+     const beforePadding = " ".repeat(Math.max(0, start - visibleWidth(before)));
+-    return `${before}${beforePadding}${targetPrefix}${style(targetText)}${after}`;
++    const cellPaddingBefore = " ".repeat(Math.max(0, column - start));
++    const cellPaddingAfter = " ".repeat(Math.max(0, end - column - 1));
++    // 先复位再按需恢复原背景：不复位会把内容的前景色渗到滚动条上，不恢复背景则消息
++    // 气泡底色会在滚动条列断掉一截。
++    const targetStyle = `\x1b[0m\x1b]8;;\x07${preserveBackground ? activeBackgroundAnsi(targetPrefix) : ""}`;
++    return `${before}${beforePadding}${targetStyle}${cellPaddingBefore}${replacement}${cellPaddingAfter}${after}`;
+ }
+-export function getScrollbarGeometry(box) {
+-    if (!box.scrollView?.isScrollbarVisible || box.rect.width <= 0 || box.rect.height <= 0)
++export function getScrollbarGeometry(box, includeHiddenAuto = false) {
++    if (!box.scrollView || box.rect.width <= 0 || box.rect.height <= 0)
+         return undefined;
+     const contentHeight = box.children[0]?.rect.height ?? box.scrollContentLines?.length ?? 0;
+     const trackHeight = box.rect.height;
++    // auto 模式下滚动条默认隐藏，但鼠标靠近时要能揭示它（Kimi 的 includeHiddenAuto 语义）。
++    // 判据是「内容超过一屏」而不是 isScrollbarVisible，否则隐藏态永远命中不了。
++    const canRevealHiddenAuto = includeHiddenAuto && box.scrollView.scrollbar === "auto" && contentHeight > trackHeight;
++    if (!box.scrollView.isScrollbarVisible && !canRevealHiddenAuto)
++        return undefined;
+     const minThumbHeight = Math.min(2, trackHeight);
+-    const thumbHeight = Math.max(minThumbHeight, Math.min(trackHeight, Math.round((trackHeight * trackHeight) / contentHeight)));
++    const rawThumbHeight = Math.max(minThumbHeight, Math.min(trackHeight, Math.round((trackHeight * trackHeight) / contentHeight)));
++    // thumb 高度滞回：thumbHeight 与 contentHeight 成反比，流式输出时 contentHeight 每帧
++    // 都在涨，round 之后 thumbHeight 就每帧 ±1 抖动，观感是「一会儿变长一会儿变短」
++    // （实测 120 帧流式里变了 36 次）。只有当新值与上一帧相差 >= 2 行时才真正更新，
++    // 把这种无意义的抖动吸收掉；差 1 行时沿用旧值。滚动场景 thumbHeight 本就不变，
++    // 滞回对它无影响。
++    const scrollView = box.scrollView;
++    let thumbHeight = rawThumbHeight;
++    if (typeof scrollView.lastThumbHeight === "number" &&
++        Math.abs(rawThumbHeight - scrollView.lastThumbHeight) < 2 &&
++        rawThumbHeight >= minThumbHeight &&
++        rawThumbHeight <= trackHeight) {
++        thumbHeight = scrollView.lastThumbHeight;
++    }
++    scrollView.lastThumbHeight = thumbHeight;
+     const maxScrollTop = Math.max(0, contentHeight - trackHeight);
+     const maxThumbTop = trackHeight - thumbHeight;
+     const thumbOffset = maxScrollTop === 0 ? 0 : Math.round((box.scrollView.scrollTop / maxScrollTop) * maxThumbTop);
++    // 列位固定为最右一列，不随 hover 变化（Kimi 同此）。早期方案 hover 时把 thumb 扩到
++    // 2 列、column 左移，thumb 位置跳变，是「一会儿长一会儿短」观感的一部分；且块字符
++    // 宽度只有 1/2 列两档，跳变生硬。现在 hover 只换字符不换列位。
+     const column = box.rect.x + box.rect.width - 1;
+     if (column < box.clip.x || column >= box.clip.x + box.clip.width)
+         return undefined;
+@@ -204,11 +249,20 @@ function paintScrollbar(box, screen, totalWidth) {
+     const geometry = getScrollbarGeometry(box);
+     if (!geometry || !box.scrollView)
+         return;
+-    for (let offset = 0; offset < geometry.thumbHeight; offset++) {
+-        const row = geometry.thumbTop + offset;
++    // 整条轨道都画：thumb 区间用 ┃（静止）/ █（激活），其余用 │ 作可见参照。
++    // 早期只画 thumb 几条，没有轨道，thumb 像浮在空中的一段线。
++    const preserveBackground = box.scrollView.scrollbar !== "always";
++    const thumbBottom = geometry.thumbTop + geometry.thumbHeight;
++    for (let offset = 0; offset < geometry.trackHeight; offset++) {
++        const row = geometry.trackTop + offset;
+         if (row < box.clip.y || row >= box.clip.y + box.clip.height || row < 0 || row >= screen.length)
+             continue;
+-        screen[row] = styleScrollbarCell(screen[row] ?? "", geometry.column, totalWidth, box.scrollView.scrollbarStyle);
++        const isThumb = row >= geometry.thumbTop && row < thumbBottom;
++        const glyph = isThumb
++            ? (box.scrollView.scrollbarActive ? SCROLLBAR_THUMB_ACTIVE_GLYPH : SCROLLBAR_THUMB_IDLE_GLYPH)
++            : SCROLLBAR_TRACK_GLYPH;
++        const styled = isThumb ? box.scrollView.scrollbarStyle(glyph) : box.scrollView.scrollbarTrackStyle(glyph);
++        screen[row] = replaceScrollbarCell(screen[row] ?? "", geometry.column, totalWidth, styled, preserveBackground);
+     }
+ }
+ function paintBox(box, screen, totalWidth) {
+@@ -304,6 +358,32 @@ export function getScrollViewBox(frame, scrollView) {
+     };
+     return visit(frame.root);
+ }
++/**
++ * 收集一帧里所有滚动条 thumb 占据的行区间（相对屏幕行）。
++ *
++ * 用途：alt-screen 的滚动快路径要判断「新屏是否为旧屏的纯垂直平移」，而 thumb 按比例
++ * 定位、不随内容平移（910 行内容里滚 1 行不足以改变它的行号），会把纯平移性打破。
++ * 把这些行排除出比较，平移后另行重画即可。
++ */
++export function collectScrollbarThumbRows(frame) {
++    const rows = new Set();
++    const visit = (box) => {
++        if (box.scrollView && box.rect.width > 0 && box.rect.height > 0) {
++            const geometry = getScrollbarGeometry(box);
++            if (geometry) {
++                for (let r = geometry.thumbTop; r < geometry.thumbTop + geometry.thumbHeight; r++) {
++                    if (r >= 0)
++                        rows.add(r);
++                }
++            }
++        }
++        for (const child of box.children)
++            visit(child);
++    };
++    if (frame?.root)
++        visit(frame.root);
++    return rows;
++}
+ export function getScrollViewsAt(frame, x, y) {
+     const result = [];
+     const visit = (box, depth) => {
+diff --git a/dist/tui-alt-screen.js b/dist/tui-alt-screen.js
+index 8bfcffd4dd99653930ec0a88055c18e14943e363..03779ebf385a5122c7290761a917c606f0eecd78 100644
+--- a/dist/tui-alt-screen.js
++++ b/dist/tui-alt-screen.js
+@@ -3,10 +3,10 @@ import { AltScreenFlashContainer } from "./components/alt-screen-flash.js";
+ import { ScrollView } from "./components/scroll-view.js";
+ import { getKeybindings } from "./keybindings.js";
+ import { isKeyRelease } from "./keys.js";
+-import { getScrollbarGeometry, getScrollViewBox, getScrollViewsAt, renderLayoutFrame, } from "./layout.js";
++import { collectScrollbarThumbRows, getScrollbarGeometry, getScrollViewBox, getScrollViewsAt, renderLayoutFrame, } from "./layout.js";
+ import { deleteAllKittyImages, deleteAllKittyPlacements, deleteKittyImage, getCapabilities, getKittyImagePlacement, isImageLine, setCapabilities, } from "./terminal-image.js";
+ import { CURSOR_MARKER, compositeTuiLine, TuiBase, VIEWPORT_TUI, } from "./tui.js";
+-import { extractAnsiCode, getGraphemeCellRange, getOsc8LinkAtColumn, getWordSegmenter, sliceByColumn, stripTerminalSequences, visibleWidth, } from "./utils.js";
++import { extractAnsiCode, getGraphemeCellRange, getOsc8LinkAtColumn, getWordSegmenter, normalizeTerminalOutput, sliceByColumn, stripTerminalSequences, visibleWidth, } from "./utils.js";
+ const ENTER_ALT_SCREEN = "\x1b[?1049h";
+ const EXIT_ALT_SCREEN = "\x1b[?1049l";
+ const DISABLE_AUTOWRAP = "\x1b[?7l";
+@@ -595,16 +595,19 @@ export class TuiAltScreen extends TuiBase {
+         }
+         return true;
+     }
+-    getScrollbarTargetAt(x, y) {
++    getScrollbarTargetAt(x, y, includeHiddenAuto = false) {
+         if (this.hasOverlay() || !this.currentLayout)
+             return undefined;
+         for (const scrollView of getScrollViewsAt(this.currentLayout, x, y)) {
+             const box = getScrollViewBox(this.currentLayout, scrollView);
+-            const geometry = box ? getScrollbarGeometry(box) : undefined;
++            const geometry = box ? getScrollbarGeometry(box, includeHiddenAuto) : undefined;
++            // 命中判定对齐 Kimi：x 严格等于滚动条列，y 覆盖整条轨道（不只是 thumb 身体），
++            // 这样点击轨道空白处也能跳转（grabOffset 为负时 clamp 到 0，即点上方滚到顶）。
++            // includeHiddenAuto 让 auto 模式隐藏态也能被命中并揭示，否则永远 hover 不出来。
+             if (geometry &&
+                 x === geometry.column &&
+-                y >= geometry.thumbTop &&
+-                y < geometry.thumbTop + geometry.thumbHeight) {
++                y >= geometry.trackTop &&
++                y < geometry.trackTop + geometry.trackHeight) {
+                 return { scrollView, geometry };
+             }
+         }
+@@ -618,7 +621,9 @@ export class TuiAltScreen extends TuiBase {
+         this.scrollbarHover?.setScrollbarActive(true);
+     }
+     updateScrollbarHover(x, y) {
+-        this.setScrollbarHover(this.getScrollbarTargetAt(x, y)?.scrollView);
++        // includeHiddenAuto=true：auto 模式滚动条默认隐藏，鼠标靠近时要能揭示。
++        // 不传这个参数时隐藏态命中不了，hover 永远出不来（Kimi 同此）。
++        this.setScrollbarHover(this.getScrollbarTargetAt(x, y, true)?.scrollView);
+     }
+     stopScrollbarHover() {
+         this.setScrollbarHover(undefined);
+@@ -656,9 +661,14 @@ export class TuiAltScreen extends TuiBase {
+         this.pressedUrl = undefined;
+         this.selectionDragged = false;
+         this.setScrollbarHover(target.scrollView);
++        // Clamp the grab offset into the thumb body. The hit area now covers the whole track,
++        // so a press above the thumb yields a negative offset and one below the thumb yields
++        // an offset past its height; clamping makes those cases snap the thumb edge to the
++        // press row (click-to-jump) instead of flinging the content to the far end.
++        const grabOffset = Math.max(0, Math.min(target.geometry.thumbHeight, event.y - target.geometry.thumbTop));
+         this.scrollbarDrag = {
+             scrollView: target.scrollView,
+-            grabOffset: event.y - target.geometry.thumbTop,
++            grabOffset,
+         };
+         return true;
+     }
+@@ -1107,6 +1117,31 @@ export class TuiAltScreen extends TuiBase {
+     isMouseSequence(data) {
+         return /^\x1b\[<\d+;\d+;\d+[Mm]$/.test(data) || (data.length === 6 && data.startsWith("\x1b[M"));
+     }
++    /**
++     * 增量版 applyLineResets：与上一帧逐字节相同的行按引用复用已归一化的结果，
++     * 只对变化行跑 normalizeTerminalOutput。语义与官方版 Step-Code 的同名方法一致。
++     *
++     * reuse 为 undefined（或长度不匹配）时退化为全量归一化，行为与 applyLineResets 相同。
++     */
++    applyLineResetsFrom(lines, reuse) {
++        // SEGMENT_RESET 是 tui.js 的模块私有常量（未导出），值为 "\x1b[0m\x1b]8;;\x07"，
++        // 与基类 applyLineResets 追加的 reset 逐字节一致。改动基类导出前先内联同值。
++        const reset = "\x1b[0m\x1b]8;;\x07";
++        const canReuse = reuse !== undefined && reuse.length === lines.length;
++        for (let i = 0; i < lines.length; i++) {
++            const line = lines[i];
++            if (isImageLine(line)) {
++                continue;
++            }
++            if (canReuse && reuse[i] === line) {
++                // 未变化的行：沿用上一帧已归一化并追加过 SEGMENT_RESET 的结果
++                lines[i] = reuse[i];
++                continue;
++            }
++            lines[i] = normalizeTerminalOutput(line) + reset;
++        }
++        return lines;
++    }
+     compositeFlashes(screen, width, height) {
+         const flashLines = this.flashes.render(width).slice(-height);
+         if (flashLines.length === 0)
+@@ -1141,12 +1176,25 @@ export class TuiAltScreen extends TuiBase {
+         screen = this.applySelection(screen, nextLayout);
+         screen = this.compositeFlashes(screen, width, height);
+         const cursorPos = this.extractCursorPosition(screen, height);
+-        screen = this.applyLineResets(screen).map((line) => {
++        // fullRedraw 只依赖尺寸与上一帧缓冲，不依赖 screen 内容，可在此提前计算
++        const fullRedraw = this.previousScreen.length === 0 || this.previousScreenWidth !== width || this.previousScreenHeight !== height;
++        // 增量归一化（移植自官方版 Step-Code 的 applyLineResetsFrom）：normalizeTerminalOutput
++        // 是逐字符解析 ANSI 的昂贵原语，原实现每帧对全部 height 行都跑一遍。而一次滚轮/
++        // 流式追加通常只改几行，多数行与上一帧逐字节相同。这些行直接按引用复用上一帧
++        // 已归一化的结果，只重算变化部分，每帧成本从 O(height) 降到 O(变化行数)。
++        //
++        // 正确性约束：只在没有 overlay、没有尺寸变化时启用。这两者都会整屏重绘，
++        // previousScreen 不能作为复用来源。
++        const canReuseLines = !fullRedraw &&
++            !this.hasOverlayEntries &&
++            this.previousScreen.length === height &&
++            this.previousScreenWidth === width &&
++            this.previousScreenHeight === height;
++        screen = this.applyLineResetsFrom(screen, canReuseLines ? this.previousScreen : undefined).map((line) => {
+             if (isImageLine(line) || visibleWidth(line) <= width)
+                 return line;
+             return sliceByColumn(line, 0, width, true);
+         });
+-        const fullRedraw = this.previousScreen.length === 0 || this.previousScreenWidth !== width || this.previousScreenHeight !== height;
+         const imagesNeedRedraw = screen.some((line, row) => line !== this.previousScreen[row] && (isImageLine(line) || isImageLine(this.previousScreen[row] ?? "")));
+         const redrawImages = fullRedraw || imagesNeedRedraw;
+         const hadUploadedKittyImages = this.uploadedKittyImages.size > 0;
+@@ -1168,10 +1216,157 @@ export class TuiAltScreen extends TuiBase {
+                 buffer += deleteAllKittyPlacements();
+         }
+         buffer += preparedKittyScreen.evictedImageDeletion;
+-        for (let row = 0; row < height; row++) {
+-            if (!fullRedraw && !imagesNeedRedraw && screen[row] === this.previousScreen[row])
+-                continue;
+-            buffer += `\x1b[${row + 1};1H\x1b[2K${preparedKittyScreen.lines[row] ?? ""}`;
++        // 滚动快路径：新屏若只是旧屏的整屏垂直平移（滚轮/scrollTo 的典型形态），
++        // 用终端原生滚动指令 SU(\x1b[nS)/SD(\x1b[nT) 平移视口，只写新露出的那几行。
++        //
++        // 为什么值得做：备用屏没有 scrollback，终端滚动条不出现，平移只能由应用逐行重写。
++        // 实测一次滚轮（1-3 行）逐行重写要吐 ~9KB，60fps 下 525KB/s，Windows Terminal +
++        // ConPTY 跟不上就是一卡一卡。改用 SU 后只需写新露出的 1-3 行（~600B），差一个量级。
++        // 官方版走主屏 + <Static>，定稿内容在 scrollback 里，往上滚是终端原生滚动、
++        // 应用写 0 字节，所以丝滑；备用屏拿不到那条路，这是等价替代。
++        //
++        // 约束：只在不含 kitty 图片、非全量重绘、且平移量能完整解释所有变化时启用，
++        // 否则回落原有逐行 diff，正确性优先。
++        let nativeShift = 0;
++        let fixedTail = 0;
++        // thumb 行按比例定位、不随内容平移，排除出比较；平移后另行重画。
++        //
++        // 重画范围不是「旧 thumb 行 ∪ 新 thumb 行」那么简单：SU/SD 会把旧 thumb 字符
++        // 一起搬走，残留区间是旧 thumb 区间整体平移后的位置。例：旧 thumb 在 [1,7)、
++        // SU(2) 后字符落在 [0,5)，row 0 既不是新 thumb 行也不是旧 thumb 行，只取两者
++        // 并集会漏擦（实测连续滚动时 row0/row1 残留 ┃）。所以要把平移后的旧区间也算进来。
++        // 注意：平移量要等下面 nativeShift 算出来才能用，所以 fixup 集合在检测之后才组装。
++        const thumbRows = collectScrollbarThumbRows(nextLayout);
++        const oldThumbRows = this.currentLayout ? collectScrollbarThumbRows(this.currentLayout) : new Set();
++        let oldThumbTop = -1;
++        let oldThumbBottom = -1;
++        for (const row of oldThumbRows) {
++            if (oldThumbTop < 0 || row < oldThumbTop)
++                oldThumbTop = row;
++            if (row > oldThumbBottom)
++                oldThumbBottom = row;
++        }
++        oldThumbBottom += 1;
++        if (!fullRedraw && !imagesNeedRedraw && height > 4 && this.previousScreen.length === height) {
++            // 尾部连续不变行是 dock（输入框/状态行等固定面板），不参与滚动
++            while (fixedTail < height - 2 &&
++                   screen[height - 1 - fixedTail] === this.previousScreen[height - 1 - fixedTail]) {
++                fixedTail++;
++            }
++            const scrollRows = height - fixedTail;
++            const maxShift = Math.min(scrollRows - 1, 64);
++            // 任一端的行号落在 thumb 区间就跳过比较：内容平移 1 行而 thumb 按比例不动时，
++            // 「thumb 行」与「紧邻它的上一行」会互相错位，只排除新行号会漏掉后者。
++            //
++            // 但排除不能变成「空验证」：scrollTop 被 clamp 时 thumb 会落在屏幕底部，大平移量
++            // 下待比较的行恰好全落在 thumb 区间，于是任何 d 都能通过。因此额外要求
++            // ① 至少一行是真正字符串相等匹配上的（verified > 0）；
++            // ② 跳过数不超过 thumb 行总数（skipped <= thumbRows.size）。
++            const rowMatches = (newRow, oldRow) => {
++                if (screen[newRow] === this.previousScreen[oldRow])
++                    return 'match';
++                if (thumbRows.has(newRow) || thumbRows.has(oldRow))
++                    return 'skip';
++                return 'diff';
++            };
++            const tryShift = (d, up) => {
++                let verified = 0;
++                let skipped = 0;
++                if (up) {
++                    for (let row = 0; row + d < scrollRows; row++) {
++                        const r = rowMatches(row, row + d);
++                        if (r === 'diff')
++                            return false;
++                        if (r === 'match')
++                            verified++;
++                        else
++                            skipped++;
++                    }
++                }
++                else {
++                    for (let row = d; row < scrollRows; row++) {
++                        const r = rowMatches(row, row - d);
++                        if (r === 'diff')
++                            return false;
++                        if (r === 'match')
++                            verified++;
++                        else
++                            skipped++;
++                    }
++                }
++                return verified > 0 && skipped <= thumbRows.size;
++            };
++            if (maxShift >= 1) {
++                // 内容整体上移（看到更靠后的内容）：screen[r] === prev[r+d]
++                for (let d = 1; d <= maxShift; d++) {
++                    if (tryShift(d, true)) {
++                        nativeShift = d;
++                        break;
++                    }
++                }
++                // 内容整体下移（看到更靠前的内容）：screen[r] === prev[r-d]
++                if (nativeShift === 0) {
++                    for (let d = 1; d <= maxShift; d++) {
++                        if (tryShift(d, false)) {
++                            nativeShift = -d;
++                            break;
++                        }
++                    }
++                }
++            }
++        }
++        if (nativeShift !== 0) {
++            const d = Math.abs(nativeShift);
++            const scrollBottom = height - fixedTail;
++            // 组装滚动条修复集合：新 thumb 行 ∪ 旧 thumb 区间平移后的位置。
++            // 必须在这里算，nativeShift 到这一刻才确定。
++            const scrollbarFixupRows = new Set(thumbRows);
++            if (oldThumbTop >= 0) {
++                for (let r = oldThumbTop; r < oldThumbBottom; r++) {
++                    const shifted = nativeShift > 0 ? r - d : r + d;
++                    if (shifted >= 0 && shifted < height)
++                        scrollbarFixupRows.add(shifted);
++                }
++            }
++            // DECSTBM 把滚动区限定在 [1, scrollBottom]，避免平移把 dock 一起推走。
++            // SU 让区内内容上移 d 行（看到更靠后内容），SD 下移 d 行（看到更靠前内容）。
++            buffer += `\x1b[1;${scrollBottom}r`;
++            buffer += nativeShift > 0 ? `\x1b[${d}S` : `\x1b[${d}T`;
++            // 只写新露出的行：上移后新区在滚动区底部，下移后新区在顶部
++            const firstNew = nativeShift > 0 ? scrollBottom - d : 0;
++            const lastNew = nativeShift > 0 ? scrollBottom - 1 : d - 1;
++            for (let row = firstNew; row <= lastNew; row++) {
++                buffer += `\x1b[${row + 1};1H\x1b[2K${screen[row] ?? ""}`;
++            }
++            // thumb 不随内容平移，把新 thumb 区间与「旧 thumb 区间平移后的位置」都按新屏
++            // 内容重画一遍，清掉被 SU/SD 搬错位的旧 thumb 字符。
++            for (const row of scrollbarFixupRows) {
++                if (row < 0 || row >= height)
++                    continue;
++                buffer += `\x1b[${row + 1};1H\x1b[2K${screen[row] ?? ""}`;
++            }
++            buffer += `\x1b[1;${height}r`;
++        }
++        else {
++            // Rows that changed are written in ascending order, so only the first row of each
++            // contiguous run needs absolute addressing; the rest follow with CR+LF. Saves ~8
++            // bytes per row on a scroll frame, where every row in the viewport moves.
++            // CR+LF relies on autowrap being off, which beforeTerminalStart guarantees (?7l).
++            let needsAbsolutePositioning = true;
++            for (let row = 0; row < height; row++) {
++                if (!fullRedraw && !imagesNeedRedraw && screen[row] === this.previousScreen[row]) {
++                    needsAbsolutePositioning = true;
++                    continue;
++                }
++                if (needsAbsolutePositioning) {
++                    buffer += `\x1b[${row + 1};1H`;
++                    needsAbsolutePositioning = false;
++                }
++                else {
++                    buffer += "\r\n";
++                }
++                buffer += `\x1b[2K${preparedKittyScreen.lines[row] ?? ""}`;
++            }
+         }
+         if (cursorPos) {
+             buffer += `\x1b[${cursorPos.row + 1};${Math.min(width, cursorPos.col) + 1}H`;
+diff --git a/dist/tui.js b/dist/tui.js
+index 94adbdcffd98b770d34ee55771f57ec8004df2eb..0a6d2b8da74face353e491d482e10ffa1d00e81e 100644
+--- a/dist/tui.js
++++ b/dist/tui.js
+@@ -38,31 +38,81 @@ function parseSizeValue(value, referenceSize) {
+  */
+ export class Container {
+     children = [];
++    renderDirtyStart = 0;
++    renderCache;
+     addChild(component) {
+         this.children.push(component);
++        this.renderCache = undefined;
+     }
+     removeChild(component) {
+         const index = this.children.indexOf(component);
+         if (index !== -1) {
+             this.children.splice(index, 1);
++            this.renderCache = undefined;
+         }
+     }
+     clear() {
+         this.children = [];
++        this.renderCache = undefined;
+     }
+     invalidate() {
++        this.renderCache = undefined;
+         for (const child of this.children) {
+             child.invalidate?.();
+         }
+     }
+     render(width) {
++        const cache = this.renderCache;
++        if (cache !== undefined && cache.width === width) {
++            if (cache.childRefs.length === this.children.length) {
++                let firstDirtyChild = -1;
++                let firstDirtyOffset = 0;
++                const childRefs = new Array(this.children.length);
++                for (let i = 0; i < this.children.length; i++) {
++                    const child = this.children[i];
++                    const childLines = child.render(width);
++                    childRefs[i] = childLines;
++                    if (firstDirtyChild === -1 && childLines !== cache.childRefs[i]) {
++                        firstDirtyChild = i;
++                        const nextOldStart = i + 1 < cache.childStarts.length ? cache.childStarts[i + 1] : cache.lines.length;
++                        const oldChildLen = nextOldStart - cache.childStarts[i];
++                        firstDirtyOffset = Math.min(child.renderDirtyStart ?? 0, childLines.length, oldChildLen);
++                    }
++                }
++                if (firstDirtyChild === -1) {
++                    this.renderDirtyStart = cache.lines.length;
++                    return cache.lines;
++                }
++                const dirtyChildStart = cache.childStarts[firstDirtyChild];
++                const start = dirtyChildStart + firstDirtyOffset;
++                const lines = cache.lines.slice(0, start);
++                const childStarts = new Array(this.children.length);
++                for (let i = 0; i < firstDirtyChild; i++)
++                    childStarts[i] = cache.childStarts[i];
++                for (let i = firstDirtyChild; i < this.children.length; i++) {
++                    childStarts[i] = i === firstDirtyChild ? dirtyChildStart : lines.length;
++                    const childLines = childRefs[i];
++                    for (let j = i === firstDirtyChild ? firstDirtyOffset : 0; j < childLines.length; j++) {
++                        lines.push(childLines[j]);
++                    }
++                }
++                this.renderCache = { lines, width, childRefs, childStarts };
++                this.renderDirtyStart = start;
++                return lines;
++            }
++        }
+         const lines = [];
+-        for (const child of this.children) {
+-            const childLines = child.render(width);
+-            for (const line of childLines) {
++        const childRefs = new Array(this.children.length);
++        const childStarts = new Array(this.children.length);
++        for (let i = 0; i < this.children.length; i++) {
++            childStarts[i] = lines.length;
++            const childLines = this.children[i].render(width);
++            childRefs[i] = childLines;
++            for (const line of childLines)
+                 lines.push(line);
+-            }
+         }
++        this.renderCache = { lines, width, childRefs, childStarts };
++        this.renderDirtyStart = 0;
+         return lines;
+     }
+ }
+diff --git a/dist/utils.js b/dist/utils.js
+index 9621f90fa35d800a46107274853c71bbc8c654f6..bbcd5b2ff56a6d6a3dc96bc84a7cbefbcbf6b68d 100644
+--- a/dist/utils.js
++++ b/dist/utils.js
+@@ -42,6 +42,7 @@ const rgiEmojiRegex = /^\p{RGI_Emoji}$/v;
+ // Cache for non-ASCII strings
+ const WIDTH_CACHE_SIZE = 512;
+ const widthCache = new Map();
++const WIDTH_CACHE_MAX_KEY_LENGTH = 512;
+ export const cjkBreakRegex = /[\p{Script_Extensions=Han}\p{Script_Extensions=Hiragana}\p{Script_Extensions=Katakana}\p{Script_Extensions=Hangul}\p{Script_Extensions=Bopomofo}]/u;
+ function isPrintableAscii(str) {
+     for (let i = 0; i < str.length; i++) {
+@@ -248,7 +249,9 @@ export function visibleWidth(str) {
+             widthCache.delete(firstKey);
+         }
+     }
+-    widthCache.set(str, width);
++    if (str.length <= WIDTH_CACHE_MAX_KEY_LENGTH) {
++        widthCache.set(str.split("").join(""), width);
++    }
+     return width;
+ }
+ /** Remove ANSI, OSC, and APC control sequences while preserving visible text. */
