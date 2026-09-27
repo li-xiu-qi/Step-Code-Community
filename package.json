@@ -1,6 +1,6 @@
 {
   "name": "step-code-pi",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Step Code — 阶跃星辰 Step 系列模型驱动的终端编码 agent CLI。",
   "type": "module",
   "bin": {
@@ -52,7 +52,7 @@
   "license": "MIT",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.112.3",
-    "@earendil-works/pi-tui": "0.84.1",
+    "@earendil-works/pi-tui": "0.84.4",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@mozilla/readability": "^0.6.0",
     "adm-zip": "^0.6.0",
