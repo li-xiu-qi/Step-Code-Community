@@ -538,8 +538,12 @@ export function showPicker(
 /**
  * 启动期的会话选择器（`--resume` 不带 id 时用）。
  *
- * 与 PiChat 里的 `/resume` 是同一套候选构造，区别只在这里要自己起一个 TuiMainScreen：
- * 此时 PiChat 还没创建，没有可复用的主屏。选完即 stop，屏幕让给随后启动的 PiChat。
+ * 与 PiChat 里的 `/resume` 是同一套候选构造，区别只在这里要自己起一个 TuiAltScreen：
+ * 此时 PiChat 还没创建，没有可复用的 TUI。选完即 stop，屏幕让给随后启动的 PiChat。
+ *
+ * 注意它开的是**备用屏 + 鼠标上报**（`mouse: true`），不是主屏——早期注释写成
+ * 「起一个 TuiMainScreen」是错的，会让人误判它不在终端污染范围内。它同样依赖
+ * `installTerminalResetGuard` 的退出兜底（装在 runApp 开头，覆盖这条路径）。
  */
 export async function pickSessionStandalone(
   metas: readonly SessionMeta[],

@@ -7,8 +7,10 @@ import { ChromePanels, renderQueue, renderTodos } from '../../src/tui-pi/ChromeP
 import type { TodoItem } from '../../src/tools/types.js';
 
 function plain(lines: readonly string[]): string[] {
+  // 剥 SGR 与 OSC 8 超链接起止（待办标题行/折叠摘要行包了 step://todo-toggle）。
+  // OSC 8 形态是 ESC ] 8 ; ; <url> ESC \ ，结束段是 ESC ] 8 ; ; ESC \ 。
   // eslint-disable-next-line no-control-regex
-  return lines.map((l) => l.replace(/\x1b\[[0-9;]*m/g, ''));
+  return lines.map((l) => l.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '').replace(/\x1b\[[0-9;]*m/g, ''));
 }
 
 const td = (title: string, status: TodoItem['status']): TodoItem => ({ title, status });
@@ -100,7 +102,29 @@ describe('renderTodos / renderQueue', () => {
 
   it('长标题截断到一行（面板高度按 1 行/条成立）', () => {
     const lines = renderTodos([td('标题'.repeat(60), 'pending')], 40);
-    for (const l of lines) expect(l.replace(/\x1b\[[0-9;]*m/g, '').length).toBeLessThanOrEqual(40);
+    for (const l of plain(lines)) expect(l.length).toBeLessThanOrEqual(40);
+  });
+
+  it('标题行包可点击的折叠切换链接', () => {
+    const lines = renderTodos([td('a', 'pending')], 40);
+    // OSC 8 起止必须成对：只写开始不写结束会让链接状态泄漏到后续输出
+    expect(lines[0]).toContain('\x1b]8;;step://todo-toggle\x1b\\');
+    expect(lines[0]).toContain('\x1b]8;;\x1b\\');
+    expect(plain(lines)[0]).toContain('待办');
+    expect(plain(lines)[0]).toContain('点击折叠');
+  });
+
+  it('折叠态只占一行且报进度，展开态恢复多行', () => {
+    const many = Array.from({ length: 12 }, (_, i) => td(`任务${i}`, i === 0 ? 'in_progress' : 'pending'));
+    const expanded = renderTodos(many, 60, false);
+    const collapsed = renderTodos(many, 60, true);
+    expect(expanded.length).toBe(7); // 标题 + 5 可见 + 计数
+    expect(collapsed.length).toBe(1);
+    expect(plain(collapsed)[0]).toContain('11 待办');
+    expect(plain(collapsed)[0]).toContain('点击展开');
+    expect(collapsed[0]).toContain('step://todo-toggle');
+    // 折叠态不列条目
+    expect(plain(collapsed)[0]).not.toContain('任务0');
   });
 
   it('队列预览逐条 ↳，超 3 条折叠计数，末行给取回提示', () => {

@@ -23,6 +23,16 @@ const CHECK_INTERVAL_MS = 30_000;
 const WARN_RATIO = 0.6;
 /** 危险水位：到此 dump snapshot（只 dump 一次）。 */
 const DUMP_RATIO = 0.8;
+/**
+ * 致命水位：到此主动干净退出。
+ *
+ * 为什么必须有这一档：V8 撞堆上限时是 C++ 层直接 abort，JS 的 uncaughtException handler
+ * 根本不会执行（Node 文档与社区共识），于是 alt-screen 退出序列、鼠标上报关闭、raw mode
+ * 恢复一个都不写。用户看到的就是「闪退 + 终端被污染」：鼠标上报序列被当成文本打在 shell
+ * 提示符后面、Ctrl+C 只回显 ^C、应用画面掉到提示符行。dump 档（0.8）只留证据、不阻止
+ * 崩溃，必须有这一档在 abort 之前把终端还回去。退出走正常 exit()，会话已落盘，可续接。
+ */
+const CRITICAL_RATIO = 0.92;
 
 /**
  * 从环境变量读一个 0..1 的比例，非法值忽略。
@@ -55,6 +65,12 @@ export interface HeapWatchOptions {
   /** 覆盖水位比例（测试用）。 */
   warnRatio?: number;
   dumpRatio?: number;
+  /**
+   * 致命水位回调：堆快到上限时调用一次，实现方负责干净退出（恢复终端 + persist）。
+   * 不传则只提示不退出（保持旧行为，测试与保守场景用）。
+   */
+  onCritical?: (info: { usedMB: number; limitMB: number }) => void;
+  criticalRatio?: number;
   /** 注入的取样与落盘实现（测试用；缺省走真实 v8）。 */
   readHeap?: () => { used: number; limit: number };
   writeSnapshot?: (path: string) => string;
@@ -65,6 +81,8 @@ export interface HeapWatchState {
   warned: boolean;
   /** 已经 dump 过了（snapshot 动辄几十上百 MB，只留一份）。 */
   dumped: boolean;
+  /** 已经触发过致命水位退出了（只触发一次）。 */
+  criticaled: boolean;
 }
 
 /**
@@ -75,7 +93,7 @@ export interface HeapWatchState {
 export function checkHeapOnce(
   state: HeapWatchState,
   opts: HeapWatchOptions,
-): { warned: boolean; dumpedTo?: string } {
+): { warned: boolean; dumpedTo?: string; critical?: boolean } {
   const read = opts.readHeap ?? (() => {
     const s = getHeapStatistics();
     return { used: s.used_heap_size, limit: s.heap_size_limit };
@@ -86,7 +104,23 @@ export function checkHeapOnce(
   const warnAt = opts.warnRatio ?? envRatio('STEP_CODE_HEAP_WARN_RATIO') ?? WARN_RATIO;
   const dumpAt = opts.dumpRatio ?? envRatio('STEP_CODE_HEAP_DUMP_RATIO') ?? DUMP_RATIO;
   const mb = (b: number): string => (b / 1024 / 1024).toFixed(0);
-  const out: { warned: boolean; dumpedTo?: string } = { warned: false };
+  const criticalAt = opts.criticalRatio ?? envRatio('STEP_CODE_HEAP_CRITICAL_RATIO') ?? CRITICAL_RATIO;
+  const out: { warned: boolean; dumpedTo?: string; critical?: boolean } = { warned: false };
+
+  // 致命水位优先于 dump：再写一份几百 MB 的 snapshot 只会把进程更快推过上限。
+  // 判据放在最前面，且不复用下面的 dump 分支——这一刻任何额外 IO 都是风险。
+  if (ratio >= criticalAt && !state.criticaled) {
+    state.criticaled = true;
+    state.warned = true;
+    out.critical = true;
+    opts.notify(
+      `堆内存将尽（${Math.round(used / 1024 / 1024)}MB / 上限 ${Math.round(limit / 1024 / 1024)}MB，` +
+        `${(ratio * 100).toFixed(0)}%）。为避免 V8 直接 abort 把终端留在污染态，现在主动退出；` +
+        '会话已保存，用 /resume 或 step -r 续接。',
+    );
+    opts.onCritical?.({ usedMB: Math.round(used / 1024 / 1024), limitMB: Math.round(limit / 1024 / 1024) });
+    return out;
+  }
 
   if (ratio >= dumpAt && !state.dumped) {
     state.dumped = true;
@@ -123,7 +157,7 @@ export function checkHeapOnce(
 
 /** 起一个后台看护定时器。返回停止函数。 */
 export function startHeapWatch(opts: HeapWatchOptions): () => void {
-  const state: HeapWatchState = { warned: false, dumped: false };
+  const state: HeapWatchState = { warned: false, dumped: false, criticaled: false };
   const timer = setInterval(() => {
     try {
       checkHeapOnce(state, opts);

@@ -11,7 +11,7 @@
  *
  * 空数据时 render 返回空数组，一行都不占。
  */
-import { truncateToWidth, type Component } from '@earendil-works/pi-tui';
+import { hyperlink, truncateToWidth, type Component } from '@earendil-works/pi-tui';
 import type { TodoItem } from '../tools/types.js';
 import {
   QUEUE_MAX_ITEMS,
@@ -27,9 +27,20 @@ export class ChromePanels implements Component {
   private todos: readonly TodoItem[] = [];
   private queue: readonly string[] = [];
   private busy = false;
+  /**
+   * 待办面板折叠态。清单长的时候展开态要占 7 行以上（标题 + 最多 5 条 + 折叠计数），
+   * 把输入区挤到很下面；折叠后只留一行摘要，交互区让回给用户。
+   * 默认展开：待办是「正在做什么」的核心信息，收起会让用户漏看进度。
+   */
+  private todosCollapsed = false;
 
   setTodos(todos: readonly TodoItem[]): void {
     this.todos = todos;
+  }
+
+  /** 切换待办面板折叠态。由 PiChat 处理 step://todo-toggle 点击时调用。 */
+  toggleTodos(): void {
+    this.todosCollapsed = !this.todosCollapsed;
   }
 
   setQueue(queue: readonly string[]): void {
@@ -46,17 +57,40 @@ export class ChromePanels implements Component {
 
   render(width: number): string[] {
     const out: string[] = [];
-    out.push(...renderTodos(this.todos, width));
+    out.push(...renderTodos(this.todos, width, this.todosCollapsed));
     out.push(...renderQueue(this.queue, width, this.busy));
     return out;
   }
 }
 
-/** TODO 清单：标题 + 最多 5 条（按状态优先级裁剪）+ 折叠计数行。被阻塞的待办标注「等待 #N」。 */
-export function renderTodos(todos: readonly TodoItem[], width: number): string[] {
+/** 折叠切换的点击目标。scheme 与 step://turn/N 同族，由 PiChat.handleUrlClick 分发。 */
+const TODO_TOGGLE_URL = 'step://todo-toggle';
+
+/**
+ * TODO 清单。展开态：标题 + 最多 5 条（按状态优先级裁剪）+ 折叠计数行。
+ * 折叠态：一行摘要，只报进度不列条目。
+ *
+ * 两种态的标题/摘要行都包 OSC 8 超链接，点击切换。alt-screen 下终端自己的滚动条被隐藏，
+ * 「点一行触发动作」这条路子是转录区的 prompt 跳转（step://turn/N）已经在用的，库侧
+ * openUrl 回调也已接到 PiChat，不需要给库加任何鼠标命中判定。
+ *
+ * 先 truncate 再包 hyperlink：OSC 8 的起止序列必须完整，截断若落在序列中间会让链接
+ * 状态泄漏到后续输出。
+ */
+export function renderTodos(todos: readonly TodoItem[], width: number, collapsed = false): string[] {
   if (todos.length === 0) return [];
+  const toggleLine = (plain: string): string[] => [hyperlink(truncateToWidth(plain, width), TODO_TOGGLE_URL)];
+  if (collapsed) {
+    const done = todos.filter((td) => td.status === 'done').length;
+    const inProgress = todos.filter((td) => td.status === 'in_progress').length;
+    const pending = todos.filter((td) => td.status === 'pending').length;
+    const parts = [t('panel.todo.done', { count: done })];
+    if (inProgress > 0) parts.push(t('panel.todo.inProgress', { count: inProgress }));
+    if (pending > 0) parts.push(t('panel.todo.pending', { count: pending }));
+    return toggleLine(`▸ ${t('panel.todo.title')} · ${parts.join(' · ')}${c.dim(t('panel.todo.clickToExpand'))}`);
+  }
+  const out = toggleLine(`▾ ${c.toolName(t('panel.todo.title'))}${c.dim(t('panel.todo.clickToCollapse'))}`);
   const visible = selectVisibleTodos(todos);
-  const out = [c.toolName(t('panel.todo.title'))];
   for (const td of visible) {
     const idx = todos.indexOf(td);
     const num = idx + 1;

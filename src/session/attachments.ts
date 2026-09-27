@@ -66,13 +66,32 @@ export class AttachmentStore {
   }
 
   /**
+   * rehydrate 结果缓存：stepref -> base64。
+   *
+   * 为什么必须有：resume 出来的会话里图片块全是 `stepref:` 指针，而 toWire 每调一次
+   * （runTurn 有 7 个 provider.stream 调用点，外加 advisor）都会把全历史的图片重新读盘转
+   * base64。字符串在 V8 里不做内容去重，两次 `readFileSync().toString('base64')` 是两个
+   * 独立对象，于是同一张图在堆里出现 N 份。实测（2026-09-26 堆快照，3.2GB 堆）：其中
+   * 2688MB 是 base64 图片串，同一张图复制了 431 份，直接把堆推到 80% 水位、逼近 OOM。
+   * 内容寻址（文件名 = sha256）让这个缓存天然安全：同一个 stepref 永远对应同一份字节。
+   */
+  private readonly rehydrateCache = new Map<string, string>();
+  /** 缓存条目上限：粗限条数，真正兜底的是下面的字节预算。 */
+  private static readonly REHYDRATE_CACHE_MAX_ENTRIES = 64;
+  /** 缓存字节预算：超出就淘汰最旧，避免缓存本身变成新的内存大户。 */
+  private static readonly REHYDRATE_CACHE_MAX_BYTES = 32 * 1024 * 1024;
+  private rehydrateCacheBytes = 0;
+
+  /**
    * 把 `stepref:<sha256>` 还原成 base64：按 hash 在 attachments/ 下找到附件文件（文件名带 ext，按 hash 前缀匹配）。
-   * 文件缺失（被删/未落盘/传入非 stepref）返回 null，由调用方填占位。
+   * 文件缺失（被删/未落盘/传入非 stepref）返回 null，由调用方填占位。命中缓存时直接复用同一字符串对象。
    */
   rehydrate(cwd: string, stepref: string): string | null {
     if (!isStepref(stepref)) return null;
     const hash = stepref.slice(STEPREF_PREFIX.length);
     if (hash === '') return null;
+    const cached = this.rehydrateCache.get(stepref);
+    if (cached !== undefined) return cached;
     const dir = this.dirFor(cwd);
     if (!existsSync(dir)) return null;
     let name: string | undefined;
@@ -82,10 +101,31 @@ export class AttachmentStore {
       return null;
     }
     if (name === undefined) return null;
+    let base64: string;
     try {
-      return readFileSync(join(dir, name)).toString('base64');
+      base64 = readFileSync(join(dir, name)).toString('base64');
     } catch {
       return null;
+    }
+    this.cacheRehydrated(stepref, base64);
+    return base64;
+  }
+
+  /** 写入缓存并淘汰：先按字节预算丢最旧，再按条数丢最旧。 */
+  private cacheRehydrated(stepref: string, base64: string): void {
+    // 单张就超预算的图不进缓存：进了也会立刻被自己淘汰，白折腾
+    if (base64.length > AttachmentStore.REHYDRATE_CACHE_MAX_BYTES) return;
+    this.rehydrateCache.set(stepref, base64);
+    this.rehydrateCacheBytes += base64.length;
+    while (
+      this.rehydrateCacheBytes > AttachmentStore.REHYDRATE_CACHE_MAX_BYTES ||
+      this.rehydrateCache.size > AttachmentStore.REHYDRATE_CACHE_MAX_ENTRIES
+    ) {
+      const oldest = this.rehydrateCache.keys().next();
+      if (oldest.done === true) break;
+      const evicted = this.rehydrateCache.get(oldest.value);
+      this.rehydrateCache.delete(oldest.value);
+      if (evicted !== undefined) this.rehydrateCacheBytes -= evicted.length;
     }
   }
 
