@@ -89,6 +89,53 @@ describe('AttachmentStore', () => {
   });
 });
 
+/**
+ * rehydrate 缓存（2026-09-27 加）。动机是一次真实事故的堆快照：3.2GB 堆里 2688MB 是
+ * base64 图片串，同一张图复制了 431 份。原因是 resume 出来的会话里图片全是 stepref 指针，
+ * 而 toWire 每调一次（runTurn 有 7 个 provider.stream 调用点 + advisor）都把全历史的图
+ * 重新读盘转 base64；字符串在 V8 里不做内容去重，于是每次调用都产生新的独立字符串对象。
+ */
+describe('AttachmentStore.rehydrate 缓存', () => {
+  it('重复 rehydrate 返回同一个字符串对象（=== 而不只是相等）', () => {
+    const ref = store.offload(cwd, bigBase64(), 'image/png');
+    const a = store.rehydrate(cwd, ref);
+    const b = store.rehydrate(cwd, ref);
+    // 这一条就是修复的核心判据：相等不够，必须是同一对象，堆里才不会出现第二份
+    expect(a).toBe(b);
+    expect(a).toBe(store.rehydrate(cwd, ref));
+  });
+
+  it('不同 stepref 互不串味', () => {
+    const r1 = store.offload(cwd, bigBase64(4000), 'image/png');
+    const r2 = store.offload(cwd, bigBase64(6000), 'image/png');
+    expect(store.rehydrate(cwd, r1)).not.toBe(store.rehydrate(cwd, r2));
+    expect(store.rehydrate(cwd, r1)).toBe(store.rehydrate(cwd, r1));
+  });
+
+  it('文件被外部删掉后：缓存命中仍返回原值，未缓存的返回 null', () => {
+    const ref = store.offload(cwd, bigBase64(), 'image/png');
+    store.rehydrate(cwd, ref); // 先 warm 缓存
+    rmSync(attachmentsDir(), { recursive: true, force: true });
+    // 缓存命中不读盘，所以仍拿得到——这正是它省掉重复 IO 的原因
+    expect(store.rehydrate(cwd, ref)).not.toBeNull();
+    // 没进过缓变的 hash 读不到文件，照旧 null
+    expect(store.rehydrate(cwd, `${STEPREF_PREFIX}${'b'.repeat(64)}`)).toBeNull();
+  });
+
+  it('缓存有字节预算：塞满后仍能正确返回，不会把缓存本身撑成内存大户', () => {
+    // 每张约 5.3KB base64，灌 200 张必然超 32MB 预算，触发多轮淘汰
+    const refs: string[] = [];
+    for (let i = 0; i < 200; i++) {
+      const b64 = Buffer.alloc(4000, i % 251).toString('base64');
+      refs.push(store.offload(cwd, b64, 'image/png'));
+    }
+    for (const r of refs) expect(store.rehydrate(cwd, r)).not.toBeNull();
+    // 淘汰之后第一次取会重新读盘，第二次才是同一对象
+    const first = store.rehydrate(cwd, refs[0]!);
+    expect(store.rehydrate(cwd, refs[0]!)).toBe(first);
+  });
+});
+
 describe('AttachmentStore.pathFor', () => {
   it('大图 offload 后返回附件绝对路径，且路径存在', () => {
     const b64 = bigBase64();

@@ -60,6 +60,14 @@ export class Transcript implements Component {
   private nextTurnNum = 0;
   /** 冻结前缀缓存：head 提示行 + 除尾块外全部块的渲染结果。尾块每帧重渲，前缀仅结构变化时重算。 */
   private prefixCache: { width: number; ver: number; lines: string[] } | null = null;
+  /**
+   * 整体结果缓存：render() 的输出数组本身。判据为 width、structVer、尾块引用、head 四项。
+   * 目的是在「什么都没变」的帧把同一个数组引用交回父容器，让 pi-tui Container 的增量渲染
+   * 判定本组件未变，从而复用整个前缀。缺了这一层，每帧返回新数组会让父容器永远重采本组件，
+   * 上游的 Container 缓存被整体旁路。这一层与 Loader.render 是同一个契约：什么都没变
+   * 的帧把同一个数组引用交回父容器。
+   */
+  private renderCache: { width: number; ver: number; head: string[]; tailRef: string[]; lines: string[] } | null = null;
 
   constructor(options: TranscriptOptions = {}) {
     this.maxTurns = options.maxTurns ?? DEFAULT_MAX_TURNS;
@@ -357,9 +365,24 @@ export class Transcript implements Component {
     }
     // 尾块每帧重渲：assistant 正文流式追加 / 运行中工具的 spinner 帧与计时都随时间变化。
     const tail = lastIdx >= 0 ? this.blocks[lastIdx]!.render(width) : [];
+    // 四项判据全同则复用上次的输出数组本身（不只是行内容相同，是同一个数组对象）。
+    // head 通常 0 到 3 行，逐行引用比较的成本可忽略。
+    const cached = this.renderCache;
+    if (
+      cached !== null &&
+      cached.width === width &&
+      cached.ver === this.structVer &&
+      cached.tailRef === tail &&
+      cached.head.length === head.length &&
+      cached.head.every((line, i) => line === head[i])
+    ) {
+      return cached.lines;
+    }
     // 前缀各行由各块渲染器在冻结时已钳到 width（各 renderItem 分支逐行 truncateToWidth），
     // 同 width 下必然安全，故前缀不重复截断；尾块是热变更内容，保留一次截断作防回归安全网。
     const safeTail = tail.map((l) => truncateToWidth(l, width));
-    return [...head, ...prefix, ...safeTail];
+    const lines = [...head, ...prefix, ...safeTail];
+    this.renderCache = { width, ver: this.structVer, head, tailRef: tail, lines };
+    return lines;
   }
 }

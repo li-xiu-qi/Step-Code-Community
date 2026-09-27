@@ -70,6 +70,12 @@ export class ChatEditor extends Editor {
    */
   onCtrlS?: () => boolean;
   /**
+   * Ctrl+T：切换待办面板折叠态。与鼠标点标题行同一动作（chrome.toggleTodos()），
+   * 键盘入口给不想挪鼠标的用户，也给终端不支持 OSC 8 点击时的兜底。
+   * 无待办时也返回 true 消费掉：Ctrl+T 没绑其它行为，漏出去没有意义。
+   */
+  onCtrlT?: () => boolean;
+  /**
    * ↑：busy + 空输入时取回队列尾部一条进输入框编辑。
    *
    * 返回 true 表示已消费（队列非空且取回成功）；false 让按键下传父类做历史导航。
@@ -252,6 +258,9 @@ export class ChatEditor extends Editor {
     }
     if (matchesKey(data, 'ctrl+s')) {
       if (this.onCtrlS?.() === true) return;
+    }
+    if (matchesKey(data, 'ctrl+t')) {
+      if (this.onCtrlT?.() === true) return;
     }
     if (matchesKey(data, 'up')) {
       if (this.onUpArrow?.() === true) return;

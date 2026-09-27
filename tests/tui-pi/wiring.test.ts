@@ -239,12 +239,21 @@ describe('PiChat 接线：会话切换的清理与恢复', () => {
     expect(runTurn.includes("event.delta.type === 'input_json_delta'"), 'runTurn 应消费 input_json_delta').toBe(true);
   });
 
-  it('SIGHUP/死终端紧急出口：cli 注册信号处理，PiChat 提供只恢复终端的 emergencyStop', () => {
+  it('SIGHUP/死终端紧急出口：cli 注册信号处理，PiChat 提供 emergencyStop', () => {
     // 终端死掉后继续写 stdout 会 EIO 循环占满 CPU，进程残留把 shell 挂在 raw mode。
     wired(cli, "process.once('SIGHUP'", 'SIGHUP 处理');
     wired(cli, "'EIO'", 'stdout EIO 处理');
-    wired(cli, 'chat.emergencyStop()', '紧急停止调用点');
+    // 经 activeChat 取实例而非闭包捕获 chat：闭包会在 runApp 重入时指向已过期的 chat，
+    // 对过期实例调 emergencyStop()，活着的那个 TuiAltScreen 反而不会被恢复。
+    wired(cli, 'activeChat?.emergencyStop()', '紧急停止调用点');
+    wired(cli, 'activeChat = chat;', '活实例解引用');
     wired(piChat, 'emergencyStop()', 'emergencyStop 方法');
+    // emergencyStop 做三件事，不只恢复终端：① tui.stop()（失败后再补一段最小复位串，
+    // 因为 TuiBase.stop() 自身无 try/catch，partial stop 会被 catch 静默吞掉）② 终止在途
+    // 后台任务 ③ 复位 tab 标题。曾经只做 ①，退出路径不杀子进程会让 stdio 管道 ref 住
+    // 事件循环、孙进程在 Windows 上变孤儿继续写盘。
+    wired(piChat, 'this.background.shutdown()', 'emergencyStop 杀后台任务');
+    wired(piChat, 'this.termTitle.reset()', 'emergencyStop 复位标题');
   });
 
   it('两个 primed 提示走输入框下方 footer，不进转录区 note', () => {
@@ -260,16 +269,16 @@ describe('PiChat 接线：会话切换的清理与恢复', () => {
 
   it('两个 primed 定时器在退出时都被清理', () => {
     // 未清的 setTimeout 会让 node 事件循环多挂 5 秒才退出
-    // 阈值留 1000：exit() 清理项较多（exit/backtrack 两个 primed + ticker + spinner + heapWatch + cron
-    // + persist + termTitle + tui.stop），2026-08-19 实测方法体已达 686 字符，原 600 会抓空误报。
-    const exitBlock = /private exit\(\): void \{[\s\S]{0,1000}?\n  \}/.exec(piChat)?.[0] ?? '';
+    // 阈值随方法体增长：2026-08-19 实测 686 字符（原 600 会抓空误报）；2026-09-26 补了
+    // background.shutdown 与 persist 的 try/catch 后实测 1313 字符，留余量到 1600。
+    const exitBlock = /private exit\(\): void \{[\s\S]{0,1600}?\n  \}/.exec(piChat)?.[0] ?? '';
     expect(exitBlock, 'exit 里应清 exitPrimedTimer').toContain('exitPrimedTimer');
     expect(exitBlock, 'exit 里应清 backtrackPrimedTimer').toContain('backtrackPrimedTimer');
   });
 
   it('spinner 与计时器两个 setInterval 在退出时都被清理', () => {
     // spinnerTimer 与 ticker 是两个 setInterval，漏清会让 node 事件循环挂住不退。
-    const exitBlock = /private exit\(\): void \{[\s\S]{0,1000}?\n  \}/.exec(piChat)?.[0] ?? '';
+    const exitBlock = /private exit\(\): void \{[\s\S]{0,1600}?\n  \}/.exec(piChat)?.[0] ?? '';
     expect(exitBlock, 'exit 里应清 ticker').toContain('this.ticker');
     expect(exitBlock, 'exit 里应清 spinnerTimer').toContain('this.spinnerTimer');
   });
@@ -323,9 +332,9 @@ describe('PiChat 接线：compaction 后重建 Transcript（OOM 根因修复）'
   it('appendWire 的 compaction 分支重建了 Transcript', () => {
     // 接线点 1：appendWire 里识别 compaction 事件
     wired(piChat, "event.type === 'context.apply_compaction'", 'compaction 事件识别');
-    // 接线点 2：命中后用压缩后 history 重建转录块（旧块失引用即 GC；
-    // 第三参是 resume 图片恢复的解析器，见 2026-09-13 贴图持久化设计）
-    wired(piChat, 'this.transcript.reset(historyToDisplayItems(this.history, undefined, this.replayImages())', 'compaction 后重建 Transcript');
+    // 接线点 2：命中后用压缩后 history 重建转录块（旧块失引用即 GC）。
+    // 2026-09-22 终端图片渲染链路拆除后，historyToDisplayItems 不再接受图片解析器第三参。
+    wired(piChat, 'this.transcript.reset(historyToDisplayItems(this.history, undefined)', 'compaction 后重建 Transcript');
     // 接线点 3：historyToDisplayItems 已导入（否则上面那行编译不过，但显式守住接线意图）
     wired(piChat, "historyToDisplayItems", 'historyToDisplayItems 导入');
   });

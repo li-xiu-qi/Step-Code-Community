@@ -3,8 +3,7 @@
  * 行级差分渲染下，未变化的行不重画，所以定稿块与在途块共用同一组件。
  * 每个块自带缓存（width 未变则复用上次行数组），render() 是取缓存 + 拼接。
  */
-import { Markdown, getCapabilities, truncateToWidth, visibleWidth, wrapTextWithAnsi, sliceByColumn, hyperlink } from '@earendil-works/pi-tui';
-import { Image } from '@earendil-works/pi-tui';
+import { Markdown, truncateToWidth, visibleWidth, wrapTextWithAnsi, sliceByColumn, hyperlink } from '@earendil-works/pi-tui';
 import type { Component } from '@earendil-works/pi-tui';
 import { basename } from 'node:path';
 import type { DisplayItem, WelcomeData } from '../chat/types.js';
@@ -12,7 +11,11 @@ import { offloadIfNeeded as offloadLargeResult, readCachedOutput } from '../agen
 
 /** Braille 转圈帧序列，供 running 状态动态 spinner。 */
 const BRAILLE_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-const SPINNER_INTERVAL_MS = 80;
+/** spinner 帧间隔，与 PiChat 的 spinnerTimer 节拍共用同一个常量。
+ *  80ms（12.5fps）刻意放慢到 200ms（5fps）：长任务下慢节奏的转圈动画不与流式
+ *  token 渲染抢慢终端的帧预算。副作用是尾块失效频率降到 1/5——running
+ *  工具卡的首列字形取自 spinnerFrame()，帧变一次尾块缓存就失效一次。 */
+export const SPINNER_FRAME_MS = 200;
 
 /** OSC 133 A — 语义化 prompt 起始标记。pi-tui 的 scrollToPrompt 用此标记定位用户 prompt 位置，
  *  支持 Ctrl+Shift+↑/↓ 跳转到前/后一个 prompt。 */
@@ -25,9 +28,20 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/** 当前 braille 帧：由时间派生，不存计数器。 */
+/** braille 帧游标：由 spinnerTimer 每拍推进一格，不从墙钟派生。
+ *  墙钟派生（Math.floor(Date.now()/80)）与 setInterval 各自漂移，会出现「重渲了但 frame
+ *  没变」的空刷帧——定时器白跑一次完整 doRender。计数器推进后帧与重渲严格一一对应，
+ *  且多个工具行读同一个游标，帧天然同步。 */
+let spinnerIndex = 0;
+
+/** spinner 定时器每拍调用一次，推进一格帧。 */
+export function tickSpinner(): void {
+  spinnerIndex = (spinnerIndex + 1) % BRAILLE_FRAMES.length;
+}
+
+/** 当前 braille 帧。 */
 function spinnerFrame(): string {
-  return BRAILLE_FRAMES[Math.floor(Date.now() / SPINNER_INTERVAL_MS) % BRAILLE_FRAMES.length] ?? BRAILLE_FRAMES[0]!;
+  return BRAILLE_FRAMES[spinnerIndex] ?? BRAILLE_FRAMES[0]!;
 }
 import { THINKING_FOLD_LINES } from '../chat/expandable.js';
 import { c, dimAll, markdownTheme, thinkingMarkdownTheme } from './theme.js';
@@ -47,11 +61,6 @@ import {
 } from './resultRenderers.js';
 import { linkPath, linkFilePathArg } from './fileLink.js';
 import { linkifyAbsolutePaths } from './textPaths.js';
-
-/** Image 组件的主题：无图片协议时的降级文本着色（灰色占位说明）。 */
-const imageTheme = {
-  fallbackColor: (s: string) => c.dim(s),
-};
 
 // 顶部 logo：FIGlet "Small" 风格的 S（紧凑双线）。
 const LOGO_LINES = [' ___ ', '/ __|', '\\__ \\', '|___/'];
@@ -261,54 +270,21 @@ function mdTransformWithPaths(md: string): string {
   return linkifyAbsolutePaths(markdownTransform(md));
 }
 
-/**
- * 图片实例缓存（两级：尺寸键 → base64 → Image）。
- *
- * 为什么按实例缓存而不是按 id：pi-tui 的 kitty 去重以 Image 实例为单位——实例的
- * render() 有行缓存，重复渲染不再调 registerKittyImageMetadata，imageId 的
- * transmissionGeneration 保持不变，TUI 全量重绘（会话切换/缩放）时才把它降级成
- * placement-only（不重传数据）。每次 new Image 都会重新分配随机 id 并重新注册，
- * 会话切换重建 ItemBlock 时会把同一张图重新上传一遍。
- *
- * 同内容同尺寸复用实例后：多个条目引用同一张图（用户回显 + 工具结果）共用一次
- * 上传，同屏第二处自动降级为 placement；全量重绘也只重发 placement。
- * 上限防内存膨胀：尺寸键 8 个 × 每键 16 张，超出按插入序淘汰。
- */
-const imageInstanceCache = new Map<string, Map<string, Image>>();
-const IMAGE_CACHE_MAX_SIZES = 8;
-const IMAGE_CACHE_MAX_PER_SIZE = 16;
-
-/** 取（或建）缓存的 Image 实例。缓存键含终端图片能力、maxWidthCells 与渲染宽度：
- *  实例的行缓存按能力分化（kitty 传输行 vs 占位文本），能力进键才能保证换能力
- *  时不拿到旧渲染；尺寸不同的同一张图本就需要不同的 placement 控制参数，各自上传。 */
-function cachedImage(base64: string, mediaType: string, maxWidthCells: number, renderWidth: number): Image {
-  const sizeKey = `${getCapabilities().images ?? 'none'}|${maxWidthCells}|${renderWidth}`;
-  let byContent = imageInstanceCache.get(sizeKey);
-  if (byContent === undefined) {
-    if (imageInstanceCache.size >= IMAGE_CACHE_MAX_SIZES) {
-      const oldest = imageInstanceCache.keys().next().value;
-      if (oldest !== undefined) imageInstanceCache.delete(oldest);
-    }
-    byContent = new Map();
-    imageInstanceCache.set(sizeKey, byContent);
-  }
-  const hit = byContent.get(base64);
-  if (hit !== undefined) return hit;
-  const img = new Image(base64, mediaType, imageTheme, { maxWidthCells });
-  if (byContent.size >= IMAGE_CACHE_MAX_PER_SIZE) {
-    const oldest = byContent.keys().next().value;
-    if (oldest !== undefined) byContent.delete(oldest);
-  }
-  byContent.set(base64, img);
-  return img;
-}
-
 export class ItemBlock implements Component {
   private item: DisplayItem;
   private cachedWidth = -1;
   private cachedLines: string[] | undefined;
   /** assistant / thinking 正文交给 pi-tui 的 Markdown 组件渲染（它自带解析缓存）。 */
   private markdown: Markdown | undefined;
+  /**
+   * 流式增量渲染的冻结点：frozenText 是已确认渲染好的前缀文本，frozenLines 是它的渲染结果。
+   * 判据是「markdown 顶层 token 边界」而不是空行，因为代码块内部也有空行，用 \n\n 切会
+   * 把 fence 切断导致前缀与尾部分别渲染时配对错乱。
+   */
+  private frozenText = "";
+  private frozenLines: string[] = [];
+  private frozenWidth = -1;
+  private frozenDim = false;
 
   constructor(item: DisplayItem) {
     this.item = item;
@@ -326,6 +302,10 @@ export class ItemBlock implements Component {
 
   invalidate(): void {
     this.cachedLines = undefined;
+    // 注意：不清冻结点（frozenText/frozenLines/frozenLineCount）。流式追加走
+    // setItem -> invalidate，若在这里清掉冻结点，每帧都会退回「全量自证 + tail」
+    // 两次渲染，比全量还慢一倍。冻结点由 renderMarkdownStreaming 自己判失效：
+    // 宽度/主题变化，或 text 不再以 frozenText 开头（内容被替换而非追加）。
     this.markdown?.invalidate();
   }
 
@@ -363,6 +343,94 @@ export class ItemBlock implements Component {
   }
 
   /**
+   * 流式增量的 markdown 渲染：已闭合的前缀段落冻结，每帧只重算尾部。
+   *
+   * 为什么需要：pi-tui 的 Markdown.render 每帧对整份 growing 文本跑 lexer + 逐 token
+   * render，是 O(total)/帧。实测流式输出一个含 200 行代码块的回答，单帧成本从
+   * 4.3ms 涨到 23.4ms（5.4x），7254 字符时 45.6ms，远超 16ms 的 60fps 预算，
+   * 这就是流式输出时一卡一卡的来源。改增量后同场景增长降到 1.07x。
+   *
+   * 做法：前缀永不重解析，尾部只重绕未闭合部分。
+   *
+   * 不变量（改过错两次，记下来）：
+   * - frozenText 必须始终是**前缀文本**，frozenLines 是它的渲染行。曾把 frozenText
+   *   存成整份文本，结果下一帧 tail 只含新增片段，中间段被整段丢弃（行数 7 vs 23）。
+   * - 不能在 invalidate() 里清冻结点。流式追加走 setItem -> invalidate，清了就每帧
+   *   退回「全量自证 + tail」两次渲染，比全量还慢一倍。
+   * - 冻结点由 renderMarkdownStreaming 自己判失效：宽度/主题变化，或 text 不再以
+   *   frozenText 开头（内容被替换而非追加）。
+   *
+   * 边界安全性：空行分隔不总等于顶层块边界，代码块内部也有空行。所以找边界时要先确认
+   * 该位置不在未闭合的 fence 内（fenceBeforeIsClosed）。
+   */
+  private renderMarkdownStreaming(text: string, width: number, dim: boolean): string[] {
+    const w = Math.max(1, width);
+    // 失效：宽度或主题变化，或文本不是追加（变短/被替换）
+    if (this.frozenWidth !== w || this.frozenDim !== dim || !text.startsWith(this.frozenText)) {
+      return this.resetFrozenPrefix(text, w, dim);
+    }
+    let tailText = text.slice(this.frozenText.length);
+    // 冻结点前移：tail 里出现了新的闭合段落，就把它并入冻结前缀（一次性成本）
+    const boundary = this.lastSafeBlockBoundary(tailText);
+    if (boundary > 0) {
+      const newlyFrozen = tailText.slice(0, boundary);
+      const newlyFrozenLines = this.renderMarkdown(newlyFrozen, w, dim);
+      // 整段赋值而不是 `this.frozenText += newlyFrozen`：`+=` 在 V8 里生成 ConsString，
+      // 而上面第 371 行的 `text.startsWith(this.frozenText)` 每帧都要把整条 rope 展平
+      // （分配一份全前缀副本），稳态下同时驻留 rope + 展平串两份，且 CPU 是 O(前缀长)/帧。
+      // 整段赋值直接拿到 `text` 的切片引用，前缀展平只发生一次。
+      this.frozenText = text.slice(0, this.frozenText.length + boundary);
+      this.frozenLines = [...this.frozenLines, ...newlyFrozenLines];
+      tailText = tailText.slice(boundary);
+    }
+    if (tailText === "")
+      return this.frozenLines;
+    const tail = this.renderMarkdown(tailText, w, dim);
+    return [...this.frozenLines, ...tail];
+  }
+
+  /** 首帧或冻结点失效：全量渲染，并尝试立即建立一个冻结点。 */
+  private resetFrozenPrefix(text: string, w: number, dim: boolean): string[] {
+    const all = this.renderMarkdown(text, w, dim);
+    this.frozenWidth = w;
+    this.frozenDim = dim;
+    const boundary = this.lastSafeBlockBoundary(text);
+    if (boundary > 0) {
+      this.frozenText = text.slice(0, boundary);
+      this.frozenLines = this.renderMarkdown(this.frozenText, w, dim);
+    } else {
+      this.frozenText = "";
+      this.frozenLines = [];
+    }
+    return all;
+  }
+
+  /**
+   * 找 text 中最后一个可安全冻结的块边界（返回边界后一个字符的偏移），找不到返回 -1。
+   * 安全性要求：该空行不在未闭合的代码块内。
+   */
+  private lastSafeBlockBoundary(text: string): number {
+    let idx = text.lastIndexOf("\n\n");
+    while (idx >= 0) {
+      const boundary = idx + 2;
+      if (boundary < text.length &&
+          text.slice(boundary, boundary + 2) !== "\n\n" &&
+          this.fenceBeforeIsClosed(text, idx)) {
+        return boundary;
+      }
+      idx = text.lastIndexOf("\n\n", idx - 1);
+    }
+    return -1;
+  }
+
+  /** text 中 offset 之前的 ``` fence 是否全部闭合（偶数个 fence 行）。 */
+  private fenceBeforeIsClosed(text: string, offset: number): boolean {
+    const before = text.slice(0, offset);
+    const fences = before.split("\n").filter((l) => /^\s*```/.test(l)).length;
+    return fences % 2 === 0;
+  }
+
+  /**
    * 渲染一条展开内容（查看器复用）：去掉主界面的折叠提示，全文铺开。
    * 与 render 路径共用同一个 Markdown 实例没必要——查看器是低频操作，新建一个即可。
    */
@@ -395,18 +463,6 @@ export class ItemBlock implements Component {
         // 真人输入仍是高亮黄底，两相对比才分得出「这是你刚说的」还是「那是早先保留下来的」。
         const bodyLines = wrap(it.text, width - 2);
         const bg = c.userBg;
-        // 贴图回显：图片行插在文本下方、收尾空行之前。kitty/iTerm2 序列行不能
-        // 套 SGR（会破坏转义），故图片行不过 bg/indent，用空列占位对齐视觉缩进。
-        const appendImages = (lines: string[]): string[] => {
-          if (it.images === undefined || it.images.length === 0) return lines;
-          const trailing = lines.length > 0 && lines[lines.length - 1] === '' ? lines.pop() : undefined;
-          for (const att of it.images) {
-            const img = cachedImage(att.base64, att.mediaType, Math.max(20, width - 6), width - 2);
-            lines.push(...img.render(width - 2).map((l) => (l === '' ? '  ' : `  ${l}`)));
-          }
-          if (trailing !== undefined) lines.push(trailing);
-          return lines;
-        };
         if (it.turnNum !== undefined) {
           // 带轮次编号的 prompt 可点击：OSC 8 超链接包裹正文，点击后跳转到该轮输入框
           const url = `step://turn/${it.turnNum}`;
@@ -421,26 +477,29 @@ export class ItemBlock implements Component {
             return lines;
           };
           if (it.verbatim === true) {
-            return prependMarker(appendImages([...hanging(linked, c.dim('┊ 原话 '), 2), '']));
+            return prependMarker([...hanging(linked, c.dim('┊ 原话 '), 2), '']);
           }
-          return prependMarker(appendImages([...indent(linked, bg(c.user('│ '))), '']));
+          return prependMarker([...indent(linked, bg(c.user('│ '))), '']);
         }
         // 无轮次编号（开源模型/旧快照不可点）
         if (it.verbatim === true) {
           const body = bodyLines.map((l) => c.dim(l));
-          return appendImages([...hanging(body, c.dim('┊ 原话 '), 2), '']);
+          return [...hanging(body, c.dim('┊ 原话 '), 2), ''];
         }
         const body = bodyLines.map((l) => bg(c.userText(l)));
-        return appendImages([...indent(body, bg(c.user('│ '))), '']);
+        return [...indent(body, bg(c.user('│ '))), ''];
       }
       case 'assistant': {
         // 前缀灰色 ●，第一行带前缀，续行对齐
-        const md = this.renderMarkdown(it.text, width - 2, false);
+        // 走增量路径：流式输出时每帧只重算尾部未闭合 token，已闭合前缀复用缓存行。
+        // 全量路径实测 O(total)/帧，200 行代码块流式时单帧 45ms，见 renderMarkdownStreaming 注释。
+        const md = this.renderMarkdownStreaming(it.text, width - 2, false);
         return [...hanging(md, c.dim('● '), 2), ''];
       }
       case 'thinking': {
         // thinking 只走灰色（dimAll），左侧不带装饰符——与黄色状态栏已足以标识
-        const rendered = dimAll(this.renderMarkdown(it.text, width - 2, true));
+        // 同样走增量路径：thinking 也是流式追加的正文。
+        const rendered = dimAll(this.renderMarkdownStreaming(it.text, width - 2, true));
         if (rendered.length <= THINKING_FOLD_LINES) return [...hanging(rendered, '  ', 2), ''];
         const head = rendered.slice(0, THINKING_FOLD_LINES);
         const folded = c.dim(`  … 还有 ${rendered.length - THINKING_FOLD_LINES} 行（Ctrl+O 查看）`);
@@ -656,15 +715,6 @@ export class ItemBlock implements Component {
         }
       }
     }
-    // read_media 等工具的图片载荷：结果文本下方内联。插在收尾空行之前。
-    // kitty/iTerm2 序列行不套 SGR，用空列占位对齐工具卡的缩进。
-    if (it.resultImages !== undefined && it.resultImages.length > 0) {
-      out.pop(); // 去掉上面的收尾空行，图片后重新补
-      for (const img of it.resultImages) {
-        const image = cachedImage(img.base64, img.mediaType, Math.max(20, width - 8), width - 4);
-        out.push(...image.render(width - 4).map((l) => (l === '' ? '    ' : `    ${l}`)));
-      }
-    }
     out.push('');
     // 全局兜底：任何遗漏的超宽行（长无空格串、未来新增分支）都被钳到 width，
     // 避免触发 pi-tui doRender 的宽度断言崩溃。与 pickers.render 同款防线。
@@ -743,14 +793,16 @@ function renderToolExpanded(it: Extract<DisplayItem, { kind: 'tool' }>, width: n
       out.push(c.dim(`    ↳ 输出过长，仅展示前 ${lines.length} 行`));
     }
   }
-  // 展开态同样内联图片载荷（read_media 在查看器里也该看到图）
-  if (it.resultImages !== undefined && it.resultImages.length > 0) {
-    out.pop();
-    for (const img of it.resultImages) {
-      const image = cachedImage(img.base64, img.mediaType, Math.max(20, width - 8), width - 4);
-      out.push(...image.render(width - 4).map((l) => (l === '' ? '    ' : `    ${l}`)));
-    }
-  }
   out.push('');
   return out.map((l) => truncateToWidth(l, width));
 }
+
+/**
+ * 历史说明：终端图片渲染支持已于 2026-09-22 拆除。
+ *
+ * pi-tui 的能力检测对 Windows Terminal 恒报 images:null（框架硬编码），内联 kitty
+ * 序列在 WT alt-screen 下从未走通，曾按「检测 WT ≥1.22 则强制启用 kitty」打过补丁
+ * （ src/tui-pi/imageCaps.ts，已删），实测在 WT 里留下大片空白占位。让框架支持 WT
+ * 图片等于重构其图片层，收益不抵代价，故整条渲染链路（kitty 序列发射、图片实例
+ * 缓存、能力探测修正）全部移除，只保留文本计数提示（PiChat 侧拼入结果文本）。
+ */

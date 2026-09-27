@@ -9,8 +9,8 @@ import { checkHeapOnce, type HeapWatchState } from '../../src/tui-pi/heapWatch.j
 
 const GB = 1024 * 1024 * 1024;
 
-function mk(): { state: HeapWatchState; notes: string[]; dumps: string[] } {
-  return { state: { warned: false, dumped: false }, notes: [], dumps: [] };
+function mk(): { state: HeapWatchState; notes: string[]; dumps: string[]; criticals: number } {
+  return { state: { warned: false, dumped: false, criticaled: false }, notes: [], dumps: [], criticals: 0 };
 }
 
 function opts(ctx: ReturnType<typeof mk>, used: number, limit = 4 * GB) {
@@ -18,6 +18,9 @@ function opts(ctx: ReturnType<typeof mk>, used: number, limit = 4 * GB) {
     notify: (t: string) => ctx.notes.push(t),
     dumpDir: '/tmp/x',
     readHeap: () => ({ used, limit }),
+    onCritical: () => {
+      ctx.criticals += 1;
+    },
     writeSnapshot: (p: string) => {
       ctx.dumps.push(p);
       return p;
@@ -100,6 +103,60 @@ describe('堆水位看护', () => {
     checkHeapOnce(ctx.state, opts(ctx, 1 * GB, 0));
     expect(ctx.notes).toEqual([]);
     expect(ctx.dumps).toEqual([]);
+  });
+});
+
+/**
+ * 致命水位（CRITICAL_RATIO）是 2026-09-27 加的，动机是一次真实事故：
+ * V8 撞堆上限时 C++ 层直接 abort，uncaughtException handler 一个都不跑，终端被留在
+ * alt-screen + 鼠标上报全开 + raw mode，用户看到「闪退后终端污染、鼠标序列被当文本打印」。
+ * dump 档只留证据不阻止崩溃，必须有这一档在 abort 之前把终端还回去。
+ */
+describe('致命水位：在 V8 abort 之前干净退出', () => {
+  it('过致命线：触发 onCritical，且提示说清后果与续接方式', () => {
+    const ctx = mk();
+    checkHeapOnce(ctx.state, opts(ctx, 3.8 * GB)); // 95%
+    expect(ctx.criticals).toBe(1);
+    expect(ctx.notes).toHaveLength(1);
+    expect(ctx.notes[0]).toMatch(/\d+MB \/ 上限 4096MB/);
+    expect(ctx.notes[0]).toContain('step -r');
+  });
+
+  it('致命档优先于 dump：不写快照（几百 MB 的 IO 只会把进程更快推过上限）', () => {
+    const ctx = mk();
+    checkHeapOnce(ctx.state, opts(ctx, 3.9 * GB));
+    expect(ctx.dumps).toEqual([]);
+    expect(ctx.criticals).toBe(1);
+  });
+
+  it('onCritical 只触发一次（触发了就是正在退出，再来一次会叠加退出路径）', () => {
+    const ctx = mk();
+    for (let i = 0; i < 5; i++) checkHeapOnce(ctx.state, opts(ctx, 3.95 * GB));
+    expect(ctx.criticals).toBe(1);
+  });
+
+  it('阈值同样随堆上限缩放，可用环境变量/入参覆盖', () => {
+    const ctx = mk();
+    // 3.5GB / 4GB = 87%，默认 92% 不该触发；把 criticalRatio 压到 0.8 才触发
+    checkHeapOnce(ctx.state, { ...opts(ctx, 3.5 * GB), criticalRatio: 0.8 });
+    expect(ctx.criticals).toBe(1);
+
+    const ctx2 = mk();
+    checkHeapOnce(ctx2.state, opts(ctx2, 3.5 * GB));
+    expect(ctx2.criticals).toBe(0);
+  });
+
+  it('没传 onCritical 时只提示不崩（保持旧行为，测试与保守场景用）', () => {
+    const state: HeapWatchState = { warned: false, dumped: false, criticaled: false };
+    const notes: string[] = [];
+    expect(() =>
+      checkHeapOnce(state, {
+        notify: (t) => notes.push(t),
+        dumpDir: '/tmp/x',
+        readHeap: () => ({ used: 3.9 * GB, limit: 4 * GB }),
+      }),
+    ).not.toThrow();
+    expect(notes).toHaveLength(1);
   });
 });
 

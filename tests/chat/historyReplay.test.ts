@@ -202,7 +202,7 @@ describe('historyToDisplayItems', () => {
     });
   });
 
-  it('图片块无解析器时回退 [图片] 占位，与同消息文本合并成一个用户条目', () => {
+  it('图片块只计数不挂数据：正文带 [N 张图] 标签，stepref 字节不进 DisplayItem', () => {
     const messages: StoredMessage[] = [
       m(
         {
@@ -220,66 +220,11 @@ describe('historyToDisplayItems', () => {
       ),
     ];
     const { items } = historyToDisplayItems(messages);
-    expect(items).toEqual([{ kind: 'user', text: '看这张图 [图片]', turnNum: 1 }]);
+    expect(items).toEqual([{ kind: 'user', text: '看这张图 [1 张图]', turnNum: 1 }]);
   });
 
-  // 1×1 最小 PNG（parseImageMeta 可解出宽高）
-  const PNG_1X1 =
-    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
-
-  describe('图片还原（resume 图片恢复）', () => {
-    const resolver = {
-      rehydrate: (stepref: string): string | null => (stepref === 'stepref:live' ? PNG_1X1 : null),
-    };
-
-    it('有解析器且附件存在时图片还原成真图挂 images，与文本合并成一个用户条目', () => {
-      const messages: StoredMessage[] = [
-        m(
-          {
-            role: 'user',
-            content: [
-              { type: 'text', text: '看这张图' },
-              { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'stepref:live' } },
-            ],
-          },
-          'user',
-          'u1',
-        ),
-      ];
-      const { items } = historyToDisplayItems(messages, undefined, resolver);
-      expect(items).toHaveLength(1);
-      const item = items[0] as { kind: string; text: string; turnNum: number; images?: unknown[] };
-      expect(item.kind).toBe('user');
-      expect(item.text).toBe('看这张图 [1 张图]');
-      expect(item.turnNum).toBe(1);
-      expect(item.images).toHaveLength(1);
-      expect(item.images?.[0]).toMatchObject({
-        base64: PNG_1X1,
-        mediaType: 'image/png',
-        width: 1,
-        height: 1,
-      });
-    });
-
-    it('附件缺失（rehydrate 返回 null）回退 [图片] 占位文本', () => {
-      const messages: StoredMessage[] = [
-        m(
-          {
-            role: 'user',
-            content: [
-              { type: 'text', text: '看这张图' },
-              { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'stepref:gone' } },
-            ],
-          },
-          'user',
-          'u1',
-        ),
-      ];
-      const { items } = historyToDisplayItems(messages, undefined, resolver);
-      expect(items).toEqual([{ kind: 'user', text: '看这张图 [图片]', turnNum: 1 }]);
-    });
-
-    it('多张图各自还原，标签计实际挂载数', () => {
+  describe('图片块计数（终端渲染链路 2026-09-22 拆除后）', () => {
+    it('多张图标签按块数计，不挂 images 数据', () => {
       const messages: StoredMessage[] = [
         m(
           {
@@ -293,10 +238,35 @@ describe('historyToDisplayItems', () => {
           'u1',
         ),
       ];
-      const { items } = historyToDisplayItems(messages, undefined, resolver);
-      const item = items[0] as { text: string; images?: unknown[] };
+      const { items } = historyToDisplayItems(messages);
+      const item = items[0] as { text: string };
       expect(item.text).toBe(' [2 张图]');
-      expect(item.images).toHaveLength(2);
+    });
+
+    it('tool_result 内嵌图片降级为 [图片] 占位文本，不挂 resultImages', () => {
+      const messages: StoredMessage[] = [
+        m({ role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'read_media', input: {} }] }, 'assistant', 'a1'),
+        m(
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 't1',
+                content: [
+                  { type: 'text', text: '读到了' },
+                  { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'stepref:live' } },
+                ],
+              },
+            ],
+          },
+          'tool',
+          'u1',
+        ),
+      ];
+      const { items } = historyToDisplayItems(messages);
+      const tool = items.find((i) => i.kind === 'tool') as { result?: string };
+      expect(tool.result).toBe('读到了[图片]');
     });
 
     it('模型侧贴图路径机器标记被过滤出用户可见文本', () => {
@@ -317,87 +287,10 @@ describe('historyToDisplayItems', () => {
           'u1',
         ),
       ];
-      const { items } = historyToDisplayItems(messages, undefined, resolver);
+      const { items } = historyToDisplayItems(messages);
       const item = items[0] as { text: string };
       expect(item.text).toBe('看这张图 [1 张图]');
       expect(item.text).not.toContain('Attached image file');
-    });
-
-    it('tool_result 内嵌图片还原后挂 resultImages，文本不含 [图片]', () => {
-      const messages: StoredMessage[] = [
-        m({ role: 'user', content: '读一下图' }, 'user', 'u1'),
-        m(
-          {
-            role: 'assistant',
-            content: [{ type: 'tool_use', id: 'c1', name: 'read_media', input: { path: 'a.png' } }],
-          },
-          'assistant',
-          'a1',
-        ),
-        m(
-          {
-            role: 'user',
-            content: [
-              {
-                type: 'tool_result',
-                tool_use_id: 'c1',
-                content: [
-                  { type: 'text', text: '<system>已读取图片：image/png，原始尺寸 1×1。</system>' },
-                  { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'stepref:live' } },
-                ],
-              },
-            ],
-          },
-          'tool',
-          't1',
-        ),
-      ];
-      const { items } = historyToDisplayItems(messages, undefined, resolver);
-      const tool = items.find((i) => i.kind === 'tool') as {
-        result: string;
-        resultImages?: unknown[];
-      };
-      expect(tool.result).toBe('<system>已读取图片：image/png，原始尺寸 1×1。</system>');
-      expect(tool.result).not.toContain('[图片]');
-      expect(tool.resultImages).toHaveLength(1);
-      expect(tool.resultImages?.[0]).toMatchObject({ mediaType: 'image/png', base64: PNG_1X1 });
-    });
-
-    it('tool_result 内嵌图片附件缺失时文本回退 [图片]', () => {
-      const messages: StoredMessage[] = [
-        m(
-          {
-            role: 'assistant',
-            content: [{ type: 'tool_use', id: 'c1', name: 'read_media', input: { path: 'a.png' } }],
-          },
-          'assistant',
-          'a1',
-        ),
-        m(
-          {
-            role: 'user',
-            content: [
-              {
-                type: 'tool_result',
-                tool_use_id: 'c1',
-                content: [
-                  { type: 'text', text: '旁注' },
-                  { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'stepref:gone' } },
-                ],
-              },
-            ],
-          },
-          'tool',
-          't1',
-        ),
-      ];
-      const { items } = historyToDisplayItems(messages, undefined, resolver);
-      const tool = items.find((i) => i.kind === 'tool') as {
-        result: string;
-        resultImages?: unknown[];
-      };
-      expect(tool.result).toBe('旁注[图片]');
-      expect(tool.resultImages).toBeUndefined();
     });
   });
 

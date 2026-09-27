@@ -8,7 +8,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
-import { Container, ProcessTerminal, TuiAltScreen, matchesKey, getKeybindings } from '@earendil-works/pi-tui';
+import { Container, ProcessTerminal, TuiAltScreen, ScrollView, VStack, matchesKey, getKeybindings } from '@earendil-works/pi-tui';
 import type { Component, KeybindingsConfig, SelectItem } from '@earendil-works/pi-tui';
 import type { AgentEvent, SubagentProgressEvent, WorkflowStepEvent } from '../agent/events.js';
 import type { LoopHooks } from '../agent/hooks.js';
@@ -85,7 +85,7 @@ import { resolveProviderTarget } from '../chat/providerSwitch.js';
 import { diffConfig, formatConfigChange, planProviderReload, resolveCapabilitiesOnReload, resolveImageLimitsOnReload } from '../chat/reload.js';
 import { computeBacktrack, extractUserText, truncateItemsAtLastUser } from '../chat/backtrack.js';
 import { clearUndoSnapshots, computeUndo, popUndoSnapshots, pushUndoSnapshot, type UndoSnapshot } from '../chat/undo.js';
-import { historyToDisplayItems, type ReplayImageResolver } from '../chat/historyReplay.js';
+import { historyToDisplayItems } from '../chat/historyReplay.js';
 import { planTurnEnd } from '../chat/turnEnd.js';
 import { formatDuration } from '../chat/duration.js';
 import { formatUsageReport } from '../chat/usagePanel.js';
@@ -124,11 +124,10 @@ import { TasksOverlay } from './TasksOverlay.js';
 import { sortAgents, AgentsOverlay } from './AgentsOverlay.js';
 import { openProviderManager, runProviderWizard } from './ProviderManager.js';
 import { allTodosDone } from '../chat/chromePanels.js';
-import { ItemBlock, summarizeInput } from './blocks.js';
+import { ItemBlock, summarizeInput, SPINNER_FRAME_MS, tickSpinner } from './blocks.js';
 import { FILE_LINK_SCHEME, fileUrlToPath, openWithSystem } from './fileLink.js';
 import { copyTextToClipboard, revealInFolder } from './pathActions.js';
 import { PathActionMenu, type PathAction } from './PathActionMenu.js';
-import { applyWtKittyOverride } from './imageCaps.js';
 import { openExpandViewer } from './ExpandOverlay.js';
 import { c, editorTheme } from './theme.js';
 
@@ -486,6 +485,12 @@ export class PiChat {
   private exitPrimed = false;
   private exitPrimedTimer: ReturnType<typeof setTimeout> | undefined;
   /**
+   * 退出进行中标志。exit() 与 emergencyStop()/criticalHeapExit() 三条路径都可能是
+   * 「用户连按两次 Ctrl+C」或「堆水位致命档恰好撞上用户退出」的叠加入口，没有这个标志时
+   * 第二次 exit() 会把已经 stop 的 TUI 再 stop 一次（tui.stop() 幂等但 persist 会重写盘）。
+   */
+  private exiting = false;
+  /**
    * backtrack primed 态：第一次 Esc 进入，第二次 Esc 执行回退，5 秒无操作或按下任意
    * 其他键则解除。与 exitPrimed 同构，两者的提示都画在输入框下方（footerText）。
    */
@@ -496,6 +501,8 @@ export class PiChat {
   /** 最近一次中断（Esc/Ctrl+C）的时间戳：回退冷静期判据。 */
   private lastAbortAt = 0;
   private ticker: ReturnType<typeof setInterval> | undefined;
+  /** transcript 的滚动容器：dock 结构下占满剩余高度，滚动条只覆盖转录区。 */
+  private transcriptScrollView: ScrollView | undefined;
   /**
    * spinner 独立定时器。与计时器 ticker 解耦：spinner 需要稳帧（约 12fps）才不卡，
    * 而计时器的秒级更新（用时/goal/overlay）没必要跑那么快。共用一条 ticker 时，
@@ -545,9 +552,6 @@ export class PiChat {
       mouse: true,
       openUrl: (url) => this.handleUrlClick(url),
     });
-    // 终端图片能力修正（WT kitty）：必须在任何 Image 渲染前调，getCapabilities 有缓存。
-    // 幂等：第二次调用时 caps.images 已是 kitty，函数内部直接返回。
-    applyWtKittyOverride();
     // Home/End 留给编辑器做光标导航（行首/行尾）。
     // Ctrl+Home/Ctrl+End 滚 viewport 顶部/底部，Ctrl+↑ 跳上一个 prompt。
     // 这三个键必须绑在 altScreen 全局层而不是 ChatEditor 里：审批/提问等模态弹层会
@@ -687,6 +691,13 @@ export class PiChat {
     // busy 时也允许——编辑的是草稿，不碰在跑的回合。终端输入框写长 prompt 是痛点，
     // 主流 CLI 编辑器普遍提供此能力。找不到编辑器时返回 false（不消费按键）。
     this.editor.onCtrlG = () => this.openExternalEditor();
+    // Ctrl+T 切换待办面板折叠态：与鼠标点标题行/摘要行（step://todo-toggle）同一个
+    // toggleTodos，两条入口共用一处实现。返回 true 无条件消费——Ctrl+T 没有其它语义，
+    // 放行只会让按键漏到终端。
+    this.editor.onCtrlT = () => {
+      this.toggleTodoPanel();
+      return true;
+    };
 
     // Ctrl+↑ ：跳转到上一个 prompt（在 ChatEditor.handleInput 中直接处理）。
     // cron 装配：到点把 prompt 静默注入跑一轮；isIdle 闸门保证回合进行中不触发
@@ -752,15 +763,47 @@ export class PiChat {
     );
     this.syncTerminalTitle();
 
-    this.tui.addChild(this.transcript);
-    this.tui.addChild(this.activity);
-    // 常驻 chrome（待办 + 队列预览）挂在输入框正上方，不参与高度预算协商——差分渲染无超屏清屏问题，面板按内容占行
-    this.tui.addChild(this.chrome);
     // inputSlot 包住 editor：选择器内联模式下，editor 与 PickerOverlay 在此容器内互换，
     // 位置不变
     this.inputSlot.addChild(this.editor);
-    this.tui.addChild(this.inputSlot);
-    this.tui.addChild(this.status);
+
+    // dock 结构：transcript 装进 ScrollView 占满剩余高度，activity/chrome/inputSlot/status
+    // 作为固定项贴在底部。挂载方式是显式 ScrollView 加 VStack 再 setLayoutRoot，不是把
+    // 各组件平铺给 tui.addChild。
+    //
+    // 平铺（走 alt-screen 隐式主滚动视口）有两个后果，都在 0.84.4 副本上实测确认过：
+    //   ① 滚动条 track 拉满整个视口，thumb 落在第 29-30 行；dock 下只覆盖转录区，
+    //      thumb 落在第 17-18 行、track 高 18。库层两边的 paintScrollbar 与
+    //      getScrollbarGeometry 逐行一致，差异全部来自应用层挂载方式。
+    //   ② scrollToTop 翻历史时 activity/chrome/inputSlot/status 跟着滚出屏幕，输入框消失；
+    //      dock 下四项固定不动（实测 scrollToTop 后 INPUT-BOX 在第 26 行、STATUS-LINE
+    //      在第 29 行，均在屏内）。
+    //
+    // minSize 取自各组件的实际最小行高：activity 空闲时 render 返回 []（0 行）、busy 时
+    // 1 行加思考预览；chrome 按内容占行；editor 至少 3 行；status 至少 1 行。
+    this.transcriptScrollView = new ScrollView(this.transcript, {
+      follow: 'end',
+      primary: true,
+      overscroll: 'chain',
+      // 滚动条方案：固定最右一列、整条轨道都画字符、hover 只换字符不换列位、保留目标格
+      // 原背景。早期自绘方案（左四分之一块 + hover 扩 2 列）试了四轮都不满意，问题与结论见
+      // step-code-product-design/参考资料/TUI与渲染/20260926-*.md。
+      scrollbar: 'auto',
+      // thumb：白（SGR 37）。静止画 ┃（U+2503 粗竖线），hover/拖拽画 █（全块），
+      // 同在字符格内从「线」变「实心」，不做宽度跳变。
+      scrollbarStyle: (text: string) => `\x1b[37m${text}\x1b[39m`,
+      // 轨道：亮黑（SGR 90）画 │（U+2502 细竖线），整条可见，给 thumb 一个参照。
+      scrollbarTrackStyle: (text: string) => `\x1b[90m${text}\x1b[39m`,
+    });
+    this.tui.setLayoutRoot(
+      new VStack([
+        { component: this.transcriptScrollView, basis: 0, grow: 1, shrink: 1 },
+        { component: this.activity, shrink: 1, minSize: 0 },
+        { component: this.chrome, shrink: 1, minSize: 0 },
+        { component: this.inputSlot, shrink: 1, minSize: 3 },
+        { component: this.status, shrink: 1, minSize: 1 },
+      ]),
+    );
     this.tui.setFocus(this.editor);
   }
 
@@ -826,19 +869,28 @@ export class PiChat {
     // 于是出现主回合 spinner 流畅、而 spawn_agent 卡片「很久才动一下」——卡片只能等子 agent
     // 事件（token 累计到一定量才推一次）才重绘，事件稀疏时观感就是卡住。
     //
-    // 多个 80ms 定时器不会打爆渲染：pi-tui 的 requestRender 有 renderRequested 合并标志与
+    // 多个 spinner 定时器不会打爆渲染：pi-tui 的 requestRender 有 renderRequested 合并标志与
     // 16ms 限速（MIN_RENDER_INTERVAL_MS），同一窗口内的请求会并成一次 diff。
+    // 节拍取 SPINNER_FRAME_MS（200ms）而非 80ms：慢节拍不与流式 token 渲染抢帧，且尾块
+    // 失效频率随之降到 1/5（running 工具卡首列字形取自 spinnerFrame()，帧变一次尾块缓存
+    // 失效一次，400 行 transcript 就要重拼一次全量数组）。帧游标由 tickSpinner() 推进，
+    // 不从墙钟派生，避免「重渲了但 frame 没变」的空刷帧。
     this.spinnerTimer = setInterval(() => {
       const hasRunningSubagent = this.runningSubagentIds.size > 0;
       if (this.promptActive) return;
       if (this.busy) {
+        tickSpinner();
         this.activity.tick();
         this.tui.requestRender();
       } else if (hasRunningSubagent) {
         // 主回合已结束但子 agent 仍在跑（后台任务式 spawn）：只刷卡片，不动主 spinner。
+        tickSpinner();
         this.tui.requestRender();
       }
-    }, 80);
+    }, SPINNER_FRAME_MS);
+    // 不 ref 事件循环：万一将来某条路径漏了 clearInterval，后果从「进程永不退出」降为
+    // 「提前几毫秒退」。exit() 仍然显式清，unref 只是防御性兜底。
+    this.spinnerTimer.unref?.();
     // 计时器：用时/goal 徽章/任务弹层秒级更新。只需秒级精度，120ms 一拍够用；
     // overlay 每 8 拍（约 1 秒）重渲一次。spinner 不在这里走，已拆给 spinnerTimer。
     this.ticker = setInterval(() => {
@@ -853,11 +905,15 @@ export class PiChat {
       if (this.goal.get() !== null) this.syncGoalBadge();
       this.tui.requestRender();
     }, 120);
+    this.ticker.unref?.();
     // 堆水位看护：长会话会持续变重，接近上限前给用户一次「/new 开新会话」的机会，
     // 更高水位时留一份 heap snapshot——崩溃后的堆没法事后检查，只能在崩之前抓。
+    // 致命水位（CRITICAL_RATIO）不落 snapshot 直接干净退出：V8 abort 不走 JS handler，
+    // 不抢在这一步退出，终端就会被留在 alt-screen + 鼠标上报全开 + raw mode 的污染态。
     this.stopHeapWatch = startHeapWatch({
       notify: (text) => this.push({ kind: 'note', text }),
       dumpDir: join(homedir(), '.step-code'),
+      onCritical: () => this.criticalHeapExit(),
     });
     this.tui.requestRender();
     return new Promise<PiChatExit>((resolve) => {
@@ -865,19 +921,9 @@ export class PiChat {
     });
   }
 
-  /**
-   * 历史回放的图片解析器：stepref → base64（附件缺失返回 null，回放回退 [图片] 占位）。
-   * 让 resume 后的历史图片与实时贴图回显走同一渲染路径（images / resultImages 字段）。
-   */
-  private replayImages(): ReplayImageResolver {
-    const attachments = this.deps.store.attachments;
-    const cwd = this.session.cwd;
-    return { rehydrate: (stepref: string) => attachments.rehydrate(cwd, stepref) };
-  }
-
   private replayHistory(): void {
     if (this.session.messages.length === 0) return;
-    const replay = historyToDisplayItems(this.session.messages, undefined, this.replayImages());
+    const replay = historyToDisplayItems(this.session.messages, undefined);
     const items = [...replay.items];
     items.push({
       kind: 'note',
@@ -1339,7 +1385,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     // （同一引用），据此重建转录块，旧块失去引用即被 GC。仅 full 压缩发此事件（micro
     // 不发），且 compaction 只在回合边界、无在途条目，重建安全。
     if (event.type === 'context.apply_compaction') {
-      this.transcript.reset(historyToDisplayItems(this.history, undefined, this.replayImages()).items);
+      this.transcript.reset(historyToDisplayItems(this.history, undefined).items);
     }
   }
 
@@ -1437,6 +1483,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       // 超时解除必须主动重绘：没有按键事件驱动这一帧，不请求的话提示行会一直挂在屏幕上
       this.tui.requestRender();
     }, PRIMED_TIMEOUT_MS);
+    this.backtrackPrimedTimer.unref?.();
     this.tui.requestRender();
   }
 
@@ -1513,12 +1560,33 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       this.exitPrimedTimer = undefined;
       this.tui.requestRender();
     }, PRIMED_TIMEOUT_MS);
+    this.exitPrimedTimer.unref?.();
     this.tui.requestRender();
     return true;
   }
 
-  /** OSC 8 超链接点击回调：用户点击了某轮 prompt 行 → 将该轮文本载入输入框。 */
+  /**
+   * 切换待办面板折叠态。两条入口共用：Ctrl+T 与 OSC 8 点击（step://todo-toggle）。
+   * 面板是 dock 常驻项，render 无缓存，requestRender 一次即生效；不碰 transcript，
+   * 所以不会打断滚动位置或在途回合。
+   */
+  private toggleTodoPanel(): void {
+    this.chrome.toggleTodos();
+    this.tui.requestRender();
+  }
+
+  /**
+   * OSC 8 超链接点击回调。两条 scheme：
+   * - step://todo-toggle：待办面板标题行/折叠摘要行，切换折叠态
+   * - step://turn/N：某轮 prompt 行，将该轮文本载入输入框
+   */
   private handleUrlClick(url: string): void {
+    // 待办面板折叠/展开。面板是 dock 的常驻项，点一下只重渲染 chrome 就够，
+    // 不需要动 transcript——但 chrome 的 render 无缓存，requestRender 一次即生效。
+    if (url === 'step://todo-toggle') {
+      this.toggleTodoPanel();
+      return;
+    }
     const m = url.match(/^step:\/\/turn\/(\d+)$/);
     if (m) {
       const targetTurn = parseInt(m[1], 10);
@@ -1560,21 +1628,19 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
   }
 
   /**
-   * 路径动作菜单浮层：单击 step-file: 链接后弹出。
+   * 路径动作菜单：单击 step-file: 链接后弹出。
    *
-   * 浮层而非转录区条目：菜单是一次性交互，留在历史里点几次路径就积几条残骸。
-   * 关闭路径统一（选完动作 / Esc 取消 / 出错）都 hide + 归还编辑器焦点。
+   * 落位走 showPrompt 内联替换输入区，与 ask_user / 工具审批同一条挂载路径，
+   * 出现在对话最底部、状态栏之上，不遮挡历史消息，焦点也离手更近。
+   * 此前走 showOverlay(anchor:'top-center')，菜单悬在转录区顶部。
+   * 菜单是一次性交互，不进转录区，结算时 showPrompt 统一恢复 editor。
    */
   private openPathActionMenu(path: string, isDir: boolean): void {
     if (this.promptActive) return;
     const name = basename(path);
-    const menu = new PathActionMenu({
-      path,
-      isDir,
-      onAction: (action: PathAction) => {
-        handle.hide();
-        this.tui.setFocus(this.editor);
-        this.tui.requestRender();
+    void this.showPrompt<void>((settle) => {
+      const runAction = (action: PathAction): void => {
+        settle();
         if (action === 'copy') {
           // OSC 52 写剪贴板：终端收到与否无法回传，flash 只表示已写入终端
           copyTextToClipboard(path, (data) => this.tui.terminal.write(data));
@@ -1591,17 +1657,15 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
               ? 'pathAction.opened'
               : 'pathAction.openFailed';
         this.tui.flash(t(key, { name }), 2000);
-      },
-      onCancel: () => {
-        handle.hide();
-        this.tui.setFocus(this.editor);
-        this.tui.requestRender();
-      },
-      requestRender: () => this.tui.requestRender(),
+      };
+      return new PathActionMenu({
+        path,
+        isDir,
+        onAction: runAction,
+        onCancel: settle,
+        requestRender: () => this.tui.requestRender(),
+      });
     });
-    const handle = this.tui.showOverlay(menu, { anchor: 'top-center', maxHeight: '30%', margin: 2 });
-    handle.focus();
-    this.tui.requestRender();
   }
 
   /**
@@ -1741,19 +1805,75 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
   }
 
   /**
-   * 紧急停止：只恢复终端模式，不做任何其他清理。
-   * SIGHUP / stdout EIO（终端已死）场景用——那种情况下 persist、通知等任何写操作
-   * 都可能抛 EIO 形成写循环占满 CPU，进程残留还会把 shell 挂在 raw mode。
+   * 紧急停止：恢复终端模式 + 终止在途后台任务 + 复位 tab 标题。
+   *
+   * SIGHUP / stdout EIO / 未捕获异常 / 未处理拒绝四条路径共用。那些场景下 persist、
+   * 通知等写操作都可能抛 EIO 形成写循环占满 CPU，所以这里不做 persist，只做「不写盘
+   * 也不写终端」的清理：杀子进程不产生 IO，与该约束不冲突。
+   *
+   * 为什么必须杀后台任务：Windows 没有 Job Object，spawn 时 detached 为 false，父退
+   * 子不退。后台 bash/monitor 的 stdio 是 pipe 且带 data 监听器，是 ref 住事件循环的
+   * 句柄，不杀则 Node 退不干净；孙进程（python/node）更会变孤儿继续写盘，
+   * manager.ts:281-283 记过同类事故。崩溃退出路径必须先杀跟踪到的脱离子进程，再走
+   * 终端复位与退出。
+   *
+   * 标题复位：上一轮只补了 tui.stop()，termTitle.reset() 从没进过这条路径，四条紧急
+   * 路径退出后标签页一定残留成 step 加会话名。enabled 为 false 时 reset 是空操作。
+   *
+   * 每步独立 try/catch：终端已死时任一步都可能抛，不许异常冒泡到 handler 外面。
    */
   emergencyStop(): void {
     try {
       this.tui.stop();
     } catch {
-      // 终端已死时 stop 自己也可能抛，忽略
+      // 终端已死时 stop 自己也可能抛。但 TuiBase.stop() 自身没有 try/catch，
+      // beforeTerminalStop 一抛，后面的 2004l / 1049l / ?7h / \x1b[0m / ?25h 全丢，
+      // 而上面的 catch 会把这件事静默吞掉。补一段最小复位串做应用层自保：重复写
+      // 1049l 是幂等的，没有副作用。
+      try {
+        process.stdout.write(
+          '\x1b[?1049l\x1b[?1006l\x1b[?1004l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?7h\x1b[0m\x1b[?25h',
+        );
+      } catch {
+        // 终端确实死了，写也会抛，无处可做
+      }
+    }
+    try {
+      this.background.shutdown();
+    } catch {
+      // 杀进程是 best-effort，单个任务失败不应阻塞其余清理
+    }
+    try {
+      this.termTitle.reset();
+    } catch {
+      // 同上
     }
   }
 
+  /**
+   * 堆水位致命档的出口。V8 撞堆上限是 C++ 层直接 abort，JS 的 uncaughtException handler
+   * 一个都不跑，终端会被留在 alt-screen + 鼠标上报全开 + raw mode 的污染态（症状与判据见
+   * heapWatch.ts 的 CRITICAL_RATIO 注释）。所以在 abort 之前抢一次干净退出：清理与 exit()
+   * 同一套（persist / 杀后台 / 复位标题 / tui.stop()），另外先把在途回合 abort 掉，
+   * 避免退出过程又被流式回调拖住。幂等由 exiting 标志保证。
+   */
+  private criticalHeapExit(): void {
+    if (this.exiting) return;
+    this.exiting = true;
+    try {
+      this.abortTurn();
+    } catch {
+      // abort 失败不阻断退出：终端状态恢复优先于回合收尾
+    }
+    this.exit();
+  }
+
   private exit(): void {
+    // 三个调用点（双击 Ctrl+C / /exit / criticalHeapExit）都是终态退出，不存在
+    // 「退出后还要继续用同一个 PiChat」的路径，所以重复进入直接返回：
+    // 否则会把已经 stop 的 TUI 再 stop 一次、persist 再写一遍盘。
+    if (this.exiting) return;
+    this.exiting = true;
     if (this.exitPrimedTimer !== undefined) clearTimeout(this.exitPrimedTimer);
     // backtrack 的定时器同样要清：未清的 setTimeout 会让 node 事件循环多挂 5 秒才退
     if (this.backtrackPrimedTimer !== undefined) clearTimeout(this.backtrackPrimedTimer);
@@ -1761,7 +1881,25 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     if (this.spinnerTimer !== undefined) clearInterval(this.spinnerTimer);
     this.stopHeapWatch?.();
     this.cron.stop();
-    this.persist();
+    // 在途后台任务必须在这里终止。shutdown() 会置空四个回灌回调（否则旧任务 settle
+    // 继续往已 stop 的 TUI push，并经 terminal-notify 直接写 BEL/OSC 9 污染已恢复的
+    // 终端）、清两个 pending 队列、对每个 running 任务杀进程树。少了这一步，stdio 管道
+    // ref 住事件循环，resolveExit 之后进程挂住，用户看到 shell 不返回；孙进程在
+    // Windows 上还会变孤儿继续写盘。/new、/resume、/fork 三条切会话路径本来就调它，
+    // 退出路径漏了。
+    try {
+      this.background.shutdown();
+    } catch {
+      // 终止失败不阻断退出：终端状态恢复优先于杀进程
+    }
+    // persist 单独包住。它自己的 try 只覆盖 store IO，goal.snapshot()/team.snapshot()
+    // 在保护外；任一处抛异常都会跳过下面的标题复位与 tui.stop()，一次退出同时泄漏
+    // alt-screen 和 tab 标题，那正是本轮要消除的故障形态。
+    try {
+      this.persist();
+    } catch {
+      // 落盘失败不阻断退出
+    }
     // tab 标题清空，让终端回落自身默认（不清会残留到用户后续的其它命令上）
     this.termTitle.reset();
     this.tui.stop();
@@ -2172,6 +2310,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       '快捷键：Enter 发送 · Shift+Enter 换行 · Esc 中断/取回队列 · Ctrl+C 退出 · Tab 补全',
       '输入 ! 开头的行会在本地执行 shell 命令（输出注入上下文），Ctrl+S 把队列与草稿插队给运行中的回合',
       '　　　　Alt+V 贴剪贴板图片 · Ctrl+O 展开工具输出与思考 · Ctrl+B 前台任务转后台',
+      '　　　　Ctrl+T 折叠/展开待办面板（也可点击面板标题行）',
     ];
     // 空集合时不打这一行：全部接线后还挂个空提示，看起来像功能残缺
     if (NOT_WIRED.size > 0) lines.push(`pi 版尚未接线：${[...NOT_WIRED].map((n) => '/' + n).join(' ')}`);
@@ -2756,7 +2895,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     this.baseTokens = 0;
     this.status.setState({ usedTokens: 0 });
     this.persist();
-    const replay = historyToDisplayItems(this.history, undefined, this.replayImages());
+    const replay = historyToDisplayItems(this.history, undefined);
     this.transcript.reset(
       [
         ...replay.items,
@@ -2866,7 +3005,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       return;
     }
     const meta = this.deps.subagentStore.list(cwd).find((m) => m.id === subId);
-    const replay = historyToDisplayItems(messages, undefined, this.replayImages());
+    const replay = historyToDisplayItems(messages, undefined);
     const label = meta?.name ?? meta?.title ?? subId.slice(0, 8);
     // 保存当前视图快照（浅拷贝 DisplayItem 数组，reset 后旧数组不受影响）
     this.subagentBrowsing = { saved: this.transcript.items() };
@@ -4066,7 +4205,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     // 切会话即换了 delivered 集合的作用域，内存里那份属于旧会话，清掉重来。
     this.deliveredWritten = new Set(r.deliveredNotifications);
     this.reconcileBackground(this.deliveredWritten);
-    const replay = historyToDisplayItems(data.messages, undefined, this.replayImages());
+    const replay = historyToDisplayItems(data.messages, undefined);
     // 恢复感知：告诉用户 resume 后挂了多少队列消息与定时任务——此前静默换绑，用户根本不知道
     const restoredParts: string[] = [];
     if (restoredQueue.length > 0) restoredParts.push(`${restoredQueue.length} 条排队消息`);
@@ -4473,20 +4612,9 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       });
     }
     if (opts?.silent !== true) {
-      // 贴图回显：提交时从附件池快照本轮图片（base64 直接进条目，不存 id——
-      // 附件池在 /new、会话切换时 clear，但转录条目要保住图片）。
-      // 快照用 activeIds(text) 而非 store 全量：用户删掉的占位符不显示。
-      const attached =
-        extracted.imageCount > 0
-          ? this.images
-              .activeIds(text)
-              .map((id) => this.images.get(id))
-              .filter((a): a is NonNullable<typeof a> => a !== undefined)
-          : [];
       this.push({
         kind: 'user',
         text: extracted.imageCount > 0 ? `${extracted.displayText} [${extracted.imageCount} 张图]` : text,
-        ...(attached.length > 0 ? { images: attached } : {}),
       });
     }
     // 贴图路径告知模型：粘贴时已 offload 到附件仓（内容寻址），把绝对路径附在发给
@@ -4826,14 +4954,21 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
             const toolItem = it as Extract<DisplayItem, { kind: 'tool' }>;
             const result = ev.result ?? '';
             const cachedPath = offloadIfNeeded(toolItem.name, result);
+            // 终端图片渲染支持已于 2026-09-22 拆除（pi-tui 对 Windows Terminal 恒无图片
+            // 能力，WT 内联渲染留过大片空白占位）。工具结果里的图片只留一行计数提示，
+ // 不渲染、不占版面；探活仍走模型侧的 image content block，不受影响。
+            const imageCount = ev.images?.length ?? 0;
             return {
               ...toolItem,
               status: ev.isError ? 'error' : 'ok',
-              result: cachedPath !== undefined ? undefined : result,
+              result:
+                cachedPath !== undefined
+                  ? undefined
+                  : imageCount > 0
+                    ? `${result}\n（${imageCount} 张图片结果，终端不显示）`
+                    : result,
               resultFile: cachedPath,
               resultSize: result.length,
-              // read_media 等工具的图片载荷：结果下方内联渲染（无协议时降级占位文本）
-              ...(ev.images !== undefined && ev.images.length > 0 ? { resultImages: ev.images } : {}),
             };
           },
         );

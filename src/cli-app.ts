@@ -9,10 +9,13 @@
  * 唯一的设置点是 bin 引导文件 ./main.ts。
  */
 
+import { configureProxyFromEnv } from './utils/proxy.js';
+import { installTerminalResetGuard } from './tui-pi/terminalResetGuard.js';
 import { Command } from 'commander';
-import { copyFileSync, existsSync, readFileSync, renameSync } from 'node:fs';
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { getHeapStatistics } from 'node:v8';
 import { runAgent } from './agent/loop.js';
 import { estimateTokens, microCompact } from './agent/compaction/compact.js';
 import { runReflect } from './agent/reflect.js';
@@ -22,7 +25,7 @@ import { composeLoopHooks, HookEngine } from './agent/hooks/engine.js';
 import { decide, resolveStartupMode, type PermissionMode } from './agent/permission/mode.js';
 import { createSubagentRunner } from './agent/subagent/runner.js';
 import { SubagentStore } from './agent/subagent/store.js';
-import { stored, type StoredMessage } from './agent/message.js';
+import { forEachBlockDeep, stored, type StoredMessage } from './agent/message.js';
 import { BackgroundManager } from './agent/background/manager.js';
 import { buildSettleMessage, notificationIdFor } from './agent/background/notify.js';
 import type { WireEvent } from './agent/wirelog.js';
@@ -61,7 +64,23 @@ import type { ToolContext } from './tools/types.js';
 import { FileGuard } from './tools/fileGuard.js';
 import { configureLogger, logError } from './utils/logger.js';
 
+/**
+ * 当前活着的交互会话。emergencyExit 经它取实例，不闭包捕获 chat：闭包会在 runApp 被
+ * 重入时指向已过期的 chat，对过期实例调 emergencyStop()，活着的那个 TuiAltScreen
+ * 反而不会被恢复，终端照样卡死。
+ */
+let activeChat: { emergencyStop(): void } | undefined;
+/**
+ * 紧急 handler 的安装闸门。runApp 当前只被 cli.ts 调一次，所以今天不会累加，但未强制的
+ * 假设不该依赖运气：注册到第 11 个会触发 MaxListenersExceededWarning，而交互 TUI 独占
+ * 终端，那条 warning 会直接打在 alt-screen 上。
+ */
+let emergencyHandlersInstalled = false;
+
 export async function runApp(program: Command): Promise<void> {
+// 早于任何网络请求：让全局 fetch 遵守 HTTP(S)_PROXY 环境变量
+// （Node 内置 fetch 默认不读代理）。
+configureProxyFromEnv();
 const opts = program.opts<{
   print?: string;
   reflect?: boolean;
@@ -80,6 +99,12 @@ const opts = program.opts<{
   skills?: boolean;  // commander 的 --no-skills 会转成 skills: false
   agentsMd?: boolean;  // commander 的 --no-agents-md 会转成 agentsMd: false
 }>();
+// 终端复位兜底必须装在这里，不能只装在交互分支里：FirstRun 引导（缺 API key / 坏 TOML
+// 恢复）与 --resume 不带 id 的会话选择器都会起一个带鼠标上报的 alt-screen，成功后紧跟
+// process.exit()，恢复序列同样会被截断——而这两条路径都在交互分支之前，其中坏 TOML
+// 恢复就在下面这个 catch 里。ACP 模式的 stdout 是 JSON-RPC 通道，写复位序列会污染协议，
+// 必须排除。
+installTerminalResetGuard(opts.acp === true);
 const cwd = opts.cwd !== undefined ? resolve(opts.cwd) : process.cwd();
 // --yolo 与 --auto 互斥：同时给属于用户笔误，
 // 静默让 yolo 赢会掩盖意图不明，直接报错更诚实。
@@ -527,7 +552,10 @@ ctx.toolSearch = {
         name: found.info.qualifiedName,
         description: found.info.description,
         schema: mcpInputSchemaToZod(found.info.inputSchema),
-        execute: async (input) => mcpManager.callTool(n, input as Record<string, unknown>),
+        execute: async (input) => {
+          const r = await mcpManager.callTool(n, input as Record<string, unknown>);
+          return { content: r.content, isError: r.isError, images: r.images };
+        },
       });
     }
   },
@@ -566,7 +594,8 @@ ctx.attachments = store.attachments;
 async function pickSession(): Promise<string | null> {
   const page = store.listPaginated(cwd, 50);
   if (page.items.length === 0) return null;
-  // 选择器自己起一个 pi-tui 主屏并在结束时停掉，屏幕随后让给 PiChat。
+  // 选择器自己起一个 pi-tui 备用屏（TuiAltScreen + 鼠标上报）并在结束时停掉，
+  // 屏幕随后让给 PiChat。
   // 首屏只取 50 条；后续由 onLoadMore 回调按需追加。
   return await pickSessionStandalone(page.items, (itemCount) => {
     if (itemCount >= 200) return null; // 上限 200 条
@@ -656,6 +685,18 @@ if (opts.resume !== undefined) {
 const session = resolved.session;
 // 会话 id 注入工具上下文：供 session_send 在投递时记录发送方，目标会话据此知道消息来自哪个会话。
 ctx.sessionId = session.id;
+// 上下文视频数查询（read_media 单请求视频数门禁用）：数历史里已交付的 video 块，
+// 下钻 tool_result 内层（read_media 回灌的视频在内层，只看顶层会漏数）。闭包持
+// session 对象而非 messages 数组：microCompact 会整体替换 messages，持对象才看得到新数组。
+ctx.countVideosInContext = () => {
+  let n = 0;
+  for (const m of session.messages) {
+    forEachBlockDeep(m.message.content, (block) => {
+      if ((block as { type: string }).type === 'video') n += 1;
+    });
+  }
+  return n;
+};
 // 恢复命中但消息为空：会话是崩溃/中断留下的空壳（消息没落盘进程就死了），
 // 用户大概率以为恢复错了 id。提前在 stderr 提示，避免进 TUI 后才发现历史是空的。
 if (resumeHit && session.messages.length === 0) {
@@ -1222,16 +1263,101 @@ if (opts.reflect === true) {
     chat.forkSession();
   }
   // SIGHUP/死终端的紧急出口：终端已死时继续写 stdout 会 EIO 循环占满 CPU，
-  // 进程残留还会把用户的 shell 挂在 raw mode。只恢复终端立即退出，不做清理。
-  // SIGTERM 走正常退出（Ctrl+C 双击退出的 exit() 路径已含完整清理）。
-  const emergencyExit = (): void => {
-    chat.emergencyStop();
-    process.exit(0);
+  // 进程残留还会把用户的 shell 挂在 raw mode。只恢复终端立即退出，不做 persist。
+  // SIGTERM 没有注册 handler：Windows 上该信号基本不可处理，Node 也不保证送达，用户的
+  // 中断入口是 Ctrl+C（PiChat.onCtrlC）与 Ctrl+D，两条都进 exit() 的完整清理路径。
+  //
+  // code 分两档：0 是终端已死这类无过错退出，1 是未捕获异常。
+  //
+  // 异常路径为什么必须在这一层接住：alt-screen 的全部退出序列（?1049l 退出备用屏、
+  // DISABLE_MOUSE 关 1000/1002/1003/1004/1006、?7h 恢复自动换行、?25h 显示光标）都写在
+  // TuiBase.stop() 里，由 beforeTerminalStop / afterTerminalStop 触发。而 doRender()
+  // （tui-alt-screen.js:1126）及其三个调用点 renderNow / requestImmediateRender /
+  // scheduleRender（tui.js:547、575、597）全都没有 try/catch，渲染中任何异常都会冒泡成
+  // uncaughtException 直接杀进程，上述序列一个都不写。表现出来的症状是终端停在 alt
+  // screen、鼠标上报全开导致滚轮失灵、raw mode 未恢复导致 Ctrl+C 只回显 ^C，要多按几次
+  // 才退回 shell。接住之后第一步先恢复终端，错误才有地方显示。
+  //
+  // 崩溃处理顺序：先同步恢复终端，再报错，最后退出。unhandledRejection 一并接住；
+  // 用 on 注册（没有其他竞争的 handler 需要抢在前后）。emergencyStop() 内部已
+  // try/catch，终端已死时不会二次抛。
+  //
+  // 另有一条 process.on('exit') + writeSync(1) 的终端复位兜底，装在 runApp 开头
+  // （installTerminalResetGuard），不在这里重复装：它必须早于 FirstRun 引导与
+  // --resume 会话选择器，那两条路径也会起 alt-screen 后紧跟 process.exit()。
+  const emergencyExit = (code: number): void => {
+    // MCP 同步树杀必须放在 emergencyStop() 之前：emergencyStop 走 tui.stop()，
+    // 那条路在终端已死时会抛并被它自己吞掉，之后仍要保证子进程被杀。
+    // closeAll() 是 async 的而下面立刻 process.exit()，Promise 来不及落地，所以这里
+    // 只能用同步的 killAllSync()（内部 taskkill /T /F）。
+    try {
+      mcpManager.killAllSync();
+    } catch {
+      // best-effort：杀进程失败不阻断终端恢复
+    }
+    activeChat?.emergencyStop();
+    process.exit(code);
   };
-  process.once('SIGHUP', emergencyExit);
-  process.stdout.once('error', (e) => {
-    if ((e as NodeJS.ErrnoException).code === 'EIO') emergencyExit();
-  });
+  activeChat = chat;
+  if (!emergencyHandlersInstalled) {
+    emergencyHandlersInstalled = true;
+    process.once('SIGHUP', () => emergencyExit(0));
+    // 判据：EIO/EPIPE/ENOTCONN 三类都表示 stdout 已经不能写。只判 EIO 会漏掉 step | head 这类下游早退产生的
+    // EPIPE，那种情况下应用带着一个死 stdout 继续跑，输出静默丢失。
+    //
+    // 用 on 而不是 once，且在不命中时保留监听：once 会被第一个不相关的 error 消耗掉，
+    // 之后真正的 EPIPE 落成无监听 'error' 事件，Node 直接抛，退出码从 0 变 1。
+    // emergencyExit 内部有 exiting 幂等，不会因为收到多次 error 而重复清理。
+    const onStdoutError = (e: Error): void => {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code !== 'EIO' && code !== 'EPIPE' && code !== 'ENOTCONN') return;
+      process.stdout.off('error', onStdoutError);
+      emergencyExit(0);
+    };
+    process.stdout.on('error', onStdoutError);
+    // 先恢复终端再打印：此刻还在 alt screen 里，直接写 stderr 会被吞掉或行列错位。
+    //
+    // 崩溃落盘：stderr 在退出后会被终端冲掉，用户反馈「闪退」时拿不到任何证据，
+    // 无法区分是内存爆、渲染异常还是终端已死。所以除 stderr 外再写一份到
+    // ~/.pi/agent/crash-<时间戳>.log，带堆统计、rss、uptime 与终端尺寸，供事后定位。
+    // 写盘自身失败不能阻断终端恢复，整段 try/catch。
+    const writeCrashDump = (kind: string, err: unknown): void => {
+      try {
+        const dir = join(homedir(), '.pi', 'agent');
+        mkdirSync(dir, { recursive: true });
+        const heap = getHeapStatistics();
+        appendFileSync(
+          join(dir, `crash-${Date.now()}.log`),
+          [
+            `Crash at ${new Date().toISOString()}`,
+            `kind: ${kind}`,
+            `pid: ${process.pid} · uptime: ${Math.round(process.uptime())}s`,
+            `heap used: ${(heap.used_heap_size / 1024 / 1024).toFixed(1)}MB / limit ${(heap.heap_size_limit / 1024 / 1024).toFixed(0)}MB`,
+            `rss: ${(process.memoryUsage().rss / 1024 / 1024).toFixed(1)}MB`,
+            `terminal: ${process.stdout.columns}x${process.stdout.rows}`,
+            '',
+            '=== error ===',
+            err instanceof Error ? (err.stack ?? String(err)) : String(err),
+            '',
+          ].join('\n'),
+        );
+      } catch {
+        // 落盘失败不影响终端恢复
+      }
+    };
+    process.on('uncaughtException', (err) => {
+      writeCrashDump('uncaughtException', err);
+      console.error('\nstep 遇到未捕获异常，已恢复终端，异常如下：');
+      console.error(err);
+      emergencyExit(1);
+    });
+    process.on('unhandledRejection', (reason) => {
+      writeCrashDump('unhandledRejection', reason);
+      console.error('\nstep 遇到未处理的 Promise 拒绝，已恢复终端，原因如下：');
+      console.error(reason);
+      emergencyExit(1);
+    });
+  }
   const info = await chat.start();
   await mcpManager.closeAll();
   if (info.hasContent) {
