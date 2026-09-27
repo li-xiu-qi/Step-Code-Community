@@ -465,3 +465,83 @@ describe('withCapabilityProjection（发送前能力投影）', () => {
     expect(withCapabilityProjection(fake as never, DEFAULT_CAPABILITY)).toBe(fake);
   });
 });
+
+describe('capVideos 单请求视频数上限（2026-09-24 事故）', () => {
+  const msg = (blocks: unknown[]): Anthropic.MessageParam =>
+    ({ role: 'user', content: blocks }) as Anthropic.MessageParam;
+  const v = (data: string): unknown => ({
+    type: 'video',
+    source: { type: 'base64', media_type: 'video/mp4', data },
+  });
+  const toolResultWithVideo = (data: string): Anthropic.MessageParam =>
+    ({
+      role: 'user',
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: 't1',
+          content: [{ type: 'text', text: '已读取视频' }, v(data)],
+        },
+      ],
+    }) as unknown as Anthropic.MessageParam;
+
+  it('两个视频超上限 1：保留最近的，更早的换占位文本', async () => {
+    const { capVideos } = await import('../../src/provider/degrader.js');
+    const messages = [msg([v('old')]), msg([v('new')])];
+    const out = capVideos(messages, 1);
+    expect(out).toHaveLength(2);
+    expect(out[0]!.content[0]).toEqual({ type: 'text', text: '[video removed: exceeded per-request video limit]' });
+    expect(out[1]!.content[0]).toMatchObject({ type: 'video' });
+    // 不改入参
+    expect(messages[0]!.content[0]).toMatchObject({ type: 'video' });
+  });
+
+  it('下钻 tool_result 内层：内嵌视频也参与计数与裁剪', async () => {
+    const { capVideos } = await import('../../src/provider/degrader.js');
+    const messages = [toolResultWithVideo('a'), toolResultWithVideo('b')];
+    const out = capVideos(messages, 1);
+    const first = out[0]!.content as unknown as { content: { type: string }[] }[];
+    expect(first[0]!.content[0]!.type).toBe('text');
+    expect(first[0]!.content[1]!.type).toBe('text');
+    const second = out[1]!.content as unknown as { content: { type: string }[] }[];
+    expect(second[0]!.content[1]!.type).toBe('video');
+  });
+
+  it('未超上限：原样返回同一引用（零分配）', async () => {
+    const { capVideos } = await import('../../src/provider/degrader.js');
+    const messages = [msg([v('only')])];
+    expect(capVideos(messages, 1)).toBe(messages);
+    expect(capVideos(messages, 2)).toBe(messages);
+  });
+
+  it('max_videos 缺省或为负：不裁剪（维持旧行为）', async () => {
+    const { capVideos } = await import('../../src/provider/degrader.js');
+    const messages = [msg([v('a')]), msg([v('b')]), msg([v('c')])];
+    expect(capVideos(messages, undefined)).toBe(messages);
+    expect(capVideos(messages, -1)).toBe(messages);
+  });
+
+  it('max_videos=0：全部视频换占位（一个都不发）', async () => {
+    const { capVideos } = await import('../../src/provider/degrader.js');
+    const out = capVideos([msg([v('a')]), msg([v('b')])], 0);
+    expect(out.every((m) => (m.content as { type: string }[]).every((b) => b.type === 'text'))).toBe(true);
+  });
+
+  it('degradeMessages：声明 video_in + max_videos=1 时自动裁剪，会话不再被每轮 400 卡死', async () => {
+    const { degradeMessages } = await import('../../src/provider/degrader.js');
+    // 默认能力 video_in=false（历史视频本就全换占位）；这里验的是「收了视频」的模型
+    // 在超上限时的裁剪行为，与 DEFAULT_CAPABILITY.max_videos=1 同一口径。
+    const out = degradeMessages([msg([v('a')]), msg([v('b')])], {
+      image_in: true,
+      video_in: true,
+      reasoning: true,
+      cache_control: true,
+      tool_use: true,
+      max_context_tokens: 0,
+      max_output_tokens: 0,
+      max_videos: 1,
+    });
+    expect((out[0]!.content as { type: string }[])[0]!.type).toBe('text');
+    expect((out[1]!.content as { type: string }[])[0]!.type).toBe('video');
+  });
+});

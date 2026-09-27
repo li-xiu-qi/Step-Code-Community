@@ -87,9 +87,8 @@ describe('task_wait 单次等待封顶', () => {
   });
 
   it('不传 timeout_s 时默认封顶为有限值，不是无限阻塞', async () => {
-    // 默认 300s 不便真等，改为劫持 waitFor 捕获实参后立即返回 running 快照：
-    // 断言工具确实向 manager 传了一个有限毫秒数，同时钉住「默认值存在」与「默认值 > 0」，
-    // 且不依赖等待真实流逝。
+    // 默认 30s 不便真等，改为劫持 waitFor 捕获实参后立即返回 running 快照：
+    // 断言工具确实向 manager 传了 30s 这个默认毫秒数，同时不依赖等待真实流逝。
     const mgr = new BackgroundManager();
     const id = startNeverExiting(mgr);
     const seen: unknown[] = [];
@@ -100,11 +99,31 @@ describe('task_wait 单次等待封顶', () => {
     const r = await taskWaitTool.execute({ task_id: id }, { cwd: process.cwd(), background: mgr });
     mgr.stop(id);
     expect(seen).toHaveLength(1);
-    expect(typeof seen[0]).toBe('number');
-    expect(seen[0] as number).toBeGreaterThan(0);
-    expect(seen[0] as number).toBeLessThanOrEqual(3_600_000);
+    expect(seen[0]).toBe(30_000);
+    // description 与常量同源：提示词里承诺的默认值必须就是实际用的值
+    expect(taskWaitTool.description).toContain('默认 30s');
     // 桩返回 running，工具应按超时路径给出续查手段
     expect(r.content).toContain('仍在后台运行');
+  });
+
+  it('task_output 连续两次读到相同状态与输出 → 注入反轮询提示', async () => {
+    const mgr = new BackgroundManager();
+    const id = mgr.start(
+      'echo hello',
+      process.platform === 'win32' ? 'cmd.exe' : '/bin/sh',
+      process.platform === 'win32' ? ['/c', 'echo hello'] : ['-c', 'echo hello'],
+      process.cwd(),
+    );
+    await waitUntil(() => mgr.get(id)?.status === 'completed');
+    const base = { cwd: process.cwd(), background: mgr, sessionId: 'poll-hint-session' };
+
+    const first = await taskOutputTool.execute({ task_id: id }, base);
+    expect(first.content).toContain('hello');
+    expect(first.content).not.toContain('不要连续原地轮询'); // 首次读取是冷读，不劝阻
+
+    const second = await taskOutputTool.execute({ task_id: id }, base);
+    expect(second.content).toContain('不要连续原地轮询');
+    expect(second.content).toContain('task_wait'); // 给出唯一的同步等待手段
   });
 
   it('封顶期间任务自然完成：正常返回终态，封顶不干扰正常路径', async () => {

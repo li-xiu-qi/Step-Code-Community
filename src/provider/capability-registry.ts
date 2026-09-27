@@ -28,6 +28,14 @@ export interface ModelCapability {
   image_in: boolean;
   /** 是否接受视频输入。默认 false：未声明的模型收到视频块一律投影占位（安全默认）。 */
   video_in: boolean;
+  /**
+   * 单次请求可携带的视频块上限。默认 1：StepFun 端点实测「一个视频即上限」
+   * （2026-09-24 事故：上下文里两个视频块，每轮请求都被服务端 400
+   * `The amount of videos you provided exceeds the model's limitation` 拒掉，
+   * 换模型无效，因为视频块在历史里）。发送前按此上限保留最近的视频、更早的换占位。
+   * 缺省（undefined）= 不裁剪，维持旧行为。
+   */
+  max_videos?: number;
   /** 是否支持 reasoning/thinking（含 thinking 块回灌）。 */
   reasoning: boolean;
   /** 是否接受 cache_control 字段（prompt cache 断点）。 */
@@ -53,6 +61,8 @@ export const DEFAULT_CAPABILITY: ModelCapability = {
    * 不认识的端点。视频有明确的占位降级路径（[video omitted ...]），静默劣化不成立。
    */
   video_in: false,
+  /** 单请求视频数上限默认 1（端点实测口径，理由见 {@link ModelCapability.max_videos}）。 */
+  max_videos: 1,
   /**
    * 默认保留 thinking 块。此维度只管「历史 thinking 块要不要保留」，不控制本次是否思考
    * （那是 sendThinking 与 reasoning.effort 的职责）。默认 false 会无条件删除历史思考
@@ -120,6 +130,7 @@ function matchExact<T extends { channel: string; model: string }>(
 export const CAPABILITY_KEYS = [
   'image_in',
   'video_in',
+  'video_max',
   'audio_in',
   'thinking',
   'tool_use',
@@ -138,6 +149,7 @@ export type CapabilityKey = (typeof CAPABILITY_KEYS)[number];
  *
  * `thinking` 映射到 ModelCapability.reasoning（一个是配置词，一个是内部字段名）。
  * `video_in` 映射到 ModelCapability.video_in（发送前投影把视频块换占位文本）。
+ * `video_max=N` 映射到 ModelCapability.max_videos（单请求视频数上限，N 为非负整数）。
  * `audio_in` 目前只用于工具门控，degrader 无对应降级路径，不参与请求整形、此处不映射。
  */
 export function capabilitiesToOverride(
@@ -153,12 +165,35 @@ export function capabilitiesToOverride(
     const key = negate ? c.slice(1) : c;
     if (key === 'image_in') capability.image_in = !negate;
     else if (key === 'video_in') capability.video_in = !negate;
+    else if (key.startsWith('video_max=')) {
+      // video_max=N：单请求视频数上限。非法值（非数字/负数/小数）忽略而非抛错，
+      // 与 capabilities 布尔项的宽容口径一致；显式 0 = 一个视频都不发。
+      const n = Number(key.slice('video_max='.length));
+      if (Number.isFinite(n) && n >= 0) capability.max_videos = Math.floor(n);
+    }
     else if (key === 'thinking') capability.reasoning = !negate;
     else if (key === 'tool_use') capability.tool_use = !negate;
     else if (key === 'cache_control') capability.cache_control = !negate;
   }
   if (Object.keys(capability).length === 0) return undefined;
   return { channel, model, capability };
+}
+
+/**
+ * 从 capabilities 声明里取单请求视频数上限（`video_max=N`）。
+ * 供不做完整能力解析的调用方（read_media 门控）复用同一口径，避免两处解析规则分叉。
+ */
+export function videoLimitFromCapabilities(
+  capabilities: readonly string[] | undefined,
+): number | undefined {
+  if (capabilities === undefined) return undefined;
+  for (const raw of capabilities) {
+    const c = raw.trim().toLowerCase();
+    if (!c.startsWith('video_max=')) continue;
+    const n = Number(c.slice('video_max='.length));
+    if (Number.isFinite(n) && n >= 0) return Math.floor(n);
+  }
+  return undefined;
 }
 
 /**

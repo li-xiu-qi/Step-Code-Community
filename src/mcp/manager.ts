@@ -1,8 +1,13 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { terminateProcTree } from '../agent/background/manager.js';
 import type Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 import { VERSION } from '../version.js';
+import type { ToolResultImage } from '../tools/types.js';
+
+/** MCP 回传图片的单张体量上限（base64 字符数，约 3.5MB）：防工具用超大图撑爆上下文。 */
+const MAX_MCP_IMAGE_BASE64 = 3_500_000;
 
 /** 把 MCP 工具的 JSON inputSchema 转成带类型强转的 zod schema（模型常给字符串数字/布尔）。 */
 export function mcpInputSchemaToZod(inputSchema: unknown): z.ZodTypeAny {
@@ -113,6 +118,8 @@ interface ConnectedServer {
   name: string;
   client: Client;
   tools: McpToolInfo[];
+  /** stdio 子进程 pid，server 退出后为 null。供崩溃路径同步树杀用。 */
+  pid: number | null;
 }
 
 /** 单个 server 的默认启动超时（可用 mcp.json 的 startupTimeoutMs 覆盖）。 */
@@ -154,10 +161,11 @@ export class McpManager {
     this.states.set(name, { name, status: 'pending', toolCount: 0 });
     const client = new Client({ name: 'step-code', version: VERSION });
     try {
-      const tools = await withTimeout(
+      const connected = await withTimeout(
         this.connectAndListTools(client, config),
         config.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS,
       );
+      const tools = connected.tools;
       const infos: McpToolInfo[] = tools.map((tool) => ({
         qualifiedName: qualifyMcpToolName(name, tool.name),
         serverName: name,
@@ -165,7 +173,7 @@ export class McpManager {
         description: tool.description ?? '',
         inputSchema: (tool.inputSchema ?? { type: 'object' }) as Anthropic.Tool['input_schema'],
       }));
-      this.servers.set(name, { name, client, tools: infos });
+      this.servers.set(name, { name, client, tools: infos, pid: connected.pid });
       this.states.set(name, { name, status: 'connected', toolCount: infos.length });
       return true;
     } catch (e) {
@@ -195,11 +203,13 @@ export class McpManager {
     );
   }
 
-  /** 与 server 握手并发现工具（默认 stdio transport；测试可覆盖为假实现）。 */
+  /** 与 server 握手并发现工具（默认 stdio transport；测试可覆盖为假实现）。
+   *  返回 pid 供崩溃路径同步树杀：closeAll() 是 async 的，process.exit() 不等它，
+   *  未捕获异常那条路上只写一句 void closeAll() 几乎必然无效，只能靠 taskkill。 */
   protected async connectAndListTools(
     client: Client,
     config: McpServerConfig,
-  ): Promise<Array<{ name: string; description?: string; inputSchema?: unknown }>> {
+  ): Promise<{ tools: Array<{ name: string; description?: string; inputSchema?: unknown }>; pid: number | null }> {
     const transport = new StdioClientTransport({
       command: config.command,
       args: config.args ?? [],
@@ -209,7 +219,9 @@ export class McpManager {
     });
     await client.connect(transport);
     const { tools } = await client.listTools();
-    return tools;
+    // transport.pid 是 SDK 的 getter（stdio.d.ts:79），连接成功后即有值；server 随后
+    // 退出则为 null。测试里没有真 transport，取到 undefined 一并归一成 null。
+    return { tools, pid: transport.pid ?? null };
   }
 
   /** 各 server 的当前状态（pending/connected/failed/disabled + 错误摘要 + 工具数），供 /mcp 展示。 */
@@ -228,6 +240,24 @@ export class McpManager {
       } catch {
         // 已断开或从未连上，close 报错属预期
       }
+    }
+    this.servers.clear();
+  }
+
+  /**
+   * 同步终止全部已登记 pid 的 stdio 子进程（树杀），然后清空登记。
+   *
+   * 只给「进程马上就要死」的路径用：未捕获异常、SIGHUP、stdout EIO。那些路径上
+   * closeAll() 是 async 的而调用方立刻 process.exit()，Promise 根本来不及落地，
+   * 子进程会变孤儿。Windows 上 MCP server 常是 npx/uvx/python -m 包装，孙进程还会
+   * 再逃逸一层，所以必须 taskkill /T /F 而不是单 kill。
+   *
+   * 与 closeAll() 的分工：正常退出走 async 的 closeAll()（要等 server 落盘、收尾）；
+   * 崩溃路径走这个，best-effort 不等结果。
+   */
+  killAllSync(): void {
+    for (const s of this.servers.values()) {
+      terminateProcTree({ pid: s.pid ?? undefined } as Parameters<typeof terminateProcTree>[0], 'SIGKILL');
     }
     this.servers.clear();
   }
@@ -251,21 +281,35 @@ export class McpManager {
     return undefined;
   }
 
-  /** 调用一个 MCP 工具，返回文本结果。 */
-  async callTool(qualifiedName: string, args: Record<string, unknown>): Promise<{ content: string; isError: boolean }> {
+  /** 调用一个 MCP 工具，返回文本结果；image 块透传给模型（走 ToolResult.images 通道）。 */
+  async callTool(
+    qualifiedName: string,
+    args: Record<string, unknown>
+  ): Promise<{ content: string; isError: boolean; images?: ToolResultImage[] }> {
     const found = this.find(qualifiedName);
     if (found === undefined) {
       return { content: `未找到 MCP 工具 ${qualifiedName}`, isError: true };
     }
     try {
       const result = await found.client.callTool({ name: found.info.toolName, arguments: args });
-      // 归一结果：取 text 内容
-      const blocks = (result as { content?: Array<{ type: string; text?: string }> }).content ?? [];
-      const text = blocks
-        .map((b) => (b.type === 'text' ? (b.text ?? '') : `[${b.type}]`))
-        .join('\n');
+      // 归一结果：text 块拼接，image 块进 images（模型经 tool_result 内嵌 image 块看到）
+      const blocks = (result as { content?: Array<{ type: string; text?: string; data?: string; mimeType?: string }> }).content ?? [];
+      const textParts: string[] = [];
+      const images: ToolResultImage[] = [];
+      for (const b of blocks) {
+        if (b.type === 'text') textParts.push(b.text ?? '');
+        else if (b.type === 'image' && typeof b.data === 'string' && b.data.length > 0) {
+          // 体量护栏：超大图直接进上下文会撑爆会话，跳过并在文本里说明
+          if (b.data.length > MAX_MCP_IMAGE_BASE64) {
+            textParts.push(`[图片过大已省略：约 ${Math.round(b.data.length / 1024)}KB]`);
+          } else {
+            images.push({ mediaType: b.mimeType ?? 'image/png', base64: b.data });
+          }
+        } else textParts.push(`[${b.type}]`);
+      }
+      const text = textParts.join('\n');
       const isError = (result as { isError?: boolean }).isError === true;
-      return { content: text === '' ? '[无输出]' : text, isError };
+      return { content: text === '' ? '[无输出]' : text, isError, ...(images.length > 0 ? { images } : {}) };
     } catch (e) {
       return { content: `MCP 工具调用失败：${(e as Error).message}`, isError: true };
     }
