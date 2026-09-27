@@ -7,6 +7,7 @@ import { Markdown, truncateToWidth, visibleWidth, wrapTextWithAnsi, sliceByColum
 import type { Component } from '@earendil-works/pi-tui';
 import { basename } from 'node:path';
 import type { DisplayItem, WelcomeData } from '../chat/types.js';
+import { decodePNG, HalfBlockImage } from './imageBlock.js';
 import { offloadIfNeeded as offloadLargeResult, readCachedOutput } from '../agent/outputCache.js';
 
 /** Braille 转圈帧序列，供 running 状态动态 spinner。 */
@@ -451,44 +452,65 @@ export class ItemBlock implements Component {
   }
 
 
+  /** 用户条目的图片渲染：解码 PNG 后用 half-block 字符画追加在正文之后。
+   *  解码失败或超出像素预算时降级为一行 dim 文本，不抛异常——渲染路径上的异常会冒泡成
+   *  uncaughtException 直接杀进程。缩进两空格，与正文的 '│ ' 前缀视觉对齐。 */
+  private renderUserImages(it: Extract<DisplayItem, { kind: 'user' }>, width: number): string[] {
+    if (it.images === undefined || it.images.length === 0) return [];
+    const out: string[] = [];
+    const maxWidth = Math.max(20, width - 6);
+    for (const img of it.images) {
+      const decoded = decodePNG(Buffer.from(img.base64, 'base64'));
+      if (decoded === null) {
+        out.push(c.dim(`  [图片无法渲染：${img.mediaType} ${img.width}×${img.height}]`));
+        continue;
+      }
+      out.push(...new HalfBlockImage(decoded, maxWidth).render(width - 4).map((l) => `  ${l}`));
+    }
+    return out;
+  }
+
+  private renderUser(it: Extract<DisplayItem, { kind: 'user' }>, width: number): string[] {
+    // 压缩保真原话（user_verbatim）：降权显示——去掉整行黄底、改 dim 灰色、加「原话」标记前缀。
+    // 为何必须区分：压缩过的长会话 resume 后，保真原话与真人输入在此一视同仁都高亮成黄泡，
+    // 结果是「满屏用户消息」掩盖模型输出（2026-08-18 实测会话 122e9c：14 条原话堆顶部）。
+    // 真人输入仍是高亮黄底，两相对比才分得出「这是你刚说的」还是「那是早先保留下来的」。
+    const bodyLines = wrap(it.text, width - 2);
+    const bg = c.userBg;
+    if (it.turnNum !== undefined) {
+      // 带轮次编号的 prompt 可点击：OSC 8 超链接包裹正文，点击后跳转到该轮输入框
+      const url = `step://turn/${it.turnNum}`;
+      const linked = bodyLines.map((l) => {
+        const plain = bg(c.userText(l));
+        return hyperlink(plain, url);
+      });
+      // 在首行前注入 OSC 133 A 语义标记，供 pi-tui scrollToPrompt（Ctrl+Shift+↑/↓）定位。
+      // 必须在 indent/hanging 前缀之前，使标记处于行首（scrollContentLines 正则 ^ 锚定位置 0）。
+      const prependMarker = (lines: string[]): string[] => {
+        if (lines.length > 0) lines[0] = PROMPT_MARKER + lines[0]!;
+        return lines;
+      };
+      if (it.verbatim === true) {
+        return prependMarker([...hanging(linked, c.dim('┊ 原话 '), 2), '']);
+      }
+      return prependMarker([...indent(linked, bg(c.user('│ '))), '']);
+    }
+    // 无轮次编号（开源模型/旧快照不可点）
+    if (it.verbatim === true) {
+      const body = bodyLines.map((l) => c.dim(l));
+      return [...hanging(body, c.dim('┊ 原话 '), 2), ''];
+    }
+    const body = bodyLines.map((l) => bg(c.userText(l)));
+    return [...indent(body, bg(c.user('│ '))), ''];
+  }
+
   private renderItem(width: number): string[] {
     const it = this.item;
     switch (it.kind) {
       case 'welcome':
         return renderWelcome(it.data, width);
-      case 'user': {
-        // 压缩保真原话（user_verbatim）：降权显示——去掉整行黄底、改 dim 灰色、加「原话」标记前缀。
-        // 为何必须区分：压缩过的长会话 resume 后，保真原话与真人输入在此一视同仁都高亮成黄泡，
-        // 结果是「满屏用户消息」掩盖模型输出（2026-08-18 实测会话 122e9c：14 条原话堆顶部）。
-        // 真人输入仍是高亮黄底，两相对比才分得出「这是你刚说的」还是「那是早先保留下来的」。
-        const bodyLines = wrap(it.text, width - 2);
-        const bg = c.userBg;
-        if (it.turnNum !== undefined) {
-          // 带轮次编号的 prompt 可点击：OSC 8 超链接包裹正文，点击后跳转到该轮输入框
-          const url = `step://turn/${it.turnNum}`;
-          const linked = bodyLines.map((l) => {
-            const plain = bg(c.userText(l));
-            return hyperlink(plain, url);
-          });
-          // 在首行前注入 OSC 133 A 语义标记，供 pi-tui scrollToPrompt（Ctrl+Shift+↑/↓）定位。
-          // 必须在 indent/hanging 前缀之前，使标记处于行首（scrollContentLines 正则 ^ 锚定位置 0）。
-          const prependMarker = (lines: string[]): string[] => {
-            if (lines.length > 0) lines[0] = PROMPT_MARKER + lines[0]!;
-            return lines;
-          };
-          if (it.verbatim === true) {
-            return prependMarker([...hanging(linked, c.dim('┊ 原话 '), 2), '']);
-          }
-          return prependMarker([...indent(linked, bg(c.user('│ '))), '']);
-        }
-        // 无轮次编号（开源模型/旧快照不可点）
-        if (it.verbatim === true) {
-          const body = bodyLines.map((l) => c.dim(l));
-          return [...hanging(body, c.dim('┊ 原话 '), 2), ''];
-        }
-        const body = bodyLines.map((l) => bg(c.userText(l)));
-        return [...indent(body, bg(c.user('│ '))), ''];
-      }
+      case 'user':
+        return [...this.renderUser(it, width), ...this.renderUserImages(it, width)];
       case 'assistant': {
         // 前缀灰色 ●，第一行带前缀，续行对齐
         // 走增量路径：流式输出时每帧只重算尾部未闭合 token，已闭合前缀复用缓存行。

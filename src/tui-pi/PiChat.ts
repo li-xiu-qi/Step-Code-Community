@@ -4612,9 +4612,17 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       });
     }
     if (opts?.silent !== true) {
+      const attachments =
+        extracted.imageCount > 0
+          ? this.images
+              .activeIds(text)
+              .map((id) => this.images.get(id))
+              .filter((a): a is NonNullable<typeof a> => a !== undefined)
+          : [];
       this.push({
         kind: 'user',
         text: extracted.imageCount > 0 ? `${extracted.displayText} [${extracted.imageCount} 张图]` : text,
+        ...(attachments.length > 0 ? { images: attachments } : {}),
       });
     }
     // 贴图路径告知模型：粘贴时已 offload 到附件仓（内容寻址），把绝对路径附在发给
