@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- **出站代理支持**：进程启动时若存在 `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` 环境变量，全局 fetch 自动通过对应代理发送请求。此前 Node.js 内置 fetch 默认不读取代理环境变量，在需要代理的网络环境（代理网络、受限容器内的域名白名单代理等）下所有模型 API 请求直连失败（DNS 解析错误），agent 零工具调用即退出。未配置代理环境变量时网络行为不变。
+
+### Removed
+
+- **拆除终端图片渲染链路**（2026-09-22，用户决定）：pi-tui 的能力检测对 Windows Terminal 恒报 `images:null`，内联 kitty graphics 序列在 WT alt-screen 下从未走通；此前按「检测 WT ≥1.22 则强制启用 kitty」打的补丁（`src/tui-pi/imageCaps.ts`）在 WT 里实测留下大片空白占位。整条输出侧渲染链路移除：`imageCaps.ts`（能力探测修正，连测试）、`blocks.ts` 的 kitty 序列发射分支与图片占位回显、`DisplayItem` 的 `images` / `resultImages` 字段、`PiChat` 的 `resolveLiveImages` / `replayImages`（stepref→base64 还原）、`historyReplay` 的图片解析器与 `resultImages` 回填。保留全部输入侧能力（Alt+V 贴图、附件仓 offload、发给多模态模型的 image content block、`[N 张图]` 计数标签），模型侧历史图片块仍按 wire 原样回灌，不受影响。工具结果里的图片改为在结果文本尾部拼一行「（N 张图片结果，终端不显示）」，不为不可见的图片占版面。
+
 ### Fixed
 
 - **`task_wait` 单次等待封顶，不再无限期挂住回合**：等待后台任务终态此前没有自身超时，唯一兜底是后台任务的绝对超时（`[background].bash_task_timeout_s`）。命令让子进程永不退出时（例如通过 ssh 起了远端常驻进程，远端持有 channel 使 ssh 不返回），那条兜底链永不触发，`task_wait` 会一直阻塞到用户按 Esc 才停，实测最长一次挂住 24 分钟。现在单次等待默认 300 秒封顶（`timeout_s` 可调，上限 3600 秒），到点未到终态就返回一条「仍在运行」的进度快照，任务本身不中断，可继续查输出或再次等待。封顶与后台任务绝对超时是两条独立的链：后者决定任务何时被杀，前者只决定这次调用何时返回。超时返回标注为「仍在运行」而非完成或失败，避免把半截输出当成最终结果。
