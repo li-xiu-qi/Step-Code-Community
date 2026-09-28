@@ -15,6 +15,7 @@ import { ImageBlock, type DecodedImage } from './imageBlock.js';
 import {
   clampCenter,
   cropAndScale,
+  fitImageCells,
   inspectionRegion,
   previewViewportPx,
   PREVIEW_ZOOM_LEVELS,
@@ -178,15 +179,8 @@ export class ImagePreviewOverlay implements Component {
     const availCols = Math.max(1, Math.min(cardCols - CARD_CHROME_COLS, totalRows === 0 ? 0 : Number.MAX_SAFE_INTEGER));
     const availRows = Math.max(1, cardRows - CARD_CHROME_ROWS);
     if (this.zoom === 0) {
-      // fit：按图宽高比换算（cell 9×18，ratio = h/w * 18/9 = h/(2w)）
-      const ratio = Math.max(0.1, Math.min(10, this.image.height / Math.max(1, this.image.width)));
-      let cols = availCols;
-      let rows = Math.max(1, Math.round(cols / (2 * ratio)));
-      if (rows > availRows) {
-        rows = availRows;
-        cols = Math.max(1, Math.min(availCols, Math.round(2 * rows * ratio)));
-      }
-      return { cols, rows };
+      // fit：与 ImageBlock 内部同公式（fitImageCells），保证输出行数与预留一致
+      return fitImageCells(this.image.width, this.image.height, availCols, availRows);
     }
     return { cols: availCols, rows: availRows };
   }
@@ -203,12 +197,15 @@ export class ImagePreviewOverlay implements Component {
     this.imageCols = cols;
     this.imageRows = rows;
 
-    // 图片行：zoom=0 整图 fit；zoom>0 裁剪 + 最近邻放大到区满
+    // 图片行：zoom=0 整图 fit；zoom>0 裁剪 + 最近邻放大到区满。
+    // 两个分支都传 maxHeightCells=rows：ImageBlock 的内部 fit 与 computeImageCells
+    // 同公式，保证输出行数与卡片预留一致（卡片几何依赖图片实际行数）。
     const imageLines = this.zoom === 0
-      ? new ImageBlock(this.image, cols).render(cols)
+      ? new ImageBlock(this.image, cols, rows).render(cols)
       : new ImageBlock(
           cropAndScale(this.image, inspectionRegion(this.image, previewViewportPx(cols, rows), this.zoom, this.center), cols * 9, rows * 18),
           cols,
+          rows,
         ).render(cols);
 
     const title = `${this.meta.mediaType.replace(/^image\//u, '').toUpperCase()} · ${this.meta.width}×${this.meta.height} · ${formatBytes(this.meta.bytes)}${this.zoom === 0 ? '' : ` · ${this.zoom * 100}%`}${this.meta.name !== undefined && this.meta.name !== '' ? ` · ${this.meta.name}` : ''}`;

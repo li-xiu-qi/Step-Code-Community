@@ -4,6 +4,7 @@
 import { describe, expect, it } from 'vitest';
 import type { DecodedImage } from '../../src/tui-pi/imageBlock.js';
 import {
+  fitImageCells,
   clampCenter,
   cropAndScale,
   inspectionRegion,
@@ -109,5 +110,35 @@ describe('cropAndScale', () => {
 describe('previewViewportPx', () => {
   it('字符格按 9×18px 折算', () => {
     expect(previewViewportPx(60, 20)).toEqual({ left: 0, top: 0, width: 540, height: 360 });
+  });
+});
+
+describe('fitImageCells', () => {
+  it('宽图：宽度顶格、高度按比例，超高时整体收缩', () => {
+    const c = fitImageCells(200, 100, 60, 20); // ratio 0.5
+    expect(c.cols).toBe(Math.min(60, Math.round(2 * 20 * 0.5))); // 20
+    expect(c.rows).toBe(20);
+  });
+
+  it('高图：宽度顶格、高度按比例（不触上限）', () => {
+    const c = fitImageCells(100, 200, 60, 20); // ratio 2 → 60 格宽、15 行
+    expect(c.cols).toBe(60);
+    expect(c.rows).toBe(15);
+  });
+
+  it('极端比例被钳：不返回 0 或负数', () => {
+    const wide = fitImageCells(4000, 10, 60, 20);
+    expect(wide.rows).toBeGreaterThanOrEqual(1);
+    expect(wide.cols).toBeLessThanOrEqual(60);
+    const tall = fitImageCells(10, 4000, 60, 20);
+    expect(tall.cols).toBeGreaterThanOrEqual(1);
+    expect(tall.rows).toBeLessThanOrEqual(20);
+  });
+
+  it('格宽高比经系数 2 换算后与像素宽高比一致（不变形）', () => {
+    const c = fitImageCells(300, 150, 40, 30); // ratio 0.5 → 触 30 行上限
+    expect(c.rows).toBe(30);
+    expect(c.cols).toBe(Math.min(40, Math.round(2 * 30 * 0.5))); // 30
+    expect((c.cols / c.rows) / 2).toBeCloseTo(150 / 300, 1); // 0.5
   });
 });
