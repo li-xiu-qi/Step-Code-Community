@@ -383,7 +383,10 @@ export function thumbnailCells(
     const cols = Math.max(1, Math.min(10, available));
     return { cols, rows: Math.max(1, Math.round(cols / 2)) };
   }
-  const ratio = Math.max(0.25, Math.min(4, imgHeight / Math.max(1, imgWidth)));
+  // ratio 是**宽高比**（imgWidth/imgHeight，钳 [0.25, 4]），与 dsh-TUI previewSize 同向。
+  // 曾把方向抄反成高宽比：超宽图（长截图 1920x414）rows 算出 48 行触 12 行上限后 cols 回缩
+  // 到 6，渲染成 6x12 竖条——观感就是「缩得太过分」。正确方向下宽图 cols 顶格、rows 按比例小。
+  const ratio = Math.max(0.25, Math.min(4, imgWidth / Math.max(1, imgHeight)));
   const maxCols = Math.max(1, Math.min(24, available));
   const maxRows = 12;
   let cols = maxCols;
