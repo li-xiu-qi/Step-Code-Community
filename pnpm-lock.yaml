@@ -5,7 +5,7 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
-  '@earendil-works/pi-tui@0.84.4': da531b2b191af63f21f3c07fee097f436dbdf2d9e4e1a68818ec10946da8ef90
+  '@earendil-works/pi-tui@0.84.4': 742229b9b9d522ca086ffe17faab0320337f3d963c47f2ac09576ef383a5cf6c
 
 importers:
 
@@ -16,7 +16,7 @@ importers:
         version: 0.112.5(zod@4.4.3)
       '@earendil-works/pi-tui':
         specifier: 0.84.4
-        version: 0.84.4(patch_hash=da531b2b191af63f21f3c07fee097f436dbdf2d9e4e1a68818ec10946da8ef90)
+        version: 0.84.4(patch_hash=742229b9b9d522ca086ffe17faab0320337f3d963c47f2ac09576ef383a5cf6c)
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0
         version: 1.30.0(zod@4.4.3)
@@ -47,6 +47,9 @@ importers:
       quickjs-emscripten:
         specifier: ^0.32.0
         version: 0.32.0
+      sixel:
+        specifier: ^0.16.0
+        version: 0.16.0
       smol-toml:
         specifier: ^1.7.0
         version: 1.8.0
@@ -1438,6 +1441,9 @@ packages:
     resolution: {integrity: sha512-mz9VXphOxQWX3eQ/uXCtm6upltoN0DLx8Zb5T4TFC4FHB7S9FDPGre8CfLWqPWQQH/GrQYd2AXhhVM5LDpYx6Q==}
     engines: {node: '>=20.12.2'}
 
+  sixel@0.16.0:
+    resolution: {integrity: sha512-xicu6Y6Cyhmv5rjyHxq2r5RnKerlL/nyZEGjOU5bLCshXkZryc9JFJThTCKPOAtWXCfeWquEKFVFfMPcTD25PA==}
+
   smol-toml@1.8.0:
     resolution: {integrity: sha512-kCZr2V3ch9i00x8zXRhjUNVcjG9ijES5dDudkXvUVCT5QlJNQWElSJdZqyPemffHoLNUYwOcou0Fy+ojN0uHSQ==}
     engines: {node: '>= 18'}
@@ -1707,7 +1713,7 @@ snapshots:
 
   '@borewit/text-codec@0.2.2': {}
 
-  '@earendil-works/pi-tui@0.84.4(patch_hash=da531b2b191af63f21f3c07fee097f436dbdf2d9e4e1a68818ec10946da8ef90)':
+  '@earendil-works/pi-tui@0.84.4(patch_hash=742229b9b9d522ca086ffe17faab0320337f3d963c47f2ac09576ef383a5cf6c)':
     dependencies:
       get-east-asian-width: 1.6.0
       marked: 18.0.5
@@ -3017,6 +3023,8 @@ snapshots:
   siginfo@2.0.0: {}
 
   simple-xml-to-json@1.2.7: {}
+
+  sixel@0.16.0: {}
 
   smol-toml@1.8.0: {}
 

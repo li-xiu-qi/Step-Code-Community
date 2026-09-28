@@ -225,6 +225,32 @@ index 6661b31cfacfef8e3385fd12da9626e851d97e96..b18fb5d5c1617bb209b3605072c3fd81
  export function getScrollViewsAt(frame, x, y) {
      const result = [];
      const visit = (box, depth) => {
+diff --git a/dist/terminal-image.js b/dist/terminal-image.js
+index 4558ce23e3e073da2f17337d2cff810c590dfca5..129940c04706964c8138309c11208c578d8d6be6 100644
+--- a/dist/terminal-image.js
++++ b/dist/terminal-image.js
+@@ -138,13 +138,19 @@ export function setCapabilities(caps) {
+ }
+ const KITTY_PREFIX = "\x1b_G";
+ const ITERM2_PREFIX = "\x1b]1337;File=";
++// step-code-pi patch: sixel DCS prefix. Windows Terminal supports sixel only (kitty APC
++// and iTerm2 OSC 1337 are silently swallowed), so sixel lines must join the image-line
++// exemption: otherwise a 400KB sixel sequence hits the width guard in tui-main-screen.js
++// and crashes the process (incremental path writes crash log then throws) or gets sliced
++// into fragments that render as a black block (first-render path).
++const SIXEL_PREFIX = "\x1bP";
+ export function isImageLine(line) {
+     // Fast path: sequence at line start (single-row images)
+-    if (line.startsWith(KITTY_PREFIX) || line.startsWith(ITERM2_PREFIX)) {
++    if (line.startsWith(KITTY_PREFIX) || line.startsWith(ITERM2_PREFIX) || line.includes(SIXEL_PREFIX)) {
+         return true;
+     }
+     // Slow path: sequence elsewhere (multi-row images have cursor-up prefix)
+-    return line.includes(KITTY_PREFIX) || line.includes(ITERM2_PREFIX);
++    return line.includes(KITTY_PREFIX) || line.includes(ITERM2_PREFIX) || line.includes(SIXEL_PREFIX);
+ }
+ /**
+  * Generate a random image ID for Kitty graphics protocol.
 diff --git a/dist/tui-alt-screen.js b/dist/tui-alt-screen.js
 index 8bfcffd4dd99653930ec0a88055c18e14943e363..03779ebf385a5122c7290761a917c606f0eecd78 100644
 --- a/dist/tui-alt-screen.js
