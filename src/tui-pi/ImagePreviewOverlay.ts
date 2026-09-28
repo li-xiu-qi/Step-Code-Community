@@ -4,7 +4,8 @@
  * 交互设计（对标实现）：Esc/q 或点击卡片外关闭；0 适配、1/2/4/8 直达缩放档、
  * +/- 升降档；方向键与 hjkl 平移；工具栏按钮可点（鼠标按行列命中）；滚轮上下
  * 平移、拖拽平移。zoom>0 时先裁原图再最近邻放大（见 imageInspection.ts），
- * 每个源像素是实心块，看代码截图时分毫毕现。
+ * 每个源像素是实心块，看代码截图时分毫毕现。底部一行显示原图落盘路径，
+ * 「原图」按钮用系统默认程序打开（小图内联未落盘时先导出临时文件再打开）。
  *
  * 与基于布局树的框架（点击处理器挂节点、布局层算命中）不同，本方是 string[] 渲染：
  * 卡片几何由 render 现算并登记（工具栏行号与按钮列区间），handleMouse 按同一函数
@@ -30,10 +31,12 @@ export interface PreviewImageMeta {
   readonly height: number;
   readonly bytes: number;
   readonly name?: string;
+  /** 落盘的原图绝对路径（attach 时 offload 得到）；小图内联不落盘时为 undefined。 */
+  readonly path?: string;
 }
 
-/** 卡片固定 chrome：上边框 + 下边框 + 工具栏 + 图片上下各一空行。 */
-const CARD_CHROME_ROWS = 5;
+/** 卡片固定 chrome：上边框 + 下边框 + 工具栏 + 原图行 + 图片上下各一空行。 */
+const CARD_CHROME_ROWS = 6;
 const CARD_CHROME_COLS = 4;
 const MIN_CARD_COLS = 40;
 /** 小于这个尺寸终端不弹预览（卡片放不下）：调用方应拦住。 */
@@ -68,6 +71,8 @@ export class ImagePreviewOverlay implements Component {
   private readonly meta: PreviewImageMeta;
   private readonly close: () => void;
   private readonly requestRender: () => void;
+  /** 「原图」按钮：用系统默认程序打开原文件（PiChat 侧实现，含小图导出兜底）。 */
+  private readonly openOriginal?: () => void;
 
   /**
    * Component 接口要求。预览内容是外部图片，没有内部缓存可失效：
@@ -80,11 +85,13 @@ export class ImagePreviewOverlay implements Component {
     meta: PreviewImageMeta;
     close: () => void;
     requestRender: () => void;
+    openOriginal?: () => void;
   }) {
     this.image = opts.image;
     this.meta = opts.meta;
     this.close = opts.close;
     this.requestRender = opts.requestRender;
+    this.openOriginal = opts.openOriginal;
     this.center = { x: opts.image.width / 2, y: opts.image.height / 2 };
   }
 
@@ -217,6 +224,7 @@ export class ImagePreviewOverlay implements Component {
     for (const l of imageLines) card.push(this.frameImageLine(l, cardCols));
     card.push('');
     card.push(toolbar.text);
+    card.push(this.originalRow(cardCols));
     card.push('╰' + '─'.repeat(Math.max(0, cardCols - 2)) + '╯');
     // 工具栏在卡片内的行号（卡片从 topPad 开始）
     const toolbarRowInCard = 2 + imageLines.length + 1;
@@ -244,6 +252,7 @@ export class ImagePreviewOverlay implements Component {
   /** 工具栏：画的与点的同一份数据。 */
   private buildToolbar(cardCols: number): { text: string; buttons: ToolbarButton[] } {
     const mk = (label: string, title: string, run: () => void) => ({ label, title, run });
+    const openOriginal = (): void => this.openOriginal?.();
     const defs = [
       mk('适配', '整图放入预览区', () => this.setZoom(0)),
       mk('100%', '原始像素 1:1', () => this.setZoom(1)),
@@ -253,6 +262,7 @@ export class ImagePreviewOverlay implements Component {
       mk('↑', '上移', () => this.pan(0, -1)),
       mk('↓', '下移', () => this.pan(0, 1)),
       mk('→', '右移', () => this.pan(1, 0)),
+      mk('原图', '用系统默认程序打开原文件', openOriginal),
       mk('Esc', '关闭预览', () => this.close()),
     ];
     const buttons: ToolbarButton[] = [];
@@ -270,6 +280,34 @@ export class ImagePreviewOverlay implements Component {
     const shifted = buttons.map((b) => ({ ...b, startCol: b.startCol + pad + 2, endCol: b.endCol + pad + 2 }));
     return { text: `│ ${' '.repeat(pad)}${text}${' '.repeat(Math.max(0, cardCols - CARD_CHROME_COLS - pad - col))} │`, buttons: shifted };
   }
+  /**
+   * 底部原图行：显示落盘路径（小图内联时提示导出兜底）。
+   * 路径可能超宽：保「原图：」标签与尾部（文件名在尾），中间省略——只截尾会把
+   * 标签一起吃掉，用户看到一行莫名的不明路径开头。
+   */
+  private originalRow(cardCols: number): string {
+    const inner = Math.max(1, cardCols - CARD_CHROME_COLS);
+    const label = '原图：';
+    const raw = this.meta.path !== undefined && this.meta.path !== ''
+      ? `${label}${this.meta.path}`
+      : '原图：未落盘（小图内联），点 [原图] 导出并打开';
+    let text: string;
+    if (visibleWidth(raw) <= inner) {
+      text = raw;
+    } else if (raw.startsWith(label)) {
+      const keep = Math.max(1, inner - visibleWidth(label) - 1); // 留 1 列 ellipsis
+      text = `${label}…${tailChars(raw, keep)}`;
+    } else {
+      text = truncateToWidth(raw, inner, '…');
+    }
+    return `│ ${text}${' '.repeat(Math.max(0, inner - visibleWidth(text)))} │`;
+  }
+}
+
+/** 取字符串尾部 n 个字符（路径辨识信息在尾部）。 */
+function tailChars(raw: string, n: number): string {
+  const chars = [...raw];
+  return chars.slice(Math.max(0, chars.length - n)).join('');
 }
 
 /** `╭─── title ───╮`，标题已由调用方备好。 */
