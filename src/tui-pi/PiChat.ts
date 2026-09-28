@@ -66,7 +66,7 @@ import { SessionQueueStore } from '../agent/sessionQueue/store.js';
 import { sendReadReceipts } from '../agent/sessionQueue/receipt.js';
 import { canOverwriteTitle, generateSessionTitle } from '../session/title.js';
 import { TerminalTitleWriter } from '../chat/terminalTitle.js';
-import { aggregateModelUsage } from '../session/usageReport.js';
+import { aggregateModelUsage, aggregateUsageByTime, type UsageTimeBucket } from '../session/usageReport.js';
 import type { WireEvent } from '../agent/wirelog.js';
 import { renderSkillActivation, skillListing, type SkillRegistry } from '../skill/registry.js';
 import type { ReflectOptions } from '../agent/reflect.js';
@@ -89,7 +89,7 @@ import { clearUndoSnapshots, computeUndo, popUndoSnapshots, pushUndoSnapshot, ty
 import { historyToDisplayItems } from '../chat/historyReplay.js';
 import { planTurnEnd } from '../chat/turnEnd.js';
 import { formatDuration } from '../chat/duration.js';
-import { formatUsageReport } from '../chat/usagePanel.js';
+import { formatUsageByTime, formatUsageReport } from '../chat/usagePanel.js';
 import { parseThinkArgs, THINK_CHOICES, thinkLevelsOf, thinkStreamParam, type ThinkOverride } from '../chat/thinkCommand.js';
 import { scanFileIndex } from '../chat/fileIndex.js';
 import { applyCtrlB } from '../chat/ctrlB.js';
@@ -2300,9 +2300,11 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
         });
         return;
 
-      case 'usage':
-        this.showUsage(args === '--all');
+      case 'usage': {
+        const usageArgs = parseUsageArgs(args);
+        this.showUsage(usageArgs.all, usageArgs.bucket);
         return;
+      }
 
       case 'context':
         this.push({ kind: 'note', text: this.buildContextReport() });
@@ -3465,9 +3467,26 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
   /**
    * token 用量统计。数据源是已落盘的 model.usage wire 事件，不碰会话状态。
    * --all 的范围只到当前 cwd：跨目录会把别的项目的会话读进来。
+   *
+   * bucket 非空时切时间维度（-d/-w/-m）：范围固定本目录全部会话
+   * （与 --all 同源），呈现从「按模型」换成「按时间」。
    */
-  private showUsage(wantAll: boolean): void {
+  private showUsage(wantAll: boolean, bucket?: UsageTimeBucket): void {
     try {
+      if (bucket !== undefined) {
+        // 用 listWireSessionIds 而非 list：后者按 .json 快照列举，会漏掉有事件日志但没走到 save 的会话
+        const ids = this.deps.store.listWireSessionIds(this.deps.ctx.cwd);
+        const events = ids.flatMap((id) => this.deps.store.loadWire(this.deps.ctx.cwd, id));
+        this.push({
+          kind: 'note',
+          text: formatUsageByTime(
+            aggregateUsageByTime(events, bucket),
+            bucket,
+            `本目录全部会话（${ids.length} 个）`,
+          ),
+        });
+        return;
+      }
       if (wantAll) {
         // 用 listWireSessionIds 而非 list：后者按 .json 快照列举，会漏掉有事件日志但没走到 save 的会话
         const ids = this.deps.store.listWireSessionIds(this.deps.ctx.cwd);
@@ -5288,6 +5307,35 @@ function isDirectoryPath(path: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * 解析 `/usage` 的参数。
+ *
+ * bucket 取单字符短参（-d/-w/-m）为主，同时收全拼与 --day 式长参：
+ * 短参是给「每天敲一次」的快手用法，长参留给写进脚本或记不清短参的时刻。
+ * --all 仍保留原语义（按模型汇总本目录全部会话），但指定了 bucket 时
+ * 范围自动就是全部会话——单会话跨不过时间分桶，按会话出时间表没有意义。
+ */
+function parseUsageArgs(args: string): { all: boolean; bucket?: UsageTimeBucket } {
+  const tokens = args.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const all = tokens.includes('--all');
+  const BUCKET_ALIASES: Readonly<Record<string, UsageTimeBucket>> = {
+    '-d': 'day',
+    '--day': 'day',
+    day: 'day',
+    '-w': 'week',
+    '--week': 'week',
+    week: 'week',
+    '-m': 'month',
+    '--month': 'month',
+    month: 'month',
+  };
+  for (const tok of tokens) {
+    const bucket = BUCKET_ALIASES[tok];
+    if (bucket !== undefined) return { all: true, bucket };
+  }
+  return { all };
 }
 
 export { c as piColors };
