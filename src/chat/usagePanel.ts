@@ -1,10 +1,13 @@
 import { t } from '../i18n.js';
 import {
   cacheHitRate,
+  DEFAULT_BUCKET_LIMIT,
   totalInput,
   TOTAL_ROW_NAME,
   type ModelUsageStats,
+  type TimeBucketUsage,
   type UsageReport,
+  type UsageTimeBucket,
 } from '../session/usageReport.js';
 import { formatCount } from './duration.js';
 
@@ -49,6 +52,107 @@ function renderHeader(nameWidth: number): string {
     'cached'.padStart(COL.tokens),
     'hit%'.padStart(COL.rate),
   ].join('');
+}
+
+/**
+ * `/usage -d|-w|-m` 的文本呈现：一行一个时间桶，末尾跟一条按量归一的横条。
+ *
+ * 选表格加横条而不是 donut：环形图回答「构成」，而日/周/月要回答「趋势」，
+ * 趋势用长度编码比用角度编码好读；终端里也没有真正的图形能力，
+ * 方块字符近似出的环形在等宽字体下边缘是锯齿的，收益不抵成本。
+ *
+ * 横条只做长度归一，不上色：本模块与 {@link formatUsageReport} 一样是
+ * 纯文本层，颜色交给 transcript 的 note 块统一处理，避免两处各着一半
+ * 在同一块输出里撞色。
+ */
+const BAR_MAX = 16;
+const BAR_CHAR = '▇';
+
+/** 桶标签：日 MM-DD、周 MM-DD~MM-DD（周一起算）、月 YYYY-MM。 */
+function bucketLabel(b: TimeBucketUsage, bucket: UsageTimeBucket): string {
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  if (bucket === 'month') {
+    return `${b.start.getFullYear()}-${pad(b.start.getMonth() + 1)}`;
+  }
+  const from = `${pad(b.start.getMonth() + 1)}-${pad(b.start.getDate())}`;
+  if (bucket === 'day') return from;
+  // 周：start 是周一，+6 天即周日。用 new Date 加法而不是算毫秒，
+  // 跨月与夏令时都不会错。
+  const end = new Date(b.start.getFullYear(), b.start.getMonth(), b.start.getDate() + 6);
+  return `${from}~${pad(end.getMonth() + 1)}-${pad(end.getDate())}`;
+}
+
+/** 横条长度：按本组最大值归一，至少 1 格（tokens > 0 才调用）。 */
+function bar(tokens: number, max: number): string {
+  if (tokens <= 0 || max <= 0) return '';
+  const cells = Math.max(1, Math.round((tokens / max) * BAR_MAX));
+  return BAR_CHAR.repeat(cells);
+}
+
+/**
+ * 渲染时间维度用量报告。
+ *
+ * @param rows {@link aggregateUsageByTime} 的结果，时间升序。
+ * @param bucket 粒度，用于标签格式与默认回看量的文案。
+ * @param scopeLabel 统计范围描述（本工作目录全部会话）。
+ */
+export function formatUsageByTime(
+  rows: readonly TimeBucketUsage[],
+  bucket: UsageTimeBucket,
+  scopeLabel: string,
+): string {
+  if (rows.length === 0) {
+    return t('app.usage.timeNone', {
+      bucket: t(`app.usage.bucket.${bucket}`),
+      limit: String(DEFAULT_BUCKET_LIMIT[bucket]),
+    });
+  }
+
+  const labelWidth = Math.max(...rows.map((r) => bucketLabel(r, bucket).length));
+  const max = Math.max(...rows.map((r) => r.tokens));
+  const totalTokens = rows.reduce((acc, r) => acc + r.tokens, 0);
+  const totalTurns = rows.reduce((acc, r) => acc + r.turns, 0);
+
+  const lines: string[] = [
+    t('app.usage.timeHeader', {
+      scope: scopeLabel,
+      bucket: t(`app.usage.bucket.${bucket}`),
+      turns: String(totalTurns),
+      tokens: formatCount(totalTokens),
+    }),
+    '',
+    // 列间固定两空格：turns 是 padStart(6) 的定宽列，数字恰好 6 位时
+    // 若只靠 padEnd(labelWidth) 分隔会与标签贴在一起（月标签 2026-08 就是 7 字符满列宽）。
+    [
+      '  ',
+      'time'.padEnd(labelWidth),
+      '  ',
+      'turns'.padStart(6),
+      '  ',
+      'tokens'.padStart(12),
+      '  ',
+      'share'.padStart(7),
+    ].join(''),
+  ];
+  for (const r of rows) {
+    const share = totalTokens > 0 ? `${((r.tokens / totalTokens) * 100).toFixed(1)}%` : '—';
+    lines.push(
+      [
+        '  ',
+        bucketLabel(r, bucket).padEnd(labelWidth),
+        '  ',
+        String(r.turns).padStart(6),
+        '  ',
+        formatCount(r.tokens).padStart(12),
+        '  ',
+        share.padStart(7),
+        '  ',
+        bar(r.tokens, max),
+      ].join(''),
+    );
+  }
+
+  return lines.join('\n');
 }
 
 /** 命中率低到值得提示的模型（输入量够大才算，避免小样本误报）。 */

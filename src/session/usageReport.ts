@@ -115,3 +115,101 @@ export function aggregateModelUsage(events: readonly WireEvent[]): UsageReport {
 
   return { rows, total };
 }
+
+/** 时间分桶粒度：自然日 / 周（周一起）/ 自然月。 */
+export type UsageTimeBucket = 'day' | 'week' | 'month';
+
+/** 一个时间桶的用量累计。tokens 是服务端口径总量（input + output + cacheRead + cacheCreation）。 */
+export interface TimeBucketUsage {
+  /** 桶的起始时刻（本地时区）；同粒度的桶按它排序。 */
+  start: Date;
+  /** 桶内模型往返轮次数。 */
+  turns: number;
+  /** 服务端 usage 四项相加的总量。 */
+  tokens: number;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheCreation: number;
+}
+
+/** 各粒度默认回看多少个桶：日看两周、周看两月、月看半年。 */
+export const DEFAULT_BUCKET_LIMIT: Readonly<Record<UsageTimeBucket, number>> = {
+  day: 14,
+  week: 8,
+  month: 6,
+};
+
+/**
+ * 事件时间戳 → 所属桶的起始时刻（本地时区）。
+ *
+ * 时区取本机而不是 UTC：wire 事件的 ts 是 UTC ISO 字符串，而用户说的
+ * 「今天」「这周」按本地日历成立。混用会让凌晨的用量归到前一天，
+ * 报表与用户感知对不上。Date 的 getFullYear/getMonth/getDate/getDay
+ * 本身就是本地时区语义，直接用来重组桶起点即可。
+ */
+function bucketStart(ts: string, bucket: UsageTimeBucket): Date | null {
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return null;
+  if (bucket === 'day') return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  if (bucket === 'month') return new Date(d.getFullYear(), d.getMonth(), 1);
+  // 周：getDay() 周日为 0，换算成「距周一几天」后回退，得到本周一 00:00。
+  // 中文语境一周从周一开始；若从周日切，「周末」会被劈成两半，日报看着像少了一天。
+  const mondayOffset = (d.getDay() + 6) % 7;
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate() - mondayOffset);
+}
+
+function emptyBucket(start: Date): TimeBucketUsage {
+  return { start, turns: 0, tokens: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
+}
+
+/**
+ * 按时间分桶聚合用量（`/usage -d|-w|-m` 的数据层）。
+ *
+ * 与 {@link aggregateModelUsage} 的两点区别：
+ * - 分组键是时间桶而非模型，两者可在同一份事件流上分别回答
+ *   「哪些模型烧得多」和「什么时候烧得多」；
+ * - 只返回**有用量**的桶，不用连续时间轴填空。空桶（一整天没打开 CLI）
+ *   填进来会稀释对比基线，而缺失本身在「最近 N 个桶」的标题里已经交代。
+ *
+ * 返回按时间升序（老 → 新），取最近的 limit 个。升序而不是降序，因为
+ * 人读趋势是从左到右，降序要把「最近」放在表格第一行，与时间直觉相反。
+ *
+ * ts 解析失败的事件被跳过：ts 是 model.usage 的必填字段，解析失败即脏数据，
+ * 它没有可信的归属日，硬塞进某个桶会制造出不存在的用量日。
+ */
+export function aggregateUsageByTime(
+  events: readonly WireEvent[],
+  bucket: UsageTimeBucket,
+  limit: number = DEFAULT_BUCKET_LIMIT[bucket],
+): TimeBucketUsage[] {
+  const byStart = new Map<number, TimeBucketUsage>();
+
+  for (const ev of events) {
+    if (ev.type !== 'model.usage') continue;
+    const start = bucketStart(ev.ts, bucket);
+    if (start === null) continue;
+    const key = start.getTime();
+    let row = byStart.get(key);
+    if (row === undefined) {
+      row = emptyBucket(start);
+      byStart.set(key, row);
+    }
+    const input = ev.inputTokens ?? 0;
+    const output = ev.outputTokens ?? 0;
+    const cacheRead = ev.cacheReadTokens ?? 0;
+    const cacheCreation = ev.cacheCreationTokens ?? 0;
+    row.turns += 1;
+    row.input += input;
+    row.output += output;
+    row.cacheRead += cacheRead;
+    row.cacheCreation += cacheCreation;
+    // totalTokens 缺失时按四字段自补：旧数据与测试构造事件可能不带该字段，
+    // 而 NaN 会让整列排序与横条长度失控。
+    row.tokens += ev.totalTokens ?? input + output + cacheRead + cacheCreation;
+  }
+
+  return [...byStart.values()]
+    .sort((a, b) => a.start.getTime() - b.start.getTime())
+    .slice(Math.max(0, byStart.size - Math.max(1, limit)));
+}

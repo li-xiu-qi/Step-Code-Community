@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { I18N_TABLES, setLocale } from '../../src/i18n.js';
 import { SLASH_COMMANDS, busyRoute } from '../../src/chat/commands.js';
-import type { ModelUsageStats, UsageReport } from '../../src/session/usageReport.js';
+import type { ModelUsageStats, TimeBucketUsage, UsageReport } from '../../src/session/usageReport.js';
 import { TOTAL_ROW_NAME } from '../../src/session/usageReport.js';
 import {
+  formatUsageByTime,
   formatUsageReport,
   lowHitModels,
   LOW_HIT_INPUT_FLOOR,
@@ -120,5 +121,80 @@ describe('/usage 命令注册', () => {
   it('是只读命令：busy 时即时执行，不排队到回合边界', () => {
     expect(busyRoute('usage', '')).toBe('instant');
     expect(busyRoute('usage', '--all')).toBe('instant');
+  });
+});
+
+describe('formatUsageByTime', () => {
+  function bucket(start: Date, turns: number, tokens: number): TimeBucketUsage {
+    return { start, turns, tokens, input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
+  }
+
+  const mon = new Date(2026, 8, 28);
+  const sun = new Date(2026, 8, 27);
+
+  it('无数据时给提示文案，不渲染空表', () => {
+    const text = formatUsageByTime([], 'day', '本目录全部会话（3 个）');
+    expect(text).toBe(I18N_TABLES.zh['app.usage.timeNone'].replace('{limit}', '14').replace('{bucket}', '日'));
+  });
+
+  it('日桶标签 MM-DD，含 scope 与合计', () => {
+    const text = formatUsageByTime(
+      [bucket(sun, 3, 1000), bucket(mon, 5, 4000)],
+      'day',
+      '本目录全部会话（3 个）',
+    );
+    expect(text).toContain('本目录全部会话（3 个）');
+    expect(text).toContain('按日');
+    expect(text).toContain('09-27');
+    expect(text).toContain('09-28');
+    expect(text).toContain('8 轮');
+    expect(text).toContain('共 5k tokens');
+  });
+
+  it('周桶标签为周一~周日，跨月正确', () => {
+    // 09-28 是周一，桶内最后一天是 10-04
+    const text = formatUsageByTime([bucket(mon, 2, 100)], 'week', 's');
+    expect(text).toContain('09-28~10-04');
+  });
+
+  it('月桶标签 YYYY-MM', () => {
+    const text = formatUsageByTime([bucket(new Date(2026, 8, 1), 2, 100)], 'month', 's');
+    expect(text).toContain('2026-09');
+  });
+
+  it('标签占满列宽时 turns 不粘连（真机回归：2026-08 与 6 位轮次贴在一起）', () => {
+    // 月标签 2026-08 长 7 字符，恰好等于 labelWidth；turns 154636 是 6 位，
+    // 恰好占满 padStart(6)。两列都满宽时若没有固定列间距就会输出 2026-08154636。
+    const text = formatUsageByTime([bucket(new Date(2026, 7, 1), 154636, 22_261_900_000)], 'month', 's');
+    expect(text).toMatch(/2026-08\s+154636/);
+    expect(text).not.toContain('2026-08154636');
+  });
+
+  it('横条按最大值归一，最大桶满格、其余成比例', () => {
+    const text = formatUsageByTime(
+      [bucket(sun, 1, 100), bucket(mon, 1, 200), bucket(new Date(2026, 9, 1), 1, 50)],
+      'day',
+      's',
+    );
+    const lines = text.split('\n').filter((l) => l.includes('▇'));
+    expect(lines).toHaveLength(3);
+    // 200 是最大值 → 满 16 格；100 → 8 格；50 → 4 格
+    expect(lines[1]!.match(/▇/g)).toHaveLength(16);
+    expect(lines[0]!.match(/▇/g)).toHaveLength(8);
+    expect(lines[2]!.match(/▇/g)).toHaveLength(4);
+  });
+
+  it('占比列合计为 100%，按各桶 tokens 分摊', () => {
+    const text = formatUsageByTime([bucket(sun, 1, 1000), bucket(mon, 1, 3000)], 'day', 's');
+    expect(text).toMatch(/25\.0%/);
+    expect(text).toMatch(/75\.0%/);
+  });
+
+  it('英文语境下走 en 表', () => {
+    setLocale('en');
+    const text = formatUsageByTime([bucket(mon, 2, 100)], 'week', 'all sessions');
+    expect(text).toContain('by week');
+    expect(text).toContain('09-28~10-04');
+    setLocale('zh');
   });
 });
