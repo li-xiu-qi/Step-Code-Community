@@ -22,6 +22,9 @@ const PNG_B64 =
 
 const decoded = (): DecodedImage => decodePNG(Buffer.from(PNG_B64, 'base64'))!;
 
+/** sixel 的 graphics CR（段内回车覆盖），用字符码构造避免工具链对 $ 的特殊处理。 */
+const GCR = String.fromCharCode(0x24);
+
 afterEach(() => {
   delete process.env.STEP_CODE_IMAGE_PROTOCOL;
 });
@@ -87,15 +90,49 @@ describe('quantize', () => {
 });
 
 describe('encodeSixel', () => {
-  it('结构：DCS 头、band 数、数据字符总数、ST 结尾', () => {
+  /** 展开 sixel RLE：`!<count><char>` 表示 char 重复 count 次。 */
+  const expandRle = (body: string): string => {
+    let out = '';
+    let i = 0;
+    while (i < body.length) {
+      if (body[i] === '!') {
+        let j = i + 1;
+        let num = '';
+        while (j < body.length && body[j]! >= '0' && body[j]! <= '9') {
+          num += body[j];
+          j++;
+        }
+        out += body[j]!.repeat(Number(num));
+        i = j + 1;
+      } else {
+        out += body[i];
+        i++;
+      }
+    }
+    return out;
+  };
+
+  it('结构：DCS 头、band 数、ST 结尾', () => {
     const quant = quantize(decoded());
     const seq = encodeSixel(quant, 8, 6);
-    expect(seq.startsWith('\x1bPq"1;1;8;6')).toBe(true);
+    expect(seq.startsWith('\x1bP0;1;q"1;1;8;6')).toBe(true);
     expect(seq.endsWith('\x1b\\')).toBe(true);
-    // 6 像素高 = 1 个 band，每 band 8 列
+    // TUI 单行输出：序列内不能有换行（会把一行拆多行、破坏光标记账）
+    expect(/[\r\n]/.test(seq)).toBe(false);
+    // 6 像素高 = 1 个 band：band 分隔符（graphics LF `-`）不出现
     const body = seq.slice(seq.indexOf('6') + 1, -2);
-    const dataChars = [...body.replace(/#\d+;2;\d+;\d+;\d+/g, '')].filter((ch) => ch >= '\u003f' && ch <= '\u007e');
-    expect(dataChars.length).toBe(8);
+    expect(body.includes('-')).toBe(false);
+    // sixel 包按颜色分层绘制：每层一段位图（可短于列数，只画到该颜色最后出现的列），
+    // 层数取决于量化结果不固定；逐段验证列数上限与数据字符范围
+    const segments = body.replace(/#\d+;2;\d+;\d+;\d+/g, '').split(GCR);
+    let total = 0;
+    for (const seg of segments) {
+      const dataChars = [...expandRle(seg)].filter((ch) => ch >= '\u003f' && ch <= '\u007e');
+      if (dataChars.length === 0) continue; // 空段（只剩调色板定义）对渲染无意义
+      expect(dataChars.length).toBeLessThanOrEqual(8);
+      total += dataChars.length;
+    }
+    expect(total).toBeGreaterThan(0);
   });
 
   it('调色板定义为合法百分比 RGB', () => {
@@ -146,7 +183,7 @@ describe('ImageBlock', () => {
     const lines = comp.render(62); // 60 列 * 9px = 540px > 8px，不放大
     expect(lines.length).toBeGreaterThanOrEqual(1);
     const last = lines[lines.length - 1]!;
-    expect(last).toContain('\x1bPq');
+    expect(last).toContain('\x1bP0;1;q');
     expect(last).toContain('\x1b\\');
     // 8x6 的图不缩放：540px 视口下按原尺寸，占位 1 行（6px / 18px 向上取整）
     expect(lines.slice(0, -1).every((l) => l === '')).toBe(true);

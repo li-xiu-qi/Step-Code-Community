@@ -17,6 +17,7 @@
  */
 import { inflateSync } from 'node:zlib';
 import { spawnSync } from 'node:child_process';
+import { introducer, sixelEncode, FINALIZER } from 'sixel';
 import type { Component } from '@earendil-works/pi-tui';
 
 export interface DecodedImage {
@@ -261,37 +262,29 @@ export function quantize(img: DecodedImage, maxColors = 256): Quantized {
 
 /** 把量化后的索引图打包成 sixel 序列。
  *
- * 结构：DCS q 开始，raster 属性声明像素宽高，随后按 6 像素行一个 band 逐列输出
- * （每列一个字符，位图对应该列 6 个像素，值 0x3F + bits），颜色变化时插入调色板
- * 定义 #i;2;r;g;b（百分比）。ST 结束。
+ * 用 sixel npm 包编码：introducer(1) 生成 WT 验证过的引导段
+ * （\x1bP0;1;q），sixelEncode 负责 band 数据与调色板定义。此前手写编码器在 WT 上
+ * 渲染为全黑（颜色定义格式与 WT 解析器不兼容），换成熟实现消除该风险。
+ *
+ * sixel 包为可读性在每个 band 末尾插入 \n，但本序列作为 TUI 的单行输出，换行会把
+ * 一行拆成多行、破坏光标记账，必须剥掉（band 分隔用标准的 graphics LF `-` 已足够）。
  */
 export function encodeSixel(quant: Quantized, width: number, height: number): string {
-  const bands = Math.ceil(height / 6);
-  let body = '';
-  for (let band = 0; band < bands; band++) {
-    let lastColor = -1;
-    for (let x = 0; x < width; x++) {
-      let bits = 0;
-      let color = -1;
-      for (let bit = 0; bit < 6; bit++) {
-        const y = band * 6 + bit;
-        if (y >= height) break;
-        const idx = quant.indices[y * width + x]!;
-        if (color === -1) color = idx; // 每列每 band 单色：取该列首个像素
-        bits |= 1 << bit;
-      }
-      if (color === -1) color = 0;
-      if (color !== lastColor) {
-        const r = Math.round((quant.palette[color * 3]! / 255) * 100);
-        const g = Math.round((quant.palette[color * 3 + 1]! / 255) * 100);
-        const b = Math.round((quant.palette[color * 3 + 2]! / 255) * 100);
-        body += `#${color};2;${r};${g};${b}`;
-        lastColor = color;
-      }
-      body += String.fromCharCode(63 + bits);
-    }
+  const palette: [number, number, number][] = [];
+  for (let i = 0; i < quant.colors; i++) {
+    palette.push([quant.palette[i * 3]!, quant.palette[i * 3 + 1]!, quant.palette[i * 3 + 2]!]);
   }
-  return `\x1bPq"1;1;${width};${height}${body}\x1b\\`;
+  // sixelEncode 收 RGBA8888，内部做最近色映射（含有序抖动），先把索引图还原成 RGBA
+  const rgba = new Uint8Array(width * height * 4);
+  for (let i = 0; i < width * height; i++) {
+    const idx = quant.indices[i]!;
+    rgba[i * 4] = quant.palette[idx * 3]!;
+    rgba[i * 4 + 1] = quant.palette[idx * 3 + 1]!;
+    rgba[i * 4 + 2] = quant.palette[idx * 3 + 2]!;
+    rgba[i * 4 + 3] = 255;
+  }
+  const body = sixelEncode(rgba, width, height, palette);
+  return introducer(1) + body.replace(/\r?\n/g, '') + FINALIZER;
 }
 
 /**
