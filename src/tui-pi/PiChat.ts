@@ -107,6 +107,7 @@ import {
 } from './commandText.js';
 import { computeCtrlSSteer } from './steer.js';
 import { ChatAutocompleteProvider } from './completion.js';
+import { parseSGRMouse } from './mouseEvents.js';
 import { clipboardToolHint, readClipboardImage } from '../chat/clipboardImage.js';
 import { countHistoryImages, extractImageContent, formatImagePathText, ImageAttachmentStore } from '../chat/imageAttachment.js';
 import { askLine, modelItems, modelTabs, showPicker, agentItems, sessionItems, thinkItems, type PickerOverlay } from './pickers.js';
@@ -308,6 +309,8 @@ export class PiChat {
   private overlayTickCount = 0;
   /** 图片预览浮层句柄（打开时非空，焦点在浮层上）。 */
   private imagePreviewHandle: ReturnType<typeof this.tui.showOverlay> | null = null;
+  /** 图片点击的输入 listener 注销函数（exit 时摘，防退出后仍收序列）。 */
+  private mouseTapOff: (() => void) | undefined;
   /**
    * per-turn 附带状态快照栈（todos / plan 模式 / prePlanMode）。
    * 这些状态是「整体替换、无历史」的，回退 history 之后无法从现状反推第 N 轮之前的值，
@@ -589,6 +592,41 @@ export class PiChat {
     // 命中转录区里的图片则打开预览浮层（焦点移交浮层，后续鼠标/键盘事件走浮层自己的
     // handleInput，不经过这条路径）。
     this.editor.onTerminalMouse = (ev) => this.handleTerminalMouse(ev);
+    // alt-screen 的输入截流：库层 handleViewportInput 把所有 SGR 鼠标序列
+    // （press/motion/wheel）无条件 consume，序列到不了 ChatEditor——dock 布局、
+    // 焦点、区域登记全都正确，点击预览依然无效（2026-09-29 进程内 harness 实证）。
+    // 本 listener 注册于 tui.start() 之前，插入序早于库层的
+    // handleViewportInput listener，先执行；**只在命中图片时才 consume**，未命中
+    // 与滚轮/释放一律放行——拖选复制与滚动条 hover 是核心交互，不能被预览吃掉。
+    // 注意：库层 listener 注册在 TuiAltScreen 构造期，比 beforeTerminalStart 更早，
+    // 仅靠注册点拿不到优先序；下面是显式调 Set 迭代序把库层顺延到我们之后。
+    const tap = (data: string) => {
+      if (this.promptActive) return undefined; // 弹层（askLine/picker/审批）自己的输入优先
+      const mouse = parseSGRMouse(data);
+      if (mouse === undefined) return undefined;
+      if (mouse.kind !== 'press' || mouse.button !== 0) return undefined; // 滚轮/右键/拖拽放行
+      const scrollTop = this.transcriptScrollView?.scrollTop ?? 0;
+      const hit = this.transcript.imageRegionAt(mouse.row + scrollTop);
+      if (hit === undefined) return undefined; // 没点中图：放行给库层（选区/滚动条）
+      this.openImagePreview(hit.blockIdx, hit.imgIdx);
+      return { consume: true };
+    };
+    this.mouseTapOff = this.tui.addInputListener(tap);
+    // 库层 handleViewportInput 注册于 TuiAltScreen 构造期，插入序早于本
+    // listener，SGR 序列会被它先吃掉（点击预览全链路唯一卡点）。
+    // TuiBase.addInputListener 只支持尾部插入，这里直接调 Set 迭代序：
+    // 把其他 listener 顺延到我们之后，只调顺序不改行为。
+    const listeners = (this.tui as unknown as {
+      inputListeners?: Set<(data: string) => unknown>;
+    }).inputListeners;
+    if (listeners !== undefined && listeners.has(tap)) {
+      for (const fn of [...listeners]) {
+        if (fn !== tap) {
+          listeners.delete(fn); // 摘出后再 add 同一引用即移到队尾
+          listeners.add(fn);
+        }
+      }
+    }
     // 补全：/命令 与 @文件。models/providers 取启动快照（运行期不变），
     // thinkChoices 含 'off'（关闭思考也是合法档位），文件索引启动后异步回填。
     this.completion = new ChatAutocompleteProvider({
@@ -1988,6 +2026,8 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     if (this.backtrackPrimedTimer !== undefined) clearTimeout(this.backtrackPrimedTimer);
     if (this.ticker !== undefined) clearInterval(this.ticker);
     if (this.spinnerTimer !== undefined) clearInterval(this.spinnerTimer);
+    this.mouseTapOff?.(); // 图片点击 listener 摘除（退出后不再解析终端序列）
+    this.mouseTapOff = undefined;
     this.stopHeapWatch?.();
     this.cron.stop();
     // 在途后台任务必须在这里终止。shutdown() 会置空四个回灌回调（否则旧任务 settle
