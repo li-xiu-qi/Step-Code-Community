@@ -115,3 +115,44 @@ describe('Transcript 图片区域登记', () => {
     expect(/^\x1b\[\d+A/.test(lines[r.startRow]!)).toBe(false);
   });
 });
+
+describe('Transcript 工具结果图片区域（read_media）', () => {
+  const toolWithImage = (): DisplayItem => ({
+    kind: 'tool',
+    id: 't1',
+    name: 'read_media',
+    status: 'ok',
+    result: '（1 张图片结果）',
+    images: [{ mediaType: 'image/png', base64: PNG_B64 }],
+  } as unknown as DisplayItem);
+
+  it('tool 块的图片同样登记区域，命中可定位到 tool 条目', () => {
+    const t = new Transcript();
+    t.push(toolWithImage());
+    t.render(W);
+    const regions = t.imageRegions();
+    expect(regions).toHaveLength(1);
+    const r = regions[0]!;
+    const hit = t.imageRegionAt(r.startRow);
+    expect(hit).toBe(r);
+    const item = t.items()[hit!.blockIdx]!;
+    expect(item.kind).toBe('tool');
+  });
+
+  it('running 态未带 images：不登记', () => {
+    const t = new Transcript();
+    t.push({ kind: 'tool', id: 't2', name: 'read_media', status: 'running' } as DisplayItem);
+    t.render(W);
+    expect(t.imageRegions()).toHaveLength(0);
+  });
+
+  it('user 图与 tool 图混排：两条区域互不重叠', () => {
+    const t = new Transcript();
+    t.push({ kind: 'user', text: '看图', images: [image(1)] } as DisplayItem);
+    t.push(toolWithImage());
+    t.render(W);
+    const regions = t.imageRegions();
+    expect(regions).toHaveLength(2);
+    expect(regions[0]!.startRow + regions[0]!.spanRows).toBeLessThanOrEqual(regions[1]!.startRow);
+  });
+});
