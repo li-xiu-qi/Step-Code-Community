@@ -271,36 +271,40 @@ describe('thumbnailCells', () => {
     expect(thumbnailCells(200, 100, 3, 8)).toEqual({ cols: 8, rows: 4 });
   });
 
-  it('单图：宽高比保持，超宽图触高度上限后宽度按比例收', () => {
-    const c = thumbnailCells(1000, 500, 1, 60); // ratio 0.5 → 24 格宽会超 12 行上限
-    expect(c.rows).toBe(12);
-    expect(c.cols).toBe(Math.min(24, Math.round(2 * 12 * 0.5))); // 12
-  });
-
-  it('单图竖图：宽度顶格 24，高度按比例（ratio 2 → 6 行，不触上限）', () => {
-    const c = thumbnailCells(500, 1000, 1, 60); // ratio 2
+  it('横图（宽高比 2）：宽顶格 24，高度按比例', () => {
+    const c = thumbnailCells(1000, 500, 1, 60);
     expect(c.cols).toBe(24);
-    expect(c.rows).toBe(Math.round(24 / (2 * 2))); // 6
+    expect(c.rows).toBe(6);
   });
 
-  it('超宽图触高度上限：高度封顶 12，宽度按比例收窄', () => {
-    const c = thumbnailCells(4000, 40, 1, 60); // ratio 钳到 0.25 → 24 格宽会超 48 行
+  it('竖图（宽高比 0.5）：触 12 行上限，宽度按比例收', () => {
+    const c = thumbnailCells(500, 1000, 1, 60);
+    expect(c.cols).toBe(12);
     expect(c.rows).toBe(12);
-    expect(c.cols).toBe(Math.min(24, Math.round(2 * 12 * 0.25))); // 6
   });
 
-  it('超长图：宽度顶格、高度按比例，不生成细条', () => {
-    const c = thumbnailCells(40, 4000, 1, 60); // ratio 钳到 4 → cols 24、rows 3
+  it('超宽图（长截图 1920x414）：24 列宽横条，不塌成竖条', () => {
+    // 回归：ratio 方向抄反成高宽比时，这张图会被算成 6x12 竖条（观感「缩得过分」）
+    const c = thumbnailCells(1920, 414, 1, 60);
     expect(c.cols).toBe(24);
-    expect(c.rows).toBe(Math.round(24 / (2 * 4))); // 3
+    expect(c.rows).toBe(3);
+  });
+
+  it('超长图（宽高比 <0.25）：宽收窄、高顶格', () => {
+    const c = thumbnailCells(40, 4000, 1, 60); // ratio 钳到 0.25
+    expect(c.rows).toBe(12);
+    expect(c.cols).toBe(6);
+  });
+
+  it('方图：24x12', () => {
+    expect(thumbnailCells(800, 800, 1, 60)).toEqual({ cols: 24, rows: 12 });
   });
 
   it('可用宽度小于格数时钳制', () => {
     expect(thumbnailCells(200, 100, 2, 4)).toEqual({ cols: 4, rows: 2 });
     const single = thumbnailCells(1000, 500, 1, 5);
-    expect(single.cols).toBeLessThanOrEqual(5);
-    expect(single.cols).toBeGreaterThanOrEqual(1);
-    expect(single.rows).toBeGreaterThanOrEqual(1);
+    expect(single.cols).toBe(5);
+    expect(single.rows).toBe(1);
   });
 
   it('零尺寸输入不抛异常、不返回 0', () => {
@@ -309,6 +313,7 @@ describe('thumbnailCells', () => {
     expect(c.rows).toBeGreaterThanOrEqual(1);
   });
 });
+
 
 describe('rehydrateToolImages（UI 层还原 stepref 指针）', () => {
   const REAL = Buffer.from(PNG_B64, 'base64').toString('base64');
