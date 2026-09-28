@@ -7,6 +7,7 @@
  * 环境变量强制，不依赖测试机的终端环境。
  */
 import { afterEach, describe, expect, it } from 'vitest';
+import { decode } from 'sixel';
 import {
   decodePNG,
   detectImageProtocol,
@@ -133,6 +134,33 @@ describe('encodeSixel', () => {
       total += dataChars.length;
     }
     expect(total).toBeGreaterThan(0);
+  });
+
+  it('roundtrip：序列解码回像素后四色齐全、不塌缩成单色（防全黑回归）', () => {
+    // 全黑故障的形态是整幅图退化为单一暗色：颜色集合塌缩。用 sixel 包的解码器
+    // 把序列读回来钉住四色齐全。注意该解码器对合成小图的列对齐不忠实（8 列解回
+    // 10 列、角落像素会漂），逐像素坐标不能作判据，色集合覆盖才是稳定判据。
+    const quant = quantize(decoded(), 256);
+    const seq = encodeSixel(quant, 8, 6);
+    const back = decode(seq);
+    const hist = new Map<string, number>();
+    for (let i = 0; i < back.width * back.height; i++) {
+      const key = [back.data8[i * 4]!, back.data8[i * 4 + 1]!, back.data8[i * 4 + 2]!].join(',');
+      hist.set(key, (hist.get(key) ?? 0) + 1);
+    }
+    // 不塌缩：原图四色至少都在（允许抖动/舍入的邻近色）
+    expect(hist.size).toBeGreaterThanOrEqual(4);
+    for (const want of [[230, 57, 70], [29, 53, 87], [255, 255, 255], [0, 0, 0]]) {
+      const hit = [...hist.keys()].some((k) =>
+        k.split(',').map(Number).every((v, i) => Math.abs(v - want[i]!) <= 25),
+      );
+      expect(hit).toBe(true);
+    }
+    // 不塌缩：黑色占比不能接近 1（全黑故障的形态；小图被解码器补了黑色 padding
+    // 列，黑可能成为占比最高的色，但四色仍在、黑占比约五成）
+    const total = back.width * back.height;
+    const black = hist.get('0,0,0') ?? 0;
+    expect(black / total).toBeLessThan(0.6);
   });
 
   it('调色板定义为合法百分比 RGB', () => {

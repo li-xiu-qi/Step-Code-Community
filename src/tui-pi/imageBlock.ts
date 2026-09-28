@@ -17,7 +17,7 @@
  */
 import { inflateSync } from 'node:zlib';
 import { spawnSync } from 'node:child_process';
-import { introducer, sixelEncode, FINALIZER } from 'sixel';
+import { introducer, FINALIZER } from 'sixel';
 import type { Component } from '@earendil-works/pi-tui';
 
 export interface DecodedImage {
@@ -260,31 +260,82 @@ export function quantize(img: DecodedImage, maxColors = 256): Quantized {
   return { palette, colors: boxes.length, indices };
 }
 
-/** 把量化后的索引图打包成 sixel 序列。
+/**
+ * 把量化后的索引图打包成 sixel 序列。
  *
- * 用 sixel npm 包编码：introducer(1) 生成 WT 验证过的引导段
- * （\x1bP0;1;q），sixelEncode 负责 band 数据与调色板定义。此前手写编码器在 WT 上
- * 渲染为全黑（颜色定义格式与 WT 解析器不兼容），换成熟实现消除该风险。
+ * 直接消费 quantize 产出的索引图（indices + palette），不做 RGBA 重建。此前试过
+ * sixel 包的 sixelEncode（RGBA 入口），它的内部处理有两处对我们是负资产：slot 0
+ * 被强制设为黑色（paletteWithZero[0] = 0），调色板里含纯黑时索引被挤位；对不在
+ * 调色板中的颜色走 ED 最近色回退并叠加有序抖动，小图（如 8x6 测试图）12 个红色
+ * 像素有 6 个退化成黑。索引路径没有这两步，颜色映射是确定性的恒等。
  *
- * sixel 包为可读性在每个 band 末尾插入 \n，但本序列作为 TUI 的单行输出，换行会把
- * 一行拆成多行、破坏光标记账，必须剥掉（band 分隔用标准的 graphics LF `-` 已足够）。
+ * 结构：DCS 引导段（sixel 包的 introducer(1)，WT 验证过）+ raster 属性声明像素
+ * 宽高，按 6 像素行一个 band、每个 band 内按颜色分层逐列输出位图字符
+ * （63 + bits，bit row 对应该列自上而下第 row 个像素），层间用 graphics CR
+ * （$）回车覆盖，band 间用 graphics LF（-）换带，ST 结尾。连续同字符做 RLE
+ * （!<count><char>）压缩，调色板定义前置只写一次。
+ *
+ * 序列内不出现换行：TUI 里它是单行输出，换行会把一行拆多行、破坏光标记账。
  */
 export function encodeSixel(quant: Quantized, width: number, height: number): string {
-  const palette: [number, number, number][] = [];
-  for (let i = 0; i < quant.colors; i++) {
-    palette.push([quant.palette[i * 3]!, quant.palette[i * 3 + 1]!, quant.palette[i * 3 + 2]!]);
+  const GCR = String.fromCharCode(0x24); // graphics carriage return（层间回车覆盖）
+  // 调色板定义全部前置只写一次（band 内层只写 #slot 选择），避免 244 个 band
+  // 反复重复同一批定义
+  let header = introducer(1) + '"1;1;' + width + ';' + height;
+  for (let c = 0; c < quant.colors; c++) {
+    const r = Math.round((quant.palette[c * 3]! / 255) * 100);
+    const g = Math.round((quant.palette[c * 3 + 1]! / 255) * 100);
+    const b = Math.round((quant.palette[c * 3 + 2]! / 255) * 100);
+    header += '#' + c + ';2;' + r + ';' + g + ';' + b;
   }
-  // sixelEncode 收 RGBA8888，内部做最近色映射（含有序抖动），先把索引图还原成 RGBA
-  const rgba = new Uint8Array(width * height * 4);
-  for (let i = 0; i < width * height; i++) {
-    const idx = quant.indices[i]!;
-    rgba[i * 4] = quant.palette[idx * 3]!;
-    rgba[i * 4 + 1] = quant.palette[idx * 3 + 1]!;
-    rgba[i * 4 + 2] = quant.palette[idx * 3 + 2]!;
-    rgba[i * 4 + 3] = 255;
+  const bands = Math.ceil(height / 6);
+  const bandParts: string[] = [];
+  for (let band = 0; band < bands; band++) {
+    const bandH = Math.min(6, height - band * 6);
+    // 收集本 band 用到的调色板索引（保持首次出现顺序，输出稳定可测），
+    // 同时记录每色最后出现的列：层内位图只画到该列，之后的列不输出
+    // （层间 GCR 回车覆盖，截断不影响其他层的绘制起点）
+    const used: number[] = [];
+    const lastX = new Map<number, number>();
+    for (let row = 0; row < bandH; row++) {
+      const lineBase = (band * 6 + row) * width;
+      for (let x = 0; x < width; x++) {
+        const idx = quant.indices[lineBase + x]!;
+        if (!lastX.has(idx)) used.push(idx);
+        lastX.set(idx, x);
+      }
+    }
+    let bandStr = '';
+    for (const color of used) {
+      bandStr += '#' + color;
+      const layerEnd = lastX.get(color)!;
+      let runChar = '';
+      let runLen = 0;
+      const flush = (): void => {
+        if (runLen === 0) return;
+        bandStr += runLen > 3 ? '!' + runLen + runChar : runChar.repeat(runLen);
+        runLen = 0;
+      };
+      for (let x = 0; x <= layerEnd; x++) {
+        let bits = 0;
+        for (let row = 0; row < bandH; row++) {
+          if (quant.indices[(band * 6 + row) * width + x] === color) bits |= 1 << row;
+        }
+        const ch = String.fromCharCode(63 + bits);
+        if (ch === runChar) {
+          runLen++;
+        } else {
+          flush();
+          runChar = ch;
+          runLen = 1;
+        }
+      }
+      flush();
+      bandStr += GCR;
+    }
+    bandParts.push(bandStr);
   }
-  const body = sixelEncode(rgba, width, height, palette);
-  return introducer(1) + body.replace(/\r?\n/g, '') + FINALIZER;
+  return header + bandParts.join('-') + FINALIZER;
 }
 
 /**
