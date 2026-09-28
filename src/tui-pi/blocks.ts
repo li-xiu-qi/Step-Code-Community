@@ -7,7 +7,7 @@ import { Markdown, truncateToWidth, visibleWidth, wrapTextWithAnsi, sliceByColum
 import type { Component } from '@earendil-works/pi-tui';
 import { basename } from 'node:path';
 import type { DisplayItem, WelcomeData } from '../chat/types.js';
-import { decodePNG, HalfBlockImage } from './imageBlock.js';
+import { decodePNG, ImageBlock } from './imageBlock.js';
 import { offloadIfNeeded as offloadLargeResult, readCachedOutput } from '../agent/outputCache.js';
 
 /** Braille 转圈帧序列，供 running 状态动态 spinner。 */
@@ -465,7 +465,7 @@ export class ItemBlock implements Component {
         out.push(c.dim(`  [图片无法渲染：${img.mediaType} ${img.width}×${img.height}]`));
         continue;
       }
-      out.push(...new HalfBlockImage(decoded, maxWidth).render(width - 4).map((l) => `  ${l}`));
+      out.push(...new ImageBlock(decoded, maxWidth).render(width - 4).map((l) => `  ${l}`));
     }
     return out;
   }
