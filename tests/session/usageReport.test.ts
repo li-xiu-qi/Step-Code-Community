@@ -306,9 +306,9 @@ describe('aggregateUsageByTime', () => {
     expect(Number.isNaN(rows[0]!.tokens)).toBe(false);
   });
 
-  it('各粒度默认回看量：日两周、周两月、月半年', () => {
+  it('各粒度默认回看量：日两周、周两月、月两月', () => {
     expect(DEFAULT_BUCKET_LIMIT.day).toBe(14);
     expect(DEFAULT_BUCKET_LIMIT.week).toBe(8);
-    expect(DEFAULT_BUCKET_LIMIT.month).toBe(6);
+    expect(DEFAULT_BUCKET_LIMIT.month).toBe(2);
   });
 });

@@ -133,11 +133,18 @@ export interface TimeBucketUsage {
   cacheCreation: number;
 }
 
-/** 各粒度默认回看多少个桶：日看两周、周看两月、月看半年。 */
+/**
+ * 各粒度默认回看多少个桶：日看两周、周看两月、月看两月。
+ *
+ * 月的默认值取 2 而不是 6：缓存建立前每次统计都要遍历全部事件日志，
+ * 范围越大首次成本越高；而个人 CLI 的用量数据通常只积累几个月，
+ * 默认 2 个月覆盖绝大部分「最近干了什么」的查询意图，更长的历史
+ * 用 `/usage -m 6` 显式要。缓存就位后这个数字只影响展示行数。
+ */
 export const DEFAULT_BUCKET_LIMIT: Readonly<Record<UsageTimeBucket, number>> = {
   day: 14,
   week: 8,
-  month: 6,
+  month: 2,
 };
 
 /**
@@ -147,8 +154,11 @@ export const DEFAULT_BUCKET_LIMIT: Readonly<Record<UsageTimeBucket, number>> = {
  * 「今天」「这周」按本地日历成立。混用会让凌晨的用量归到前一天，
  * 报表与用户感知对不上。Date 的 getFullYear/getMonth/getDate/getDay
  * 本身就是本地时区语义，直接用来重组桶起点即可。
+ *
+ * 导出供 usageCache 复用：缓存按日汇总再归组周/月，两处必须共用同一套
+ * 日历口径，否则缓存路径与全量扫描路径会算出不同的桶边界。
  */
-function bucketStart(ts: string, bucket: UsageTimeBucket): Date | null {
+export function bucketStart(ts: string, bucket: UsageTimeBucket): Date | null {
   const d = new Date(ts);
   if (Number.isNaN(d.getTime())) return null;
   if (bucket === 'day') return new Date(d.getFullYear(), d.getMonth(), d.getDate());

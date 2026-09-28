@@ -66,7 +66,8 @@ import { SessionQueueStore } from '../agent/sessionQueue/store.js';
 import { sendReadReceipts } from '../agent/sessionQueue/receipt.js';
 import { canOverwriteTitle, generateSessionTitle } from '../session/title.js';
 import { TerminalTitleWriter } from '../chat/terminalTitle.js';
-import { aggregateModelUsage, aggregateUsageByTime, type UsageTimeBucket } from '../session/usageReport.js';
+import { aggregateFromCache, loadUsageCache, refreshUsageCache } from '../session/usageCache.js';
+import { aggregateModelUsage, DEFAULT_BUCKET_LIMIT, type UsageTimeBucket } from '../session/usageReport.js';
 import type { WireEvent } from '../agent/wirelog.js';
 import { renderSkillActivation, skillListing, type SkillRegistry } from '../skill/registry.js';
 import type { ReflectOptions } from '../agent/reflect.js';
@@ -2302,7 +2303,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
 
       case 'usage': {
         const usageArgs = parseUsageArgs(args);
-        this.showUsage(usageArgs.all, usageArgs.bucket);
+        void this.showUsage(usageArgs.all, usageArgs.bucket, usageArgs.limit);
         return;
       }
 
@@ -3469,18 +3470,25 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
    * --all 的范围只到当前 cwd：跨目录会把别的项目的会话读进来。
    *
    * bucket 非空时切时间维度（-d/-w/-m）：范围固定本目录全部会话
-   * （与 --all 同源），呈现从「按模型」换成「按时间」。
+   * （与 --all 同源），呈现从「按模型」换成「按时间」。取数走增量缓存
+   * （usageCache），不逐文件全量扫——本机实测全量 parse 22.4 秒，
+   * 缓存路径日常在百毫秒级。limit 为回看的桶数，缺省取各粒度默认值。
    */
-  private showUsage(wantAll: boolean, bucket?: UsageTimeBucket): void {
+  private async showUsage(wantAll: boolean, bucket?: UsageTimeBucket, limit?: number): Promise<void> {
     try {
       if (bucket !== undefined) {
         // 用 listWireSessionIds 而非 list：后者按 .json 快照列举，会漏掉有事件日志但没走到 save 的会话
         const ids = this.deps.store.listWireSessionIds(this.deps.ctx.cwd);
-        const events = ids.flatMap((id) => this.deps.store.loadWire(this.deps.ctx.cwd, id));
+        const existing = await loadUsageCache(this.deps.ctx.cwd);
+        if (ids.length > 0 && Object.keys(existing.files).length === 0) {
+          // 首次：缓存未建，全量合并要几十秒。先说明再等，避免看起来像卡死。
+          this.push({ kind: 'note', text: '正在建立用量索引（首次约需几十秒，之后即时）…' });
+        }
+        const cache = await refreshUsageCache(this.deps.ctx.cwd);
         this.push({
           kind: 'note',
           text: formatUsageByTime(
-            aggregateUsageByTime(events, bucket),
+            aggregateFromCache(cache, bucket, limit ?? DEFAULT_BUCKET_LIMIT[bucket]),
             bucket,
             `本目录全部会话（${ids.length} 个）`,
           ),
@@ -5099,7 +5107,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
               imageCount > 0
                 ? rehydrateToolImages(ev.images, this.deps.store.attachments, this.session.cwd)
                 : undefined;
-            return {
+            const nextItem: Extract<DisplayItem, { kind: 'tool' }> = {
               ...toolItem,
               status: ev.isError ? 'error' : 'ok',
               result: cachedPath !== undefined ? undefined : result,
@@ -5107,6 +5115,23 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
               resultSize: result.length,
               ...(uiImages !== undefined ? { images: uiImages } : {}),
             };
+            // loop 执行轨迹落盘：崩溃后 resume 靠 tool.settle 重建「崩前最后执行到哪几个
+            // 工具」。此前 wire 只落消息完成类事件，半截回合的痕迹全在内存 transcript 里，
+            // 进程一死就没了（2026-09-28 实测：dynamic_workflow 长任务闪退后，wire 里
+            // 469 条事件 tool 轨迹为 0）。对齐 dsh-TUI「session log 是唯一真相源」原则：
+            // 执行轨迹而非只终态消息必须可重放。
+            const startedAt = toolItem.startedAt;
+            this.appendWire({
+              type: 'tool.settle',
+              ts: new Date().toISOString(),
+              id: ev.id,
+              name: toolItem.name,
+              isError: ev.isError,
+              resultBytes: result.length,
+              ...(startedAt !== undefined ? { durationMs: Math.max(0, Date.now() - startedAt) } : {}),
+              ...(cachedPath !== undefined ? { resultFile: cachedPath } : {}),
+            });
+            return nextItem;
           },
         );
         // todo_list 工具改的是 this.todos，面板要跟着刷；其它工具走这一路开销是两次赋值
@@ -5321,10 +5346,13 @@ function isDirectoryPath(path: string): boolean {
  *
  * bucket 取单字符短参（-d/-w/-m）为主，同时收全拼与 --day 式长参：
  * 短参是给「每天敲一次」的快手用法，长参留给写进脚本或记不清短参的时刻。
+ * 纯数字 token 是回看的桶数（`/usage -m 6` 看 6 个月），缺省取各粒度
+ * 默认值（日 14 / 周 8 / 月 2）。
+ *
  * --all 仍保留原语义（按模型汇总本目录全部会话），但指定了 bucket 时
  * 范围自动就是全部会话——单会话跨不过时间分桶，按会话出时间表没有意义。
  */
-function parseUsageArgs(args: string): { all: boolean; bucket?: UsageTimeBucket } {
+function parseUsageArgs(args: string): { all: boolean; bucket?: UsageTimeBucket; limit?: number } {
   const tokens = args.trim().toLowerCase().split(/\s+/).filter(Boolean);
   const all = tokens.includes('--all');
   const BUCKET_ALIASES: Readonly<Record<string, UsageTimeBucket>> = {
@@ -5338,11 +5366,20 @@ function parseUsageArgs(args: string): { all: boolean; bucket?: UsageTimeBucket 
     '--month': 'month',
     month: 'month',
   };
+  let bucket: UsageTimeBucket | undefined;
+  let limit: number | undefined;
   for (const tok of tokens) {
-    const bucket = BUCKET_ALIASES[tok];
-    if (bucket !== undefined) return { all: true, bucket };
+    const b = BUCKET_ALIASES[tok];
+    if (b !== undefined) {
+      bucket = b;
+      continue;
+    }
+    const n = Number(tok);
+    // 正整数才当回看量；上限 365 天，防手滑把上限打上天后渲染几百行
+    if (Number.isInteger(n) && n > 0) limit = Math.min(n, 365);
   }
-  return { all };
+  if (bucket !== undefined) return { all: true, bucket, limit };
+  return { all, limit: undefined };
 }
 
 export { c as piColors };

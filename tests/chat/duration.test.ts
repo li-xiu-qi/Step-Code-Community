@@ -36,4 +36,11 @@ describe('formatCount（千进制紧凑计数）', () => {
     expect(formatCount(1_000_000)).toBe('1M');
     expect(formatCount(2_500_000)).toBe('2.5M');
   });
+
+  it('十亿级出 B 档，不再用 M 硬撑', () => {
+    expect(formatCount(999_999_999)).toBe('1000M');
+    expect(formatCount(1_000_000_000)).toBe('1B');
+    expect(formatCount(10_761_400_000)).toBe('10.8B');
+    expect(formatCount(37_436_100_000)).toBe('37.4B');
+  });
 });
