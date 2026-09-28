@@ -125,6 +125,8 @@ import { sortAgents, AgentsOverlay } from './AgentsOverlay.js';
 import { openProviderManager, runProviderWizard } from './ProviderManager.js';
 import { allTodosDone } from '../chat/chromePanels.js';
 import { ItemBlock, summarizeInput, SPINNER_FRAME_MS, tickSpinner } from './blocks.js';
+import { decodePNG } from './imageBlock.js';
+import { ImagePreviewOverlay } from './ImagePreviewOverlay.js';
 import { FILE_LINK_SCHEME, fileUrlToPath, openWithSystem } from './fileLink.js';
 import { copyTextToClipboard, revealInFolder } from './pathActions.js';
 import { PathActionMenu, type PathAction } from './PathActionMenu.js';
@@ -301,6 +303,8 @@ export class PiChat {
   /** 有 overlay 需要按秒重渲（任务弹层的用时）时置真，由 ticker 读。 */
   private overlayNeedsTick = false;
   private overlayTickCount = 0;
+  /** 图片预览浮层句柄（打开时非空，焦点在浮层上）。 */
+  private imagePreviewHandle: ReturnType<typeof this.tui.showOverlay> | null = null;
   /**
    * per-turn 附带状态快照栈（todos / plan 模式 / prePlanMode）。
    * 这些状态是「整体替换、无历史」的，回退 history 之后无法从现状反推第 N 轮之前的值，
@@ -578,6 +582,10 @@ export class PiChat {
     });
 
     this.editor = new ChatEditor(this.tui, editorTheme);
+    // 终端鼠标事件：输入框是常态焦点，鼠标序列在 ChatEditor.handleInput 解析后交到这里。
+    // 命中转录区里的图片则打开预览浮层（焦点移交浮层，后续鼠标/键盘事件走浮层自己的
+    // handleInput，不经过这条路径）。
+    this.editor.onTerminalMouse = (ev) => this.handleTerminalMouse(ev);
     // 补全：/命令 与 @文件。models/providers 取启动快照（运行期不变），
     // thinkChoices 含 'off'（关闭思考也是合法档位），文件索引启动后异步回填。
     this.completion = new ChatAutocompleteProvider({
@@ -1038,6 +1046,53 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     const handle = this.tui.showOverlay(overlay, { width: '90%', maxHeight: '80%', anchor: 'center' });
     handle.focus();
     this.overlayNeedsTick = true;
+    this.tui.requestRender();
+  }
+
+  /**
+   * 终端鼠标事件（输入框焦点态）：左键点击命中转录区里的图片时打开预览浮层。
+   *
+   * 行换算：dock 布局下转录区贴顶（VStack 第一项 grow:1），屏幕行 + 滚动偏移
+   * 即文档行；滚动偏移直接读 PiChat 自己持有的 transcriptScrollView.scrollTop。
+   * 只认左键 press：右键/中键留给终端（选区/粘贴），滚轮与拖拽在无预览时
+   * 没有可交互对象，静默忽略保持既有行为。
+   */
+  private handleTerminalMouse(ev: { kind: string; button: number; col: number; row: number }): void {
+    if (ev.kind !== 'press' || ev.button !== 0) return;
+    if (this.promptActive || this.imagePreviewHandle !== null) return;
+    const scrollTop = this.transcriptScrollView?.scrollTop ?? 0;
+    const region = this.transcript.imageRegionAt(ev.row + scrollTop);
+    if (region === undefined) return;
+    this.openImagePreview(region.blockIdx, region.imgIdx);
+  }
+
+  /** 打开图片预览浮层：从 user 块的 images 取回原图 base64 解码，焦点移交浮层。 */
+  private openImagePreview(blockIdx: number, imgIdx: number): void {
+    const item = this.transcript.items()[blockIdx];
+    if (item === undefined || item.kind !== 'user' || item.images === undefined) return;
+    const img = item.images[imgIdx];
+    if (img === undefined) return;
+    const decoded = decodePNG(Buffer.from(img.base64, 'base64'));
+    if (decoded === null) return; // 解码失败：转录区里已经是降级文本行，点不到区域
+    const close = (): void => {
+      this.imagePreviewHandle?.hide();
+      this.imagePreviewHandle = null;
+      this.tui.setFocus(this.editor);
+      this.tui.requestRender();
+    };
+    const overlay = new ImagePreviewOverlay({
+      image: decoded,
+      meta: {
+        mediaType: img.mediaType,
+        width: img.width,
+        height: img.height,
+        bytes: Buffer.byteLength(img.base64, 'base64'),
+      },
+      close,
+      requestRender: () => this.tui.requestRender(),
+    });
+    this.imagePreviewHandle = this.tui.showOverlay(overlay, { width: '95%', maxHeight: '95%', anchor: 'center' });
+    this.imagePreviewHandle.focus();
     this.tui.requestRender();
   }
 

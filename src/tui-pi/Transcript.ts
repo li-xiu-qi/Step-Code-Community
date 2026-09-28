@@ -35,6 +35,25 @@ export interface TranscriptOptions {
   dailyWindowSize?: number;
 }
 
+/**
+ * 转录区里一张已渲染图片的占位区（文档行，0-based，相对 Transcript.render 产物）。
+ *
+ * 基于布局树的 TUI 框架可以把点击处理器挂在图片节点上、由布局层算命中；本方是
+ * string[] 渲染，没有布局树，所以在渲染时把图片区登记成表，鼠标点击的屏幕行
+ * 换算成文档行后查表。startRow..docRow 是该图的占位区（前面的空占位行 + 末行的
+ * sixel 序列行），blockIdx/imgIdx 用来找回 user 块里的原图 base64。
+ */
+export interface TranscriptImageRegion {
+  /** sixel 序列行的文档行号（占位区末行）。 */
+  readonly docRow: number;
+  /** 占位区起始文档行（docRow - 占位行数 + 1）。 */
+  readonly startRow: number;
+  /** user 块在 blocks 中的下标。 */
+  readonly blockIdx: number;
+  /** 图片在该 user 块 images 数组中的下标。 */
+  readonly imgIdx: number;
+}
+
 export class Transcript implements Component {
   private blocks: ItemBlock[] = [];
   private readonly maxTurns: number;
@@ -59,7 +78,7 @@ export class Transcript implements Component {
   /** 自动递增的 turn 编号：push 时给无 turnNum 的 user 消息补齐（实时对话 / bash 输入）。 */
   private nextTurnNum = 0;
   /** 冻结前缀缓存：head 提示行 + 除尾块外全部块的渲染结果。尾块每帧重渲，前缀仅结构变化时重算。 */
-  private prefixCache: { width: number; ver: number; lines: string[] } | null = null;
+  private prefixCache: { width: number; ver: number; lines: string[]; regions: TranscriptImageRegion[] } | null = null;
   /**
    * 整体结果缓存：render() 的输出数组本身。判据为 width、structVer、尾块引用、head 四项。
    * 目的是在「什么都没变」的帧把同一个数组引用交回父容器，让 pi-tui Container 的增量渲染
@@ -67,7 +86,7 @@ export class Transcript implements Component {
    * 上游的 Container 缓存被整体旁路。这一层与 Loader.render 是同一个契约：什么都没变
    * 的帧把同一个数组引用交回父容器。
    */
-  private renderCache: { width: number; ver: number; head: string[]; tailRef: string[]; lines: string[] } | null = null;
+  private renderCache: { width: number; ver: number; head: string[]; tailRef: string[]; lines: string[]; regions: TranscriptImageRegion[] } | null = null;
 
   constructor(options: TranscriptOptions = {}) {
     this.maxTurns = options.maxTurns ?? DEFAULT_MAX_TURNS;
@@ -356,15 +375,35 @@ export class Transcript implements Component {
     // 尾块的内容变更（流式正文追加、运行中工具 spinner+计时）不递增 structVer，故前缀在
     // 整个流式过程中命中缓存——这是把每帧成本从 O(全转录行数) 降到 O(尾块行数) 的关键。
     let prefix: string[];
+    let prefixRegions: TranscriptImageRegion[];
     if (this.prefixCache !== null && this.prefixCache.width === width && this.prefixCache.ver === this.structVer) {
       prefix = this.prefixCache.lines;
+      prefixRegions = this.prefixCache.regions;
     } else {
       prefix = [];
-      for (let i = 0; i < lastIdx; i++) prefix.push(...this.blocks[i]!.render(width));
-      this.prefixCache = { width, ver: this.structVer, lines: prefix };
+      prefixRegions = [];
+      for (let i = 0; i < lastIdx; i++) {
+        const blockStart = prefix.length;
+        prefix.push(...this.blocks[i]!.render(width));
+        // 图片区域登记：块内 sixel 序列行换算成文档行（块起始行 + 本地行号）。
+        // 只在块重渲时做（前缀缓存命中走上面的 regions 复用），成本 O(块数)。
+        for (const seq of this.blocks[i]!.imageRows()) {
+          prefixRegions.push({ docRow: blockStart + seq.row, startRow: blockStart + seq.row - seq.rows + 1, blockIdx: i, imgIdx: seq.imgIdx });
+        }
+      }
+      this.prefixCache = { width, ver: this.structVer, lines: prefix, regions: prefixRegions };
     }
     // 尾块每帧重渲：assistant 正文流式追加 / 运行中工具的 spinner 帧与计时都随时间变化。
     const tail = lastIdx >= 0 ? this.blocks[lastIdx]!.render(width) : [];
+    // 尾块的图片区域：块起始行 = head + prefix 的行数（head 是每帧热变更，必须现算）。
+    const tailRegions: TranscriptImageRegion[] = [];
+    if (lastIdx >= 0) {
+      const tailStart = head.length + prefix.length;
+      for (const seq of this.blocks[lastIdx]!.imageRows()) {
+        tailRegions.push({ docRow: tailStart + seq.row, startRow: tailStart + seq.row - seq.rows + 1, blockIdx: lastIdx, imgIdx: seq.imgIdx });
+      }
+    }
+    const regions = [...prefixRegions, ...tailRegions];
     // 四项判据全同则复用上次的输出数组本身（不只是行内容相同，是同一个数组对象）。
     // head 通常 0 到 3 行，逐行引用比较的成本可忽略。
     const cached = this.renderCache;
@@ -382,7 +421,23 @@ export class Transcript implements Component {
     // 同 width 下必然安全，故前缀不重复截断；尾块是热变更内容，保留一次截断作防回归安全网。
     const safeTail = tail.map((l) => truncateToWidth(l, width));
     const lines = [...head, ...prefix, ...safeTail];
-    this.renderCache = { width, ver: this.structVer, head, tailRef: tail, lines };
+    this.renderCache = { width, ver: this.structVer, head, tailRef: tail, lines, regions };
     return lines;
+  }
+
+  /**
+   * 最近一次 render 产物中的图片区域表（文档行，0-based）。
+   * 预览浮层用它把鼠标点击的屏幕行换算成文档行后命中图片。
+   */
+  imageRegions(): readonly TranscriptImageRegion[] {
+    return this.renderCache?.regions ?? [];
+  }
+
+  /**
+   * 命中查询：文档行 docRow 落在哪张图的占位区（含序列行）里。
+   * 区域不重叠（图片按文档顺序排列），线性扫描足够；条数是个位数。
+   */
+  imageRegionAt(docRow: number): TranscriptImageRegion | undefined {
+    return this.imageRegions().find((r) => docRow >= r.startRow && docRow <= r.docRow);
   }
 }

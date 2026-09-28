@@ -14,6 +14,7 @@ import {
   visibleWidth,
 } from '@earendil-works/pi-tui';
 import { initialNavState, type HistoryNavState } from '../session/inputHistory.js';
+import { parseSGRMouse, type MouseEvent } from './mouseEvents.js';
 
 /**
  * 输入提示符。用 `›`（U+203A）：比 `>` 窄一格，不与正文引用块（`>`）或 diff 标记混淆。
@@ -205,6 +206,12 @@ export class ChatEditor extends Editor {
   private static readonly BURST_MIN_CHUNK = 8;
   /** 爆发窗口长度：覆盖粘贴尾块与最后一个 \r 分开到达的间隔。 */
   private static readonly BURST_WINDOW_MS = 150;
+  /**
+   * 终端鼠标事件出口（由 PiChat 注入）：输入框是常态焦点组件，鼠标序列在
+   * handleInput 里解析后交给上层做图片命中/预览交互。预览浮层打开时焦点在
+   * 浮层自己，序列走浮层的 handleInput，不经过这里。
+   */
+  onTerminalMouse?: (ev: MouseEvent) => void;
 
   override handleInput(data: string): void {
     // PasteBurst 兜底一：含换行的散装文本块（无转义序列）必是粘贴——键盘输入的
@@ -225,6 +232,14 @@ export class ChatEditor extends Editor {
     // PasteBurst 兜底二：爆发窗口内单独到达的 Enter 是粘贴流的一部分，换行而非提交。
     if (data === '\r' && Date.now() < this.burstEndsAt) {
       super.handleInput('\n');
+      return;
+    }
+    // 鼠标上报序列：pi-tui 只透传不解析（parseKey 对 SGR 序列返回 undefined），
+    // 终端级交互（点图片开预览、缩放浮层的平移/关闭）在这一层接住。处理了就不
+    // 再当按键往下走；滚轮与拖拽在无预览时静默忽略（保持既有行为）。
+    const mouse = parseSGRMouse(data);
+    if (mouse !== undefined) {
+      this.onTerminalMouse?.(mouse);
       return;
     }
     // primed 态解除：除 Esc 与 Ctrl+C 外的任意按键都解除双击确认态。

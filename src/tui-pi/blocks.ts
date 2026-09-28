@@ -271,10 +271,22 @@ function mdTransformWithPaths(md: string): string {
   return linkifyAbsolutePaths(markdownTransform(md));
 }
 
+/** sixel 序列行在块产物中的本地行号 + 图片信息（预览浮层命中用）。 */
+export interface ImageSeqRow {
+  /** 序列行的本地行号（占位区的末行）。 */
+  readonly row: number;
+  /** 该图在 user 块 images 数组中的下标。 */
+  readonly imgIdx: number;
+  /** 该图占位的总行数（含前面的空占位行），命中区 = [row - rows + 1, row]。 */
+  readonly rows: number;
+}
+
 export class ItemBlock implements Component {
   private item: DisplayItem;
   private cachedWidth = -1;
   private cachedLines: string[] | undefined;
+  /** sixel 序列行在本块产物中的本地行号（user 块图片，预览浮层点击命中用）。 */
+  private lastImageRows: readonly ImageSeqRow[] = [];
   /** assistant / thinking 正文交给 pi-tui 的 Markdown 组件渲染（它自带解析缓存）。 */
   private markdown: Markdown | undefined;
   /**
@@ -329,6 +341,11 @@ export class ItemBlock implements Component {
     this.cachedLines = lines;
     this.cachedWidth = width;
     return lines;
+  }
+
+  /** 最近一次 render 产物中 sixel 序列行的本地行号（仅 user 块非空，缓存命中时为上次值）。 */
+  imageRows(): readonly ImageSeqRow[] {
+    return this.lastImageRows;
   }
 
   private renderMarkdown(text: string, width: number, dim: boolean): string[] {
@@ -454,20 +471,28 @@ export class ItemBlock implements Component {
 
   /** 用户条目的图片渲染：解码 PNG 后用 half-block 字符画追加在正文之后。
    *  解码失败或超出像素预算时降级为一行 dim 文本，不抛异常——渲染路径上的异常会冒泡成
-   *  uncaughtException 直接杀进程。缩进两空格，与正文的 '│ ' 前缀视觉对齐。 */
-  private renderUserImages(it: Extract<DisplayItem, { kind: 'user' }>, width: number): string[] {
-    if (it.images === undefined || it.images.length === 0) return [];
+   *  uncaughtException 直接杀进程。缩进两空格，与正文的 '│ ' 前缀视觉对齐。
+   *
+   *  同时返回每张 sixel 图的序列行在产物中的本地行号（seqRows）：sixel 序列行是该图
+   *  占位区的末行（前面 rows-1 行是空占位），预览浮层的点击命中与文档行区域登记用它。
+   *  降级文本行不进 seqRows（点了也没有原图可预览）。 */
+  private renderUserImages(it: Extract<DisplayItem, { kind: 'user' }>, width: number): { lines: string[]; seqRows: ImageSeqRow[] } {
+    if (it.images === undefined || it.images.length === 0) return { lines: [], seqRows: [] };
     const out: string[] = [];
+    const seqRows: ImageSeqRow[] = [];
     const maxWidth = Math.max(20, width - 6);
-    for (const img of it.images) {
+    for (const [imgIdx, img] of it.images.entries()) {
       const decoded = decodePNG(Buffer.from(img.base64, 'base64'));
       if (decoded === null) {
         out.push(c.dim(`  [图片无法渲染：${img.mediaType} ${img.width}×${img.height}]`));
         continue;
       }
-      out.push(...new ImageBlock(decoded, maxWidth).render(width - 4).map((l) => `  ${l}`));
+      const imgLines = new ImageBlock(decoded, maxWidth).render(width - 4).map((l) => `  ${l}`);
+      // 序列行是 ImageBlock 产物的末行（占位空行在前，moveUp + 序列在末行）
+      seqRows.push({ row: out.length + imgLines.length - 1, imgIdx, rows: imgLines.length });
+      out.push(...imgLines);
     }
-    return out;
+    return { lines: out, seqRows };
   }
 
   private renderUser(it: Extract<DisplayItem, { kind: 'user' }>, width: number): string[] {
@@ -509,8 +534,15 @@ export class ItemBlock implements Component {
     switch (it.kind) {
       case 'welcome':
         return renderWelcome(it.data, width);
-      case 'user':
-        return [...this.renderUser(it, width), ...this.renderUserImages(it, width)];
+      case 'user': {
+        const body = this.renderUser(it, width);
+        const images = this.renderUserImages(it, width);
+        // 图片区域登记：sixel 序列行的本地行号存字段，Transcript 汇总成文档行区域表
+        // （预览浮层的点击命中用）。注意偏移——seqRows 是相对图片产物的行号，
+        // 拼进块产物时前面还有正文 body 行，必须加上 body.length。
+        this.lastImageRows = images.seqRows.map((s) => ({ ...s, row: body.length + s.row }));
+        return [...body, ...images.lines];
+      }
       case 'assistant': {
         // 前缀灰色 ●，第一行带前缀，续行对齐
         // 走增量路径：流式输出时每帧只重算尾部未闭合 token，已闭合前缀复用缓存行。
