@@ -14,6 +14,7 @@ import {
   encodeSixel,
   ImageBlock,
   quantize,
+  thumbnailCells,
   type DecodedImage,
 } from '../../src/tui-pi/imageBlock.js';
 
@@ -205,16 +206,44 @@ describe('ImageBlock', () => {
     }
   });
 
-  it('sixel 路径：末行是 sixel 序列，前面是占位空行', () => {
+  it('sixel 路径：首行是 sixel 序列，后面是空占位行，序列行无 moveUp（位置无关）', () => {
     process.env.STEP_CODE_IMAGE_PROTOCOL = 'sixel';
     const comp = new ImageBlock(decoded(), 6);
     const lines = comp.render(62); // 60 列 * 9px = 540px > 8px，不放大
     expect(lines.length).toBeGreaterThanOrEqual(1);
-    const last = lines[lines.length - 1]!;
-    expect(last).toContain('\x1bP0;1;q');
-    expect(last).toContain('\x1b\\');
-    // 8x6 的图不缩放：540px 视口下按原尺寸，占位 1 行（6px / 18px 向上取整）
-    expect(lines.slice(0, -1).every((l) => l === '')).toBe(true);
+    const first = lines[0]!;
+    // 序列行以 DCS 引导段开头：不带 \x1b[NA 上移前缀。带前缀是滚动后重写漂移、
+    // 图画到错位区域并残影闪烁的根因（位置无关序列行 + 尾随占位行才是滚动安全的）。
+    expect(first.startsWith('\x1bP0;1;q')).toBe(true);
+    expect(/^\x1b\[\d+A/.test(first)).toBe(false);
+    expect(first).toContain('\x1b\\');
+    // 8x6 的图不缩放：540px 视口下按原尺寸，配 1 行（6px / 18px 向上取整）
+    expect(lines.slice(1).every((l) => l === '')).toBe(true);
+  });
+
+  it('多行占位图：序列行后跟 rows-1 个空行，总数不超高度上限', () => {
+    process.env.STEP_CODE_IMAGE_PROTOCOL = 'sixel';
+    const w = 100;
+    const h = 60;
+    const rgb = new Uint8Array(w * h * 3);
+    for (let i = 0; i < w * h; i++) {
+      rgb[i * 3] = (i * 7) % 256;
+      rgb[i * 3 + 1] = (i * 13) % 256;
+      rgb[i * 3 + 2] = 90;
+    }
+    const comp = new ImageBlock({ width: w, height: h, rgb }, 24, 12);
+    const lines = comp.render(62);
+    expect(lines[0]!.startsWith('\x1bP0;1;q')).toBe(true);
+    expect(lines.slice(1).every((l) => l === '')).toBe(true);
+    expect(lines.length).toBeGreaterThanOrEqual(2);
+    expect(lines.length).toBeLessThanOrEqual(12); // 高度上限生效
+  });
+
+  it('空视口/极端小宽度不抛异常', () => {
+    process.env.STEP_CODE_IMAGE_PROTOCOL = 'halfblock';
+    const comp = new ImageBlock(decoded(), 6);
+    expect(() => comp.render(0)).not.toThrow();
+    expect(() => comp.render(1)).not.toThrow();
   });
 
   it('同宽度重复 render 返回同一缓存引用', () => {
@@ -232,5 +261,50 @@ describe('ImageBlock', () => {
     const second = comp.render(8);
     expect(second).not.toBe(first);
     expect(second).toEqual(first);
+  });
+});
+
+describe('thumbnailCells', () => {
+  it('多图并排：宽 10 格、高 5 格，不超可用宽度', () => {
+    expect(thumbnailCells(200, 100, 2, 60)).toEqual({ cols: 10, rows: 5 });
+    expect(thumbnailCells(200, 100, 3, 8)).toEqual({ cols: 8, rows: 4 });
+  });
+
+  it('单图：宽高比保持，超宽图触高度上限后宽度按比例收', () => {
+    const c = thumbnailCells(1000, 500, 1, 60); // ratio 0.5 → 24 格宽会超 12 行上限
+    expect(c.rows).toBe(12);
+    expect(c.cols).toBe(Math.min(24, Math.round(2 * 12 * 0.5))); // 12
+  });
+
+  it('单图竖图：宽度顶格 24，高度按比例（ratio 2 → 6 行，不触上限）', () => {
+    const c = thumbnailCells(500, 1000, 1, 60); // ratio 2
+    expect(c.cols).toBe(24);
+    expect(c.rows).toBe(Math.round(24 / (2 * 2))); // 6
+  });
+
+  it('超宽图触高度上限：高度封顶 12，宽度按比例收窄', () => {
+    const c = thumbnailCells(4000, 40, 1, 60); // ratio 钳到 0.25 → 24 格宽会超 48 行
+    expect(c.rows).toBe(12);
+    expect(c.cols).toBe(Math.min(24, Math.round(2 * 12 * 0.25))); // 6
+  });
+
+  it('超长图：宽度顶格、高度按比例，不生成细条', () => {
+    const c = thumbnailCells(40, 4000, 1, 60); // ratio 钳到 4 → cols 24、rows 3
+    expect(c.cols).toBe(24);
+    expect(c.rows).toBe(Math.round(24 / (2 * 4))); // 3
+  });
+
+  it('可用宽度小于格数时钳制', () => {
+    expect(thumbnailCells(200, 100, 2, 4)).toEqual({ cols: 4, rows: 2 });
+    const single = thumbnailCells(1000, 500, 1, 5);
+    expect(single.cols).toBeLessThanOrEqual(5);
+    expect(single.cols).toBeGreaterThanOrEqual(1);
+    expect(single.rows).toBeGreaterThanOrEqual(1);
+  });
+
+  it('零尺寸输入不抛异常、不返回 0', () => {
+    const c = thumbnailCells(0, 0, 1, 60);
+    expect(c.cols).toBeGreaterThanOrEqual(1);
+    expect(c.rows).toBeGreaterThanOrEqual(1);
   });
 });

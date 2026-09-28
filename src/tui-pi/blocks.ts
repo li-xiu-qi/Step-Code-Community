@@ -7,7 +7,7 @@ import { Markdown, truncateToWidth, visibleWidth, wrapTextWithAnsi, sliceByColum
 import type { Component } from '@earendil-works/pi-tui';
 import { basename } from 'node:path';
 import type { DisplayItem, WelcomeData } from '../chat/types.js';
-import { decodePNG, ImageBlock } from './imageBlock.js';
+import { decodePNG, ImageBlock, thumbnailCells } from './imageBlock.js';
 import { offloadIfNeeded as offloadLargeResult, readCachedOutput } from '../agent/outputCache.js';
 
 /** Braille 转圈帧序列，供 running 状态动态 spinner。 */
@@ -480,16 +480,20 @@ export class ItemBlock implements Component {
     if (it.images === undefined || it.images.length === 0) return { lines: [], seqRows: [] };
     const out: string[] = [];
     const seqRows: ImageSeqRow[] = [];
-    const maxWidth = Math.max(20, width - 6);
+    // 缩略图化：转录区里只放小图（单图 ≤24×12 格、多图 10 格宽），点击进预览看
+    // 全尺寸。大图直接全宽渲染既占屏幕又让 100KB 级序列进入差分重绘路径（滚动
+    // 时反复重画，闪烁与卡顿的来源之一）。并排布局未做，多张纵向排列。
+    const available = Math.max(8, width - 6);
     for (const [imgIdx, img] of it.images.entries()) {
       const decoded = decodePNG(Buffer.from(img.base64, 'base64'));
       if (decoded === null) {
         out.push(c.dim(`  [图片无法渲染：${img.mediaType} ${img.width}×${img.height}]`));
         continue;
       }
-      const imgLines = new ImageBlock(decoded, maxWidth).render(width - 4).map((l) => `  ${l}`);
-      // 序列行是 ImageBlock 产物的末行（占位空行在前，moveUp + 序列在末行）
-      seqRows.push({ row: out.length + imgLines.length - 1, imgIdx, rows: imgLines.length });
+      const { cols, rows } = thumbnailCells(decoded.width, decoded.height, it.images!.length, available);
+      const imgLines = new ImageBlock(decoded, cols, rows).render(cols).map((l) => `  ${l}`);
+      // 序列行是 ImageBlock 产物的首行（位置无关布局：序列在前、空占位在后）
+      seqRows.push({ row: out.length, imgIdx, rows: imgLines.length });
       out.push(...imgLines);
     }
     return { lines: out, seqRows };

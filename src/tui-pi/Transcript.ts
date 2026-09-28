@@ -40,14 +40,14 @@ export interface TranscriptOptions {
  *
  * 基于布局树的 TUI 框架可以把点击处理器挂在图片节点上、由布局层算命中；本方是
  * string[] 渲染，没有布局树，所以在渲染时把图片区登记成表，鼠标点击的屏幕行
- * 换算成文档行后查表。startRow..docRow 是该图的占位区（前面的空占位行 + 末行的
- * sixel 序列行），blockIdx/imgIdx 用来找回 user 块里的原图 base64。
+ * 换算成文档行后查表。startRow 起 spanRows 行是该图的占位区（首行 sixel 序列行 +
+ * 后续空占位行），blockIdx/imgIdx 用来找回 user 块里的原图 base64。
  */
 export interface TranscriptImageRegion {
-  /** sixel 序列行的文档行号（占位区末行）。 */
-  readonly docRow: number;
-  /** 占位区起始文档行（docRow - 占位行数 + 1）。 */
+  /** 占位区起始文档行：sixel 序列行（图顶行，位置无关布局下序列在行数组首行）。 */
   readonly startRow: number;
+  /** 占位区行数（序列行 + 后续空占位行）。点击区 = [startRow, startRow + spanRows - 1]。 */
+  readonly spanRows: number;
   /** user 块在 blocks 中的下标。 */
   readonly blockIdx: number;
   /** 图片在该 user 块 images 数组中的下标。 */
@@ -388,7 +388,7 @@ export class Transcript implements Component {
         // 图片区域登记：块内 sixel 序列行换算成文档行（块起始行 + 本地行号）。
         // 只在块重渲时做（前缀缓存命中走上面的 regions 复用），成本 O(块数)。
         for (const seq of this.blocks[i]!.imageRows()) {
-          prefixRegions.push({ docRow: blockStart + seq.row, startRow: blockStart + seq.row - seq.rows + 1, blockIdx: i, imgIdx: seq.imgIdx });
+          prefixRegions.push({ startRow: blockStart + seq.row, spanRows: seq.rows, blockIdx: i, imgIdx: seq.imgIdx });
         }
       }
       this.prefixCache = { width, ver: this.structVer, lines: prefix, regions: prefixRegions };
@@ -400,7 +400,7 @@ export class Transcript implements Component {
     if (lastIdx >= 0) {
       const tailStart = head.length + prefix.length;
       for (const seq of this.blocks[lastIdx]!.imageRows()) {
-        tailRegions.push({ docRow: tailStart + seq.row, startRow: tailStart + seq.row - seq.rows + 1, blockIdx: lastIdx, imgIdx: seq.imgIdx });
+        tailRegions.push({ startRow: tailStart + seq.row, spanRows: seq.rows, blockIdx: lastIdx, imgIdx: seq.imgIdx });
       }
     }
     const regions = [...prefixRegions, ...tailRegions];
@@ -434,10 +434,10 @@ export class Transcript implements Component {
   }
 
   /**
-   * 命中查询：文档行 docRow 落在哪张图的占位区（含序列行）里。
+   * 命中查询：文档行 docRow 落在哪张图的占位区里。
    * 区域不重叠（图片按文档顺序排列），线性扫描足够；条数是个位数。
    */
   imageRegionAt(docRow: number): TranscriptImageRegion | undefined {
-    return this.imageRegions().find((r) => docRow >= r.startRow && docRow <= r.docRow);
+    return this.imageRegions().find((r) => docRow >= r.startRow && docRow < r.startRow + r.spanRows);
   }
 }

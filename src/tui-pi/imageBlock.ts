@@ -365,22 +365,59 @@ export function detectImageProtocol(): 'sixel' | 'halfblock' {
 }
 
 /**
+ * 缩略图占格计算：转录区里的小图尺寸（点击才进预览看大图）。
+ *
+ * 策略与对照实现一致：多图并排走小格（10 格宽、半高），单图按宽高比适配
+ * （最宽 24 格、最高 12 格，极端长宽比钳在 [0.25, 4] 防退化成细条）。
+ * 字符格按 9×18px 计，故格数宽高比与实际像素宽高比换算系数是 2。
+ */
+export function thumbnailCells(
+  imgWidth: number,
+  imgHeight: number,
+  count: number,
+  available: number,
+): { cols: number; rows: number } {
+  if (count > 1) {
+    const cols = Math.max(1, Math.min(10, available));
+    return { cols, rows: Math.max(1, Math.round(cols / 2)) };
+  }
+  const ratio = Math.max(0.25, Math.min(4, imgHeight / Math.max(1, imgWidth)));
+  const maxCols = Math.max(1, Math.min(24, available));
+  const maxRows = 12;
+  let cols = maxCols;
+  let rows = Math.max(1, Math.round(cols / (2 * ratio)));
+  if (rows > maxRows) {
+    rows = maxRows;
+    cols = Math.max(1, Math.min(maxCols, Math.round(2 * rows * ratio)));
+  }
+  return { cols, rows };
+}
+
+/**
  * 终端图片组件：sixel 优先，half-block 兜底。
  *
- * sixel 路径按终端像素宽度决定缩放（字符格宽按 9px 计）：591px 的图在 90 列终端
- * （810px）里按原尺寸渲染，不再受字符网格限制。序列占位行数按像素高 / 字符格高
- * （18px）向上取整，前 rows-1 行留空、末行上移后画，与 pi-tui Image 组件的
- * iterm2 分支同一套光标记账方式。
+ * sixel 路径按终端像素宽度决定缩放（字符格宽按 9px 计）。**序列行必须是位置无关的**：
+ * 它作为行数组的首行、后面跟 rows-1 个空占位行，图像从该行所在屏幕位置向下扩展。
+ * 曾经的实现是「空行在前、序列行带 \x1b[NA 上移前缀」，序列行的渲染效果依赖它
+ * 恰好落在哪一行——pi-tui 的差分渲染滚动后重写该行时光标已在新屏幕位置，上移
+ * 落点随之漂移，图画到错误区域且旧图不清，症状是闪烁/黑屏/残影（2026-09-28
+ * 用户实测三连）。位置上无关后，差分重写在任意滚动位置都画在该行当前处，成立。
+ *
+ * 占位行数 = 像素高 / 字符格高（18px）向上取整。注意 pi-tui 的 multi-row image
+ * 记账只认 kitty APC 的行数声明（extractKittyImageRows），sixel 行走的是普通行
+ * 路径，因此这套占位契约是我方自己与 WT 的约定，不依赖库的图片分支。
  */
 export class ImageBlock implements Component {
   private cachedLines?: string[];
   private cachedWidth?: number;
   private readonly image: DecodedImage;
   private readonly maxWidthCells: number;
+  private readonly maxHeightCells: number;
 
-  constructor(image: DecodedImage, maxWidthCells: number) {
+  constructor(image: DecodedImage, maxWidthCells: number, maxHeightCells = Number.POSITIVE_INFINITY) {
     this.image = image;
     this.maxWidthCells = maxWidthCells;
+    this.maxHeightCells = maxHeightCells;
   }
 
   /** 父容器内容更换时调用：清行缓存，下次 render 按新宽度重算。 */
@@ -397,25 +434,25 @@ export class ImageBlock implements Component {
     return lines;
   }
 
-  /** sixel 路径：返回占位行，序列在末行。 */
+  /** sixel 路径：序列行在首行（位置无关），后面 rows-1 个空占位行。 */
   private renderSixel(width: number): string[] {
     const { width: w, height: h } = this.image;
     const CELL_W = 9;
     const CELL_H = 18;
-    const targetWidthPx = Math.max(1, (Math.max(1, Math.min(width - 2, this.maxWidthCells))) * CELL_W);
-    // 只缩不放大：小图按原尺寸，保文字可读；大图缩到终端像素宽
-    const scale = Math.min(1, targetWidthPx / w);
+    // 尺寸：宽高同比例缩放，同时不超过 maxWidthCells 与 maxHeightCells（转录区缩略图
+    // 传小上限，预览浮层传大上限）。只缩不放大：小图按原尺寸保文字可读。
+    const cols = Math.max(1, Math.min(this.maxWidthCells, Math.max(1, width - 2)));
+    const rows = Math.max(1, Math.floor(this.maxHeightCells));
+    const scale = Math.min(1, (cols * CELL_W) / w, (rows * CELL_H) / h);
     const pxW = Math.max(1, Math.round(w * scale));
     let pxH = Math.max(1, Math.round(h * scale));
     if (pxH % 6 !== 0) pxH += 6 - (pxH % 6); // sixel band 对齐
     const scaled: DecodedImage = scale === 1 ? this.image : resizeNearest(this.image, pxW, pxH);
     const quant = quantize(scaled);
     const sequence = encodeSixel(quant, pxW, pxH);
-    const rows = Math.max(1, Math.ceil(pxH / CELL_H));
-    const lines: string[] = [];
-    for (let i = 0; i < rows - 1; i++) lines.push('');
-    const moveUp = rows - 1 > 0 ? `\x1b[${rows - 1}A` : '';
-    lines.push(moveUp + sequence);
+    const usedRows = Math.max(1, Math.ceil(pxH / CELL_H));
+    const lines: string[] = [sequence];
+    for (let i = 1; i < usedRows; i++) lines.push('');
     return lines;
   }
 

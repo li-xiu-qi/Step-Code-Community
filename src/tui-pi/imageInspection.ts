@@ -10,6 +10,26 @@
  */
 import type { DecodedImage } from './imageBlock.js';
 
+/**
+ * 按宽高比适配格数（预览浮层 fit 档用）：不超过 maxCols/maxRows，保持格宽高比
+ * 与像素宽高比一致（cell 9×18，系数 2）。
+ */
+export function fitImageCells(
+  imgWidth: number,
+  imgHeight: number,
+  maxCols: number,
+  maxRows: number,
+): { cols: number; rows: number } {
+  const ratio = Math.max(0.1, Math.min(10, imgHeight / Math.max(1, imgWidth)));
+  let cols = Math.max(1, maxCols);
+  let rows = Math.max(1, Math.round(cols / (2 * ratio)));
+  if (rows > maxRows) {
+    rows = Math.max(1, maxRows);
+    cols = Math.max(1, Math.min(maxCols, Math.round(2 * rows * ratio)));
+  }
+  return { cols, rows };
+}
+
 /** sixel 渲染的字符格像素尺寸（与 imageBlock.renderSixel 同一组常量）。 */
 export const PREVIEW_CELL_W = 9;
 export const PREVIEW_CELL_H = 18;

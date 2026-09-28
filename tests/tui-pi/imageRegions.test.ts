@@ -1,6 +1,9 @@
 /**
  * 图片区域登记测试：Transcript 把 sixel 序列行登记成文档行区域表，
  * 供预览浮层把鼠标点击行换算命中。覆盖单图/多图/降级/无图/缓存稳定性。
+ *
+ * 区域 = { startRow, spanRows }：startRow 是序列行（行数组首行），
+ * 点击区 = [startRow, startRow + spanRows - 1]。
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import type { DisplayItem } from '../../src/chat/types.js';
@@ -29,7 +32,7 @@ afterEach(() => {
 const W = 80;
 
 describe('Transcript 图片区域登记', () => {
-  it('单图：登记一条区域，占位区与序列行都可命中，区间外不命中', () => {
+  it('单图：登记一条区域，序列行与末行都可命中，区间外不命中', () => {
     const t = new Transcript();
     t.push(userWithImages('看图', [image(1)] as never));
     const lines = t.render(W);
@@ -37,13 +40,13 @@ describe('Transcript 图片区域登记', () => {
     expect(regions).toHaveLength(1);
     const r = regions[0]!;
     // 区域在产物行数范围内
-    expect(r.docRow).toBeLessThan(lines.length);
-    expect(r.startRow).toBeLessThanOrEqual(r.docRow);
-    // 序列行与占位行都命中
-    expect(t.imageRegionAt(r.docRow)).toBe(r);
+    expect(r.startRow + r.spanRows).toBeLessThanOrEqual(lines.length);
+    expect(r.spanRows).toBeGreaterThanOrEqual(1);
+    // 序列行（首行）与占位末行都命中
     expect(t.imageRegionAt(r.startRow)).toBe(r);
+    expect(t.imageRegionAt(r.startRow + r.spanRows - 1)).toBe(r);
     // 区间外不命中
-    expect(t.imageRegionAt(r.docRow + 1)).toBeUndefined();
+    expect(t.imageRegionAt(r.startRow + r.spanRows)).toBeUndefined();
     expect(t.imageRegionAt(r.startRow - 1)).toBeUndefined();
   });
 
@@ -51,24 +54,25 @@ describe('Transcript 图片区域登记', () => {
     const t = new Transcript();
     t.push({ kind: 'user', text: '看图', images: [image(7)] } as DisplayItem);
     t.render(W);
-    const r = t.imageRegionAt(t.imageRegions()[0]!.docRow)!;
-    const item = t.items()[r.blockIdx]!;
+    const r = t.imageRegions()[0]!;
+    const hit = t.imageRegionAt(r.startRow)!;
+    const item = t.items()[hit.blockIdx]!;
     expect(item.kind).toBe('user');
-    expect(item.kind === 'user' && item.images![r.imgIdx]!.id).toBe(7);
+    expect(item.kind === 'user' && item.images![hit.imgIdx]!.id).toBe(7);
   });
 
-  it('多图：按文档顺序登记两条区域，imgIdx 各自正确', () => {
+  it('多图：按文档顺序登记两条区域，imgIdx 各自正确且不重叠', () => {
     const t = new Transcript();
-    t.push({ kind: 'user', text: '两图', images: [image(1), image(2)] } as DisplayItem);
+    t.push({ kind: 'user', text: '两图', images: [image(1), image(2)] });
     t.render(W);
     const regions = t.imageRegions();
     expect(regions).toHaveLength(2);
     expect(regions.map((r) => r.imgIdx)).toEqual([0, 1]);
-    // 第一条在第二条之前，且不重叠
-    expect(regions[0]!.docRow).toBeLessThan(regions[1]!.startRow);
-    // 两条各自命中
-    expect(t.imageRegionAt(regions[0]!.docRow)!.imgIdx).toBe(0);
-    expect(t.imageRegionAt(regions[1]!.docRow)!.imgIdx).toBe(1);
+    // 第一条占位区结束于第二条起始之前（不重叠）
+    expect(regions[0]!.startRow + regions[0]!.spanRows).toBeLessThanOrEqual(regions[1]!.startRow);
+    // 两条各自命中（第二张的序列行）
+    expect(t.imageRegionAt(regions[0]!.startRow)!.imgIdx).toBe(0);
+    expect(t.imageRegionAt(regions[1]!.startRow)!.imgIdx).toBe(1);
   });
 
   it('降级图（坏 base64）不进区域表', () => {
@@ -106,6 +110,8 @@ describe('Transcript 图片区域登记', () => {
     t.push({ kind: 'user', text: '看图', images: [image(1)] } as DisplayItem);
     const lines = t.render(W);
     const r = t.imageRegions()[0]!;
-    expect(lines[r.docRow]).toContain('\x1bP0;1;q');
+    expect(lines[r.startRow]).toContain('\x1bP0;1;q');
+    // 位置无关：序列行不带 moveUp 前缀，滚动后重写不漂移
+    expect(/^\x1b\[\d+A/.test(lines[r.startRow]!)).toBe(false);
   });
 });
