@@ -4,9 +4,10 @@
  * 没有 React hooks，状态是普通字段；改数据后显式 requestRender()，由 pi-tui 逐行 diff。
  * App.tsx 里那批 xxxRef.current（给闭包提供即时值）随之消失，全部退化成普通字段。
  */
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
+import { randomBytes } from 'node:crypto';
 import { basename, join } from 'node:path';
 import { Container, ProcessTerminal, TuiAltScreen, ScrollView, VStack, matchesKey, getKeybindings } from '@earendil-works/pi-tui';
 import type { Component, KeybindingsConfig, SelectItem } from '@earendil-works/pi-tui';
@@ -106,7 +107,7 @@ import {
 import { computeCtrlSSteer } from './steer.js';
 import { ChatAutocompleteProvider } from './completion.js';
 import { clipboardToolHint, readClipboardImage } from '../chat/clipboardImage.js';
-import { countHistoryImages, extractImageContent, formatImagePathText, ImageAttachmentStore } from '../chat/imageAttachment.js';
+import { countHistoryImages, extractImageContent, formatImagePathText, ImageAttachmentStore, type ImageAttachment } from '../chat/imageAttachment.js';
 import { askLine, modelItems, modelTabs, showPicker, agentItems, sessionItems, thinkItems, type PickerOverlay } from './pickers.js';
 import { StreamBuffer } from '../chat/streamBuffer.js';
 import { appendText, settleThinking } from '../chat/streamReducer.js';
@@ -1087,13 +1088,47 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
         width: img.width,
         height: img.height,
         bytes: Buffer.byteLength(img.base64, 'base64'),
+        ...(img.path !== undefined ? { path: img.path } : {}),
       },
       close,
       requestRender: () => this.tui.requestRender(),
+      openOriginal: () => this.openImageOriginal(img),
     });
     this.imagePreviewHandle = this.tui.showOverlay(overlay, { width: '95%', maxHeight: '95%', anchor: 'center' });
     this.imagePreviewHandle.focus();
     this.tui.requestRender();
+  }
+
+  /**
+   * 「原图」按钮的处理：用系统默认程序打开图片文件。
+   *
+   * 优先用 attach 时落盘的路径（内容寻址附件仓）；小图（低于 offload 阈值）内联不落盘，
+   * 此时先把内存里的 base64 导出到临时目录再打开，与对照实现的临时文件路径策略同效。
+   * 打开是 detached 的外部进程，不 await；失败只在转录区打一条 note，不阻断预览。
+   */
+  private openImageOriginal(img: ImageAttachment): void {
+    let file = img.path;
+    if (file === undefined) {
+      try {
+        const ext = img.mediaType.split('/')[1] ?? 'png';
+        file = join(tmpdir(), `step-code-image-${randomBytes(4).toString('hex')}.${ext}`);
+        writeFileSync(file, Buffer.from(img.base64, 'base64'));
+      } catch {
+        this.push({ kind: 'note', text: '原图导出失败：临时目录不可写' });
+        return;
+      }
+    }
+    // start 的第一个空参数是窗口标题占位（cmd 的 quirk），不能省；windowsHide 防
+    // 打开图片查看器时闪一个控制台窗口。
+    const child = spawn('cmd', ['/c', 'start', '', file], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+    child.on('error', () => {
+      this.push({ kind: 'note', text: `原图打开失败：${file}` });
+    });
+    child.unref();
   }
 
   /**

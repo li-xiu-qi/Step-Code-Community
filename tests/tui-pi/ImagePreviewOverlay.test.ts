@@ -96,10 +96,9 @@ describe('ImagePreviewOverlay 鼠标路由', () => {
     // 工具栏行 + 「适配」按钮首列（shift 后 startCol+2 起，按钮区间由 render 登记）
     // 浮动元素：从输出反推工具栏行号——第一张卡片底部边框的上一行
     const lines = overlay.renderAt(100, 40);
-    const bottom = lines.findIndex((l) => l.trimStart().startsWith('╰'));
-    const toolbarRow = bottom - 1;
-    // 点「适配」按钮：[适配] 在工具栏文本最左，卡片左边框 + 2 + pad
-    const toolbarLine = lines[toolbarRow]!;
+    // 工具栏行直接按内容定位（卡片行序：上边框/空/图区/空/工具栏/原图行/下边框）
+    const toolbarLine = lines.find((l) => l.includes('[适配]'))!;
+    const toolbarRow = lines.indexOf(toolbarLine);
     const col = toolbarLine.indexOf('[适配]');
     expect(col).toBeGreaterThanOrEqual(0);
     overlay.handleInput(`\x1b[<0;${col + 1};${toolbarRow + 1}M`);
@@ -160,5 +159,57 @@ describe('ImagePreviewOverlay 渲染结构', () => {
   it('parseSGRMouse 与浮层路由对得上（工具栏点击用的序列格式）', () => {
     const ev = parseSGRMouse('\x1b[<0;5;1M');
     expect(ev).toEqual({ kind: 'press', button: 0, col: 4, row: 0 });
+  });
+});
+
+describe('ImagePreviewOverlay 打开原图', () => {
+  function makeWithOriginal(img = gradient(1200, 720), path?: string): { overlay: ImagePreviewOverlay; opened: () => number } {
+    let opened = 0;
+    const overlay = new ImagePreviewOverlay({
+      image: img,
+      meta: { mediaType: 'image/png', width: img.width, height: img.height, bytes: 12345, name: 'shot.png', ...(path !== undefined ? { path } : {}) },
+      close: () => {},
+      requestRender: () => {},
+      openOriginal: () => { opened += 1; },
+    });
+    return { overlay, opened: () => opened };
+  }
+
+  it('工具栏含「原图」按钮', () => {
+    const { overlay } = makeWithOriginal();
+    const joined = overlay.renderAt(100, 40).join('\n');
+    expect(joined).toContain('[原图]');
+  });
+
+  it('有落盘路径时底部行显示路径（含文件名）', () => {
+    const { overlay } = makeWithOriginal(undefined, 'C:\sessions\attachments\abc123.png');
+    const joined = overlay.renderAt(100, 40).join('\n');
+    expect(joined).toContain('abc123.png');
+    expect(joined).toContain('原图：');
+  });
+
+  it('无路径（小图内联）时底部行提示导出兜底', () => {
+    const { overlay } = makeWithOriginal();
+    const joined = overlay.renderAt(100, 40).join('\n');
+    expect(joined).toContain('导出');
+    expect(joined).not.toContain('abc123.png');
+  });
+
+  it('超宽路径截断保尾（文件名不被截掉）', () => {
+    const long = 'C:\\' + 'verylongdirectoryname'.repeat(12) + '\\final-name.png';
+    const { overlay } = makeWithOriginal(undefined, long);
+    const line = overlay.renderAt(100, 40).find((l) => l.includes('原图：'))!;
+    expect(line).toContain('final-name.png');
+  });
+
+  it('点击「原图」按钮触发打开回调', () => {
+    const { overlay, opened } = makeWithOriginal();
+    const lines = overlay.renderAt(100, 40);
+    const toolbarLine = lines.find((l) => l.includes('[原图]'))!;
+    const toolbarRow = lines.indexOf(toolbarLine);
+    const col = toolbarLine.indexOf('[原图]');
+    overlay.handleInput(`\x1b[<0;${col + 1};${toolbarRow + 1}M`); // press 工具栏行
+    overlay.handleInput(`\x1b[<0;${col + 1};${toolbarRow + 1}m`); // release 同位置
+    expect(opened()).toBe(1);
   });
 });
