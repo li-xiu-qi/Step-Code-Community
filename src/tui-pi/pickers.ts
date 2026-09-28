@@ -628,40 +628,75 @@ export async function askValidated(
 
 export function askLine(tui: TUI, hint: string, initial?: string, keyHint?: string): Promise<string | null> {
   return new Promise<string | null>((resolve) => {
-    const host = new Container();
-    let settled = false;
     // 记住调用前的焦点目标，finish 时恢复——否则 askLine 结束后焦点悬空，
     // 输入进不去、ctrl+c 也不到 ChatEditor 处理（2026-08-18 /rename 卡死）。
     const prevFocus = (tui as TUI & { getFocusedComponent?: () => Component | null }).getFocusedComponent?.() ?? null;
+    // 挂载通道必须是 showOverlay 而不是 addChild：主界面是 dock 布局根
+    // （setLayoutRoot），TuiAltScreen.render 是 layoutRoot?.render() ?? super.render()，
+    // 布局根存在时 addChild 平铺的 children 完全不参与渲染——askLine 的输入框
+    // 根本画不出来，用户看到「/rename 后没有输入框」（2026-09-28 真机复现）。
+    // overlay 与布局根正交，是 dock 下唯一可靠的浮层通道（图片预览浮层同款）。
+    //
+    // 宿主用 LineHost 而不是 Container：输入分发是 focusedComponent.handleInput(data)，
+    // 而 Container 没有 handleInput，焦点落在容器上输入会被静默丢弃（第一次改
+    // showOverlay 时的实测回归：提交不触发、Esc 不取消）。LineHost 把输入转发给
+    // 内部 editor，EscEditor 的 Esc 截流因此仍然生效。
+    const editor = new EscEditor(tui, editorTheme);
+    const hintLine = new Banner();
+    hintLine.setLines([c.dim(hint)]);
+    let keyLine: Banner | undefined;
+    if (keyHint !== undefined) {
+      keyLine = new Banner();
+      keyLine.setLines([c.dim(keyHint)]);
+    }
+    const host = new LineHost(hintLine, editor, keyLine);
+    let settled = false;
+    const handle = tui.showOverlay(host, { anchor: 'bottom-center', width: '100%' });
     const finish = (v: string | null): void => {
       if (settled) return;
       settled = true;
-      tui.removeChild(host);
-      // 恢复调用前的焦点；拿不到就不动，让 tui 自己处理
+      handle.hide();
+      // 恢复调用前的焦点；overlay 的 hide 已带 preFocus 恢复，这里是兜底
       if (prevFocus !== null) tui.setFocus(prevFocus);
       tui.requestRender();
       resolve(v);
     };
-    const hintLine = new Banner();
-    hintLine.setLines([c.dim(hint)]);
-    const editor = new EscEditor(tui, editorTheme);
     editor.onSubmit = (text) => finish(text);
     editor.onEscapeKey = () => {
       finish(null);
       return true;
     };
     if (initial !== undefined) editor.setText(initial);
-    host.addChild(hintLine);
-    host.addChild(editor);
-    if (keyHint !== undefined) {
-      const keyLine = new Banner();
-      keyLine.setLines([c.dim(keyHint)]);
-      host.addChild(keyLine);
-    }
-    tui.addChild(host);
-    tui.setFocus(editor);
+    handle.focus();
     tui.requestRender();
   });
+}
+
+/**
+ * askLine 的 overlay 宿主：把提示行、输入框、按键提示拼成自己的一帧，并把输入
+ * 原样转发给内部 editor（Container 没有 handleInput，做 overlay 体会丢输入）。
+ * 不裁剪子行——editor 单行、Banner 提示单行，三段都是已知短内容。
+ */
+class LineHost implements Component {
+  constructor(
+    private readonly hint: Banner,
+    private readonly editor: EscEditor,
+    private readonly keyHint: Banner | undefined,
+  ) {}
+  render(width: number): string[] {
+    // Banner.render 不收参数（内容极短按行原样出），宽度由调用方保证已裁剪
+    const lines = [...this.hint.render(), ...this.editor.render(width)];
+    if (this.keyHint !== undefined) lines.push(...this.keyHint.render());
+    return lines;
+  }
+  handleInput(data: string): void {
+    this.editor.handleInput(data);
+  }
+  invalidate(): void {
+    this.hint.invalidate();
+    this.editor.invalidate();
+    this.keyHint?.invalidate();
+  }
 }
 
 /** Editor 子类：把 Esc 交给引导（父类只用它关补全菜单，这里没有补全）。 */

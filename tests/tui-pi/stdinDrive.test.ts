@@ -76,3 +76,42 @@ describe.skipIf(!hasDist)('stdin 驱动 TUI（输入链在线）', () => {
     expect(r.alive).toBe(true);
   }, 20000);
 });
+
+/** 注入 slash 命令并回收 stdout 全文（断言 hint 文案是否真的画出来）。 */
+async function driveAppCapture(inject: string, expected: string): Promise<{ out: string; alive: boolean }> {
+  const env = { ...process.env };
+  delete env['NODE_ENV'];
+  delete env['VITEST'];
+  delete env['VITEST_WORKER_ID'];
+  const child = spawn(process.execPath, [entry], { cwd: repoRoot, env, stdio: ['pipe', 'pipe', 'pipe'] });
+  let out = '';
+  let exited = false;
+  child.stdout.on('data', (chunk: Buffer) => { out += chunk.toString('utf8'); });
+  child.stderr.on('data', (chunk: Buffer) => { out += chunk.toString('utf8'); });
+  child.once('exit', () => { exited = true; });
+  await new Promise<void>((resolve) => {
+    const t = setTimeout(resolve, 8000);
+    const iv = setInterval(() => { if (out.length > 200 || exited) { clearInterval(iv); clearTimeout(t); resolve(); } }, 50);
+  });
+  child.stdin!.write(inject);
+  // 轮询等 hint 出现或超时（固定 sleep 在慢机器上会 flaky）
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline && !out.includes(expected)) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  }
+  await new Promise<void>((resolve) => setTimeout(resolve, 300));
+  const alive = !exited;
+  child.kill();
+  await new Promise<void>((resolve) => child.once('exit', () => resolve()));
+  return { out, alive };
+}
+
+describe.skipIf(!hasDist)('stdin 驱动 /rename（输入框可见性回归）', () => {
+  it('输入 /rename：hint 行出现在终端输出里，进程存活', async () => {
+    const r = await driveAppCapture('/rename\r');
+    // 「/rename 后没有输入框」的回归判据：askLine 的提示行（i18n zh-CN）
+    // 必须出现在 stdout。dock 布局根 + addChild 旧路径下它完全不渲染。
+    expect(r.out).toContain('当前会话新名字');
+    expect(r.alive).toBe(true);
+  }, 25000);
+});

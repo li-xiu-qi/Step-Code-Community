@@ -11,7 +11,7 @@
  * TuiAltScreen 下正常；console.log 保留作诊断输出。
  */
 import { describe, expect, it } from 'vitest';
-import { TuiAltScreen } from '@earendil-works/pi-tui';
+import { TuiAltScreen, Text, VStack } from '@earendil-works/pi-tui';
 import type { Terminal } from '@earendil-works/pi-tui';
 import { askLine, PickerOverlay } from '../../src/tui-pi/pickers.js';
 
@@ -81,5 +81,52 @@ describe('askLine 在 TuiAltScreen 下（生产链路验证）', () => {
     try { result = await Promise.race([p, tick().then(() => 'TIMEOUT_NO_RESOLVE')]); }
     catch (e) { result = 'THREW:' + String(e); }
     console.log('[结果] Esc resolve =', JSON.stringify(result));
+  });
+});
+
+describe('askLine 在 dock 布局根下的可见性（/rename 无输入框回归）', () => {
+  const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+  it('布局根存在时，askLine 的提示行仍出现在渲染输出里', async () => {
+    const term = new FakeTerminal();
+    const tui = new TuiAltScreen(term);
+    tui.start();
+    // 模拟主界面的 dock 布局根（PiChat.setLayoutRoot 的那一层）
+    tui.setLayoutRoot(new VStack([{ component: new Text('主界面内容'), grow: 1, shrink: 1 }]));
+    await tick();
+    term.reset();
+
+    const p = askLine(tui, '输入会话新名称');
+    await tick();
+    // 手动触发一帧渲染，收集终端写出的字节
+    tui.renderNow(true);
+    const out = term.allOutput();
+
+    // 修复前（addChild 平铺）：hint 完全不出现——dock 下 children 不参与渲染
+    expect(out).toContain('输入会话新名称');
+    // Esc 收尾防 promise 悬挂
+    term.send(ESC);
+    await Promise.race([p, tick()]);
+  });
+
+  it('提交后输入框从渲染输出里消失（不残留）', async () => {
+    const term = new FakeTerminal();
+    const tui = new TuiAltScreen(term);
+    tui.start();
+    tui.setLayoutRoot(new VStack([{ component: new Text('主界面内容'), grow: 1, shrink: 1 }]));
+    await tick();
+
+    const p = askLine(tui, '输入会话新名称');
+    await tick();
+    term.send(' session-2');
+    term.send('\r');
+    const result = await Promise.race([p, tick().then(() => 'TIMEOUT' as const)]);
+    expect(result).toBe('session-2');
+
+    term.reset();
+    tui.renderNow(true);
+    // hint 与输入内容都不再出现（overlay 已 hide）
+    expect(term.allOutput()).not.toContain('输入会话新名称');
+    expect(term.allOutput()).not.toContain('session-2');
   });
 });
