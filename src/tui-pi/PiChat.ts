@@ -126,7 +126,7 @@ import { sortAgents, AgentsOverlay } from './AgentsOverlay.js';
 import { openProviderManager, runProviderWizard } from './ProviderManager.js';
 import { allTodosDone } from '../chat/chromePanels.js';
 import { ItemBlock, summarizeInput, SPINNER_FRAME_MS, tickSpinner } from './blocks.js';
-import { decodePNG } from './imageBlock.js';
+import { decodePNG, rehydrateToolImages } from './imageBlock.js';
 import { ImagePreviewOverlay } from './ImagePreviewOverlay.js';
 import { mouseDebug } from './ChatEditor.js';
 import { FILE_LINK_SCHEME, fileUrlToPath, openWithSystem } from './fileLink.js';
@@ -5090,15 +5090,22 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
             const result = ev.result ?? '';
             const cachedPath = offloadIfNeeded(toolItem.name, result);
             // read_media 等回传的图片保留在条目上：转录区渲染缩略图、点击进预览
-            // （与 user 贴图同一套机制）。历史回放不带（快照无 base64），老会话不受影响。
+            // （与 user 贴图同一套机制）。base64 已被 offloadMedia 换成 stepref 附件
+            // 指针，先还原成真 base64 再挂（UI 渲染层不认指针，2026-09-28 真机
+            // 截图里那行「[图片无法渲染：image/png]」就是这条）；历史回放不带
+            // （快照无 base64），老会话不受影响。
             const imageCount = ev.images?.length ?? 0;
+            const uiImages =
+              imageCount > 0
+                ? rehydrateToolImages(ev.images, this.deps.store.attachments, this.session.cwd)
+                : undefined;
             return {
               ...toolItem,
               status: ev.isError ? 'error' : 'ok',
               result: cachedPath !== undefined ? undefined : result,
               resultFile: cachedPath,
               resultSize: result.length,
-              ...(imageCount > 0 ? { images: ev.images } : {}),
+              ...(uiImages !== undefined ? { images: uiImages } : {}),
             };
           },
         );

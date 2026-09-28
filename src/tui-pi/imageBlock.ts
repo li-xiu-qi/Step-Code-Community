@@ -19,6 +19,8 @@ import { inflateSync } from 'node:zlib';
 import { spawnSync } from 'node:child_process';
 import { introducer, FINALIZER } from 'sixel';
 import type { Component } from '@earendil-works/pi-tui';
+import { isStepref } from '../session/attachments.js';
+import type { ToolResultImage } from '../tools/types.js';
 
 export interface DecodedImage {
   width: number;
@@ -391,6 +393,33 @@ export function thumbnailCells(
     cols = Math.max(1, Math.min(maxCols, Math.round(2 * rows * ratio)));
   }
   return { cols, rows };
+}
+
+/**
+ * UI 层还原工具结果图的 base64。
+ *
+ * 背景：read_media 等工具回传图片时 offloadMedia 把 base64 换成 stepref:<hash> 附件仓
+ * 指针（内存只持指针是附件仓的设计初衷，压缩大图 base64 常驻 history 的问题靠它解）。
+ * 但 UI 渲染层不认指针——decodePNG 拿到的是「stepref:...」这串文本的字节，必然
+ * 解析失败、转录区显示「[图片无法渲染]」（2026-09-28 真机截图复现）。
+ *
+ * 在挂到 UI item 之前还原：stepref 走 rehydrate（附件仓自带内容寻址缓存，同一张图
+ * 重复渲染不重复读盘）；还原失败（附件文件被移走）置空串，渲染层走降级文本行；
+ * 非 stepref（小图内联未落盘）原样返回。
+ */
+export function rehydrateToolImages(
+  images: readonly ToolResultImage[] | undefined,
+  store: { rehydrate(cwd: string, stepref: string): string | null } | undefined,
+  cwd: string,
+): ToolResultImage[] | undefined {
+  if (images === undefined) return undefined;
+  if (images.length === 0) return [];
+  return images.map((im) => {
+    if (!isStepref(im.base64)) return im;
+    if (store === undefined) return { ...im, base64: '' };
+    const back = store.rehydrate(cwd, im.base64);
+    return back === null ? { ...im, base64: '' } : { ...im, base64: back };
+  });
 }
 
 /**
