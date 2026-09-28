@@ -14,6 +14,7 @@ import {
   encodeSixel,
   ImageBlock,
   quantize,
+  rehydrateToolImages,
   thumbnailCells,
   type DecodedImage,
 } from '../../src/tui-pi/imageBlock.js';
@@ -306,5 +307,62 @@ describe('thumbnailCells', () => {
     const c = thumbnailCells(0, 0, 1, 60);
     expect(c.cols).toBeGreaterThanOrEqual(1);
     expect(c.rows).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('rehydrateToolImages（UI 层还原 stepref 指针）', () => {
+  const REAL = Buffer.from(PNG_B64, 'base64').toString('base64');
+  const store = (back: string | null, calls: string[] = []) => ({
+    rehydrate(cwd: string, stepref: string): string | null {
+      calls.push(`${cwd}|${stepref}`);
+      return back;
+    },
+  });
+
+  it('stepref 指针还原为真 base64（渲染层才能解码）', () => {
+    const calls: string[] = [];
+    const out = rehydrateToolImages(
+      [{ mediaType: 'image/png', base64: `stepref:${'a'.repeat(64)}` }],
+      store(REAL, calls),
+      'C:/work',
+    );
+    expect(out).toHaveLength(1);
+    expect(out![0]!.base64).toBe(REAL);
+    expect(calls[0]).toBe(`C:/work|stepref:${'a'.repeat(64)}`);
+  });
+
+  it('非 stepref（小图内联未落盘）原样返回、不碰 store', () => {
+    const calls: string[] = [];
+    const out = rehydrateToolImages([{ mediaType: 'image/png', base64: REAL }], store('SHOULD-NOT-BE-USED', calls), 'C:/work');
+    expect(out![0]!.base64).toBe(REAL);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('还原失败（附件被移走）置空串：渲染层走降级行而不是把指针当图', () => {
+    const out = rehydrateToolImages([{ mediaType: 'image/png', base64: 'stepref:dead' }], store(null), 'C:/work');
+    expect(out![0]!.base64).toBe('');
+  });
+
+  it('store 缺失时置空串，不抛', () => {
+    const out = rehydrateToolImages([{ mediaType: 'image/png', base64: 'stepref:x' }], undefined, 'C:/work');
+    expect(out![0]!.base64).toBe('');
+  });
+
+  it('空数组/undefined 原样返回', () => {
+    expect(rehydrateToolImages(undefined, store(REAL), 'C:/work')).toBeUndefined();
+    expect(rehydrateToolImages([], store(REAL), 'C:/work')).toEqual([]);
+  });
+
+  it('混合输入：stepref 还原、内联直通，顺序保持', () => {
+    const out = rehydrateToolImages(
+      [
+        { mediaType: 'image/png', base64: 'stepref:one' },
+        { mediaType: 'image/jpeg', base64: REAL },
+      ],
+      store(REAL),
+      'C:/work',
+    );
+    expect(out!.map((i) => i.base64)).toEqual([REAL, REAL]);
+    expect(out![1]!.mediaType).toBe('image/jpeg');
   });
 });
