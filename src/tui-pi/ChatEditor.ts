@@ -14,7 +14,27 @@ import {
   visibleWidth,
 } from '@earendil-works/pi-tui';
 import { initialNavState, type HistoryNavState } from '../session/inputHistory.js';
+import { appendFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { parseSGRMouse, type MouseEvent } from './mouseEvents.js';
+
+/**
+ * 真机鼠标链路诊断：STEP_CODE_DEBUG_MOUSE=1 时把 handleInput 收到的原始 data 逐条
+ * 追加到 ~/.step-code/debug-mouse.log（最多 2000 条后自停）。排查「点击图不预览」
+ * 这类只在真机出现的链路断裂：raw 段是终端上报的原始字节（JSON 转义后 ESC 可见），
+ * 与 PiChat.handleTerminalMouse 写的 ev/命中段对照，就能看出断在哪一环。
+ */
+let mouseDebugCount = 0;
+export function mouseDebug(line: string): void {
+  if (process.env.STEP_CODE_DEBUG_MOUSE !== '1' || mouseDebugCount >= 2000) return;
+  mouseDebugCount += 1;
+  try {
+    appendFileSync(join(homedir(), '.step-code', 'debug-mouse.log'), `${new Date().toISOString()} ${line}\n`);
+  } catch {
+    // 诊断日志写失败不影响主流程
+  }
+}
 
 /**
  * 输入提示符。用 `›`（U+203A）：比 `>` 窄一格，不与正文引用块（`>`）或 diff 标记混淆。
@@ -214,6 +234,7 @@ export class ChatEditor extends Editor {
   onTerminalMouse?: (ev: MouseEvent) => void;
 
   override handleInput(data: string): void {
+    mouseDebug(`raw=${JSON.stringify(data).slice(0, 200)}`);
     // PasteBurst 兜底一：含换行的散装文本块（无转义序列）必是粘贴——键盘输入的
     // 走父类的换行分支（直接插原块会把 \r 原样塞进缓冲区）。
     if (

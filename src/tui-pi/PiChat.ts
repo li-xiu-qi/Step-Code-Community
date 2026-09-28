@@ -107,7 +107,7 @@ import {
 import { computeCtrlSSteer } from './steer.js';
 import { ChatAutocompleteProvider } from './completion.js';
 import { clipboardToolHint, readClipboardImage } from '../chat/clipboardImage.js';
-import { countHistoryImages, extractImageContent, formatImagePathText, ImageAttachmentStore, type ImageAttachment } from '../chat/imageAttachment.js';
+import { countHistoryImages, extractImageContent, formatImagePathText, ImageAttachmentStore } from '../chat/imageAttachment.js';
 import { askLine, modelItems, modelTabs, showPicker, agentItems, sessionItems, thinkItems, type PickerOverlay } from './pickers.js';
 import { StreamBuffer } from '../chat/streamBuffer.js';
 import { appendText, settleThinking } from '../chat/streamReducer.js';
@@ -128,6 +128,7 @@ import { allTodosDone } from '../chat/chromePanels.js';
 import { ItemBlock, summarizeInput, SPINNER_FRAME_MS, tickSpinner } from './blocks.js';
 import { decodePNG } from './imageBlock.js';
 import { ImagePreviewOverlay } from './ImagePreviewOverlay.js';
+import { mouseDebug } from './ChatEditor.js';
 import { FILE_LINK_SCHEME, fileUrlToPath, openWithSystem } from './fileLink.js';
 import { copyTextToClipboard, revealInFolder } from './pathActions.js';
 import { PathActionMenu, type PathAction } from './PathActionMenu.js';
@@ -1059,6 +1060,11 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
    * 没有可交互对象，静默忽略保持既有行为。
    */
   private handleTerminalMouse(ev: { kind: string; button: number; col: number; row: number }): void {
+    if (process.env.STEP_CODE_DEBUG_MOUSE === '1') {
+      const top = this.transcriptScrollView?.scrollTop ?? 0;
+      const probe = this.transcript.imageRegionAt(ev.row + top);
+      mouseDebug(`ev=${JSON.stringify(ev)} scrollTop=${top} hit=${probe !== undefined ? `${probe.blockIdx}/${probe.imgIdx}@${probe.startRow}+${probe.spanRows}` : 'none'}`);
+    }
     if (ev.kind !== 'press' || ev.button !== 0) return;
     if (this.promptActive || this.imagePreviewHandle !== null) return;
     const scrollTop = this.transcriptScrollView?.scrollTop ?? 0;
@@ -1067,11 +1073,23 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     this.openImagePreview(region.blockIdx, region.imgIdx);
   }
 
-  /** 打开图片预览浮层：从 user 块的 images 取回原图 base64 解码，焦点移交浮层。 */
+  /**
+   * 打开图片预览浮层：从块上的图片数组取回原图 base64 解码，焦点移交浮层。
+   * user 块（贴图）与 tool 块（read_media 等工具结果图）共用同一套区域登记与入口。
+   * 尺寸取解码后的真实值（快照里的记录值可能与实际不一致）。
+   */
   private openImagePreview(blockIdx: number, imgIdx: number): void {
     const item = this.transcript.items()[blockIdx];
-    if (item === undefined || item.kind !== 'user' || item.images === undefined) return;
-    const img = item.images[imgIdx];
+    if (item === undefined) return;
+    let img: { base64: string; mediaType: string } | undefined;
+    let filePath: string | undefined;
+    if (item.kind === 'user') {
+      const picked = item.images?.[imgIdx];
+      img = picked;
+      filePath = picked?.path;
+    } else if (item.kind === 'tool') {
+      img = item.images?.[imgIdx];
+    }
     if (img === undefined) return;
     const decoded = decodePNG(Buffer.from(img.base64, 'base64'));
     if (decoded === null) return; // 解码失败：转录区里已经是降级文本行，点不到区域
@@ -1085,10 +1103,10 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       image: decoded,
       meta: {
         mediaType: img.mediaType,
-        width: img.width,
-        height: img.height,
+        width: decoded.width,
+        height: decoded.height,
         bytes: Buffer.byteLength(img.base64, 'base64'),
-        ...(img.path !== undefined ? { path: img.path } : {}),
+        ...(filePath !== undefined ? { path: filePath } : {}),
       },
       close,
       requestRender: () => this.tui.requestRender(),
@@ -1106,7 +1124,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
    * 此时先把内存里的 base64 导出到临时目录再打开，与对照实现的临时文件路径策略同效。
    * 打开是 detached 的外部进程，不 await；失败只在转录区打一条 note，不阻断预览。
    */
-  private openImageOriginal(img: ImageAttachment): void {
+  private openImageOriginal(img: { base64: string; mediaType: string; path?: string }): void {
     let file = img.path;
     if (file === undefined) {
       try {
@@ -5052,21 +5070,16 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
             const toolItem = it as Extract<DisplayItem, { kind: 'tool' }>;
             const result = ev.result ?? '';
             const cachedPath = offloadIfNeeded(toolItem.name, result);
-            // 终端图片渲染支持已于 2026-09-22 拆除（pi-tui 对 Windows Terminal 恒无图片
-            // 能力，WT 内联渲染留过大片空白占位）。工具结果里的图片只留一行计数提示，
- // 不渲染、不占版面；探活仍走模型侧的 image content block，不受影响。
+            // read_media 等回传的图片保留在条目上：转录区渲染缩略图、点击进预览
+            // （与 user 贴图同一套机制）。历史回放不带（快照无 base64），老会话不受影响。
             const imageCount = ev.images?.length ?? 0;
             return {
               ...toolItem,
               status: ev.isError ? 'error' : 'ok',
-              result:
-                cachedPath !== undefined
-                  ? undefined
-                  : imageCount > 0
-                    ? `${result}\n（${imageCount} 张图片结果，终端不显示）`
-                    : result,
+              result: cachedPath !== undefined ? undefined : result,
               resultFile: cachedPath,
               resultSize: result.length,
+              ...(imageCount > 0 ? { images: ev.images } : {}),
             };
           },
         );

@@ -1,5 +1,6 @@
 import type { GoalStatus } from '../agent/goal/mode.js';
 import type { ImageAttachment } from './imageAttachment.js';
+import type { ToolResultImage } from '../tools/types.js';
 /** 嵌套子 agent 的工具调用事件（由 runner onEvent 实时回传，挂到父 spawn_agent 条目下）。 */
 export interface SubagentToolEvent {
   name: string;
@@ -68,6 +69,11 @@ export type DisplayItem =
        * 取这个数（O(N)/帧，且与 prefixCache 的冻结前提冲突），由事件源广播。
        */
       subagentParallel?: number;
+      /**
+       * read_media 等工具回传的图片载荷。UI 侧在结果下方内联渲染缩略图并可点击进
+       * 预览（与 user 贴图同一套机制）；历史会话回放不带（快照里没有 base64）。
+       */
+      images?: ToolResultImage[];
     }
   | {
       /**

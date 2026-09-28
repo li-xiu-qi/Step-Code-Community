@@ -476,21 +476,31 @@ export class ItemBlock implements Component {
    *  同时返回每张 sixel 图的序列行在产物中的本地行号（seqRows）：sixel 序列行是该图
    *  占位区的末行（前面 rows-1 行是空占位），预览浮层的点击命中与文档行区域登记用它。
    *  降级文本行不进 seqRows（点了也没有原图可预览）。 */
-  private renderUserImages(it: Extract<DisplayItem, { kind: 'user' }>, width: number): { lines: string[]; seqRows: ImageSeqRow[] } {
-    if (it.images === undefined || it.images.length === 0) return { lines: [], seqRows: [] };
+  /**
+   * 内联图片区（user 贴图与 read_media 工具结果图共用）：缩略图 + 序列行登记。
+   *
+   * 同时返回每张 sixel 图的序列行在产物中的本地行号（seqRows）：sixel 序列行是该图
+   * 占位区的首行（后面 rows-1 行是空占位），预览浮层的点击命中与文档行区域登记用它。
+   * 降级文本行不进 seqRows（点了也没有原图可预览）。
+   */
+  private renderInlineImages(
+    images: readonly { base64: string; mediaType: string }[],
+    width: number,
+  ): { lines: string[]; seqRows: ImageSeqRow[] } {
+    if (images.length === 0) return { lines: [], seqRows: [] };
     const out: string[] = [];
     const seqRows: ImageSeqRow[] = [];
     // 缩略图化：转录区里只放小图（单图 ≤24×12 格、多图 10 格宽），点击进预览看
     // 全尺寸。大图直接全宽渲染既占屏幕又让 100KB 级序列进入差分重绘路径（滚动
     // 时反复重画，闪烁与卡顿的来源之一）。并排布局未做，多张纵向排列。
     const available = Math.max(8, width - 6);
-    for (const [imgIdx, img] of it.images.entries()) {
+    for (const [imgIdx, img] of images.entries()) {
       const decoded = decodePNG(Buffer.from(img.base64, 'base64'));
       if (decoded === null) {
-        out.push(c.dim(`  [图片无法渲染：${img.mediaType} ${img.width}×${img.height}]`));
+        out.push(c.dim(`  [图片无法渲染：${img.mediaType}]`));
         continue;
       }
-      const { cols, rows } = thumbnailCells(decoded.width, decoded.height, it.images!.length, available);
+      const { cols, rows } = thumbnailCells(decoded.width, decoded.height, images.length, available);
       const imgLines = new ImageBlock(decoded, cols, rows).render(cols).map((l) => `  ${l}`);
       // 序列行是 ImageBlock 产物的首行（位置无关布局：序列在前、空占位在后）
       seqRows.push({ row: out.length, imgIdx, rows: imgLines.length });
@@ -540,7 +550,7 @@ export class ItemBlock implements Component {
         return renderWelcome(it.data, width);
       case 'user': {
         const body = this.renderUser(it, width);
-        const images = this.renderUserImages(it, width);
+        const images = this.renderInlineImages(it.images ?? [], width);
         // 图片区域登记：sixel 序列行的本地行号存字段，Transcript 汇总成文档行区域表
         // （预览浮层的点击命中用）。注意偏移——seqRows 是相对图片产物的行号，
         // 拼进块产物时前面还有正文 body 行，必须加上 body.length。
@@ -567,8 +577,15 @@ export class ItemBlock implements Component {
         return [...hanging(wrap(c.note(it.text), width - 2), c.note('· '), 2), ''];
       case 'error':
         return [...hanging(wrap(c.error(it.text), width - 2), c.error('✗ '), 2), ''];
-      case 'tool':
-        return this.renderTool(it, width);
+      case 'tool': {
+        // read_media 等工具回传的图片挂在结果体之后：与 user 贴图同一套缩略图 + 区域
+        // 登记（点击进预览）。tool 的 renderTool 有多个 early return，图片在外层拼
+        // 才能覆盖所有分支。
+        const body = this.renderTool(it, width);
+        const images = this.renderInlineImages(it.images ?? [], width);
+        this.lastImageRows = images.seqRows.map((s) => ({ ...s, row: body.length + s.row }));
+        return [...body, ...images.lines];
+      }
       case 'goalPanel':
         return [...wrap(`goal: ${it.data.objective}`, width - 2).map((l) => c.accent(l)), ''];
       case 'foldSummary':
