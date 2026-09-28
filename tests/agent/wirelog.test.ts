@@ -1,3 +1,6 @@
+import { appendFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { stored } from '../../src/agent/message.js';
 import {
@@ -9,8 +12,10 @@ import {
   parseWireLine,
   pendingDeliveredEvents,
   replayWireEvents,
+  WIRE_FORMAT_VERSION,
   type WireEvent,
 } from '../../src/agent/wirelog.js';
+import { SessionStore, workdirKey } from '../../src/session/store.js';
 
 const TS = '2026-08-01T00:00:00.000Z';
 
@@ -233,5 +238,64 @@ describe('closeDanglingToolUse 悬空 tool_use 闭合', () => {
       stored({ role: 'assistant', content: [{ type: 'text', text: '想完了' }] }, { kind: 'assistant' }),
     ];
     expect(closeDanglingToolUse(noToolUse).closed).toBe(false);
+  });
+});
+
+describe('tool.settle 事件（loop 执行轨迹持久化）', () => {
+  it('applyWireEvent 记账到 toolEvents，字段完整', () => {
+    const state = emptyWireReplayState();
+    applyWireEvent(state, {
+      type: 'tool.settle',
+      ts: '2026-09-28T15:00:00.000Z',
+      id: 'tu_1',
+      name: 'dynamic_workflow',
+      isError: false,
+      resultBytes: 2048,
+      durationMs: 749000,
+    });
+    expect(state.toolEvents).toHaveLength(1);
+    expect(state.toolEvents[0]).toMatchObject({
+      id: 'tu_1',
+      name: 'dynamic_workflow',
+      isError: false,
+      resultBytes: 2048,
+      durationMs: 749000,
+    });
+  });
+
+  it('resultFile 可选：缺省不出现在重放态里', () => {
+    const state = emptyWireReplayState();
+    applyWireEvent(state, { type: 'tool.settle', ts: 't', id: 'x', name: 'bash', isError: true, resultBytes: 10 });
+    expect('resultFile' in state.toolEvents[0]!).toBe(false);
+  });
+
+  it('多次调用按序累积（loop 轨迹的顺序就是执行顺序）', () => {
+    const state = emptyWireReplayState();
+    for (const [i, name] of ['bash', 'read_media', 'edit'].entries()) {
+      applyWireEvent(state, { type: 'tool.settle', ts: `t${i}`, id: `tu_${i}`, name, isError: false, resultBytes: 0 });
+    }
+    expect(state.toolEvents.map((t) => t.name)).toEqual(['bash', 'read_media', 'edit']);
+  });
+
+  it('截断容忍：末行半个 JSON 被丢弃，前面的事件全部保留', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'wire-trunc-'));
+    try {
+      const store = new SessionStore(dir);
+      // 不预置 metadata：appendWire 首写会自动带头（再手传一条会双头）
+      store.appendWire(dir, 's1', [
+        { type: 'tool.settle', ts: 't1', id: 'tu_1', name: 'bash', isError: false, resultBytes: 100 },
+        { type: 'tool.settle', ts: 't2', id: 'tu_2', name: 'edit', isError: false, resultBytes: 200 },
+      ] as never);
+      // 手工把半行坏 JSON 追加进去（模拟崩溃写在 flush 中途）
+      const file = join(dir, workdirKey(dir), 's1.wire.jsonl');
+      appendFileSync(file, '{"type":"tool.settle","ts":"t3","id":"tu_3"');
+      const loaded = store.loadWire(dir, 's1');
+      expect(loaded).toHaveLength(3); // 坏行被容忍丢弃，不炸
+      const state = emptyWireReplayState();
+      for (const e of loaded) applyWireEvent(state, e);
+      expect(state.toolEvents).toHaveLength(2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

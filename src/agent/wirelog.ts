@@ -202,6 +202,26 @@ export type WireEvent =
     }
   | {
       /**
+       * 一次工具调用结束的执行轨迹。loop 崩溃后 resume 重放它，才看得到「崩前
+       * 最后执行到哪几个工具」——消息完成事件只覆盖回合终态，半截回合的痕迹
+       * 此前完全丢失。载荷只留轨迹不搬结果体（结果体可能巨大，它的落点是
+       * append_message / offload 文件）。
+       */
+      type: 'tool.settle';
+      ts: string;
+      /** 工具调用 id（与事件流的 tool_start/tool_end 同 id）。 */
+      id: string;
+      name: string;
+      isError: boolean;
+      /** 结果字节数（不落正文，正文走 append_message / offload 文件）。 */
+      resultBytes: number;
+      /** 墙钟耗时 ms（startedAt → end，缺省 0：早于计时埋点的历史条目）。 */
+      durationMs?: number;
+      /** 结果已 offload 到文件时的路径。 */
+      resultFile?: string;
+    }
+  | {
+      /**
        * 请求级异常（空响应/重试/断连错误）的审计记录。纯审计、不参与重放状态迁移——
        * 它解决的是「空响应/断连发生时 wire 日志完全无踪迹、事后无法排查」的盲区：
        * 此前这类轮次没有任何 model.usage（请求失败无 usage）也无 error 事件落盘，
@@ -240,6 +260,17 @@ export type WireEvent =
       abortSource?: 'entry' | 'stream' | 'retry-sleep' | 'caught-error' | 'retry';
     };
 
+/** tool.settle 事件的重放形态（wire 行的脱壳表示，resume 展示直接用）。 */
+export interface WireToolSettle {
+  ts: string;
+  id: string;
+  name: string;
+  isError: boolean;
+  resultBytes: number;
+  durationMs?: number;
+  resultFile?: string;
+}
+
 /**
  * 重放产物：从事件序列重建出的会话内存态。
  * 与 SessionData 的非消息字段一一对应，外加通知幂等集合与轮次计数。
@@ -259,6 +290,16 @@ export interface WireReplayState {
   turnCount: number;
   /** 已终态后台任务（task_settle 事件记录，按任务 id 索引）。 */
   settledTasks: Map<string, BackgroundTask>;
+  /**
+   * tool.settle 事件序列（loop 执行轨迹的持久化形态）。
+   *
+   * 为什么必须有：此前 wire 只落「消息完成」类事件，loop 跑到一半进程死了，
+   * 最后几条工具调用只存在于内存 transcript，resume 重放看不到——用户看到的
+   * 表现就是「闪退后 loop 执行记录没保存」（2026-09-28 实测：469 条事件的
+   * 会话里 tool 轨迹 0 条）。对齐 dsh-TUI 的架构原则：session log 是唯一真相源，
+   * 执行轨迹而非只是终态消息必须可重放。
+   */
+  toolEvents: WireToolSettle[];
 }
 
 /** 空的重放初态。 */
@@ -268,6 +309,7 @@ export function emptyWireReplayState(): WireReplayState {
     deliveredNotifications: new Set(),
     turnCount: 0,
     settledTasks: new Map(),
+    toolEvents: [],
   };
 }
 
@@ -321,6 +363,17 @@ export function applyWireEvent(state: WireReplayState, event: WireEvent): void {
       state.deliveredNotifications.add(
         notifyDedupKey(event.taskId, event.status, event.notificationId),
       );
+      break;
+    case 'tool.settle':
+      state.toolEvents.push({
+        ts: event.ts,
+        id: event.id,
+        name: event.name,
+        isError: event.isError,
+        resultBytes: event.resultBytes,
+        ...(event.durationMs !== undefined ? { durationMs: event.durationMs } : {}),
+        ...(event.resultFile !== undefined ? { resultFile: event.resultFile } : {}),
+      });
       break;
     case 'turn.issue':
       // 纯审计事件：不参与状态迁移（空响应/重试/错误不影响 resume 的会话重建）
