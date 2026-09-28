@@ -13,10 +13,14 @@ export function formatDuration(ms: number): string {
 }
 
 /**
- * 千进制紧凑计数（1000 进制：107k / 1.2M），StatusBar context 显示与子 agent
+ * 千进制紧凑计数（1000 进制：107k / 1.2M / 10.8B），StatusBar context 显示与子 agent
  * 卡片 tok 段共用——两处必须同口径，宁可与 1024 进制的习惯写法不同，也不能自相矛盾。
+ *
+ * 十亿级出 B 档而不是继续用 M：累计用量上百亿后 `10761.4M` 要读者自己数位数，
+ * `10.8B` 一眼可见。仍是千进制口径（1B = 1000M），与 k/M 同一条链。
  */
 export function formatCount(n: number): string {
+  if (n >= 1_000_000_000) return `${trimZero(n / 1_000_000_000)}B`;
   if (n >= 1_000_000) return `${trimZero(n / 1_000_000)}M`;
   if (n >= 1000) return `${trimZero(n / 1000)}k`;
   return String(n);
