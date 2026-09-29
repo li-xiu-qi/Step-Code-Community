@@ -178,6 +178,50 @@ describe('encodeSixel', () => {
       }
     }
   });
+
+  it('行区间：只输出区间内的像素行，raster 高度 = 区间高度', () => {
+    const quant = quantize(decoded());
+    const full = encodeSixel(quant, 8, 6);
+    const top = encodeSixel(quant, 8, 6, 0, 3);
+    const bottom = encodeSixel(quant, 8, 6, 3, 6);
+    expect(full.startsWith('\x1bP0;1;q"1;1;8;6')).toBe(true);
+    expect(top.startsWith('\x1bP0;1;q"1;1;8;3')).toBe(true);
+    expect(bottom.startsWith('\x1bP0;1;q"1;1;8;3')).toBe(true);
+    for (const seq of [full, top, bottom]) {
+      expect(seq.endsWith('\x1b\\')).toBe(true);
+      expect(/[\r\n]/.test(seq)).toBe(false);
+    }
+  });
+
+  it('行区间分带后解码往返：上下两带拼回原图的颜色分布', () => {
+    // 每行一条序列是修「占位行被 EL 擦掉」的基础，分带必须像素正确：
+    // 若 bit 位算成绝对行号而非区间内行号，两带内容会错位。
+    const w = 24;
+    const h = 36; // 6px 一个 band，恰好两带
+    const rgb = new Uint8Array(w * h * 3);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 3;
+        rgb[i] = y < h / 2 ? 230 : 29; // 上半红、下半深蓝
+        rgb[i + 1] = y < h / 2 ? 57 : 53;
+        rgb[i + 2] = y < h / 2 ? 70 : 87;
+      }
+    }
+    const quant = quantize({ width: w, height: h, rgb });
+    const topPx = decode(encodeSixel(quant, w, h, 0, 18));
+    const bottomPx = decode(encodeSixel(quant, w, h, 18, 36));
+    expect(topPx.height).toBe(18);
+    expect(bottomPx.height).toBe(18);
+    const px = (img: typeof topPx, x: number, y: number): number[] => [
+      img.data8[(y * img.width + x) * 4]!,
+      img.data8[(y * img.width + x) * 4 + 1]!,
+      img.data8[(y * img.width + x) * 4 + 2]!,
+    ];
+    // 上带第 5 行（区间中部）仍是红色，下带第 5 行（区间中部）是蓝色：
+    // 错位会让下带中部变成红色
+    expect(px(topPx, 4, 5)[0]).toBeGreaterThan(px(topPx, 4, 5)[2]);
+    expect(px(bottomPx, 4, 5)[2]).toBeGreaterThan(px(bottomPx, 4, 5)[0]);
+  });
 });
 
 describe('detectImageProtocol', () => {
@@ -207,22 +251,23 @@ describe('ImageBlock', () => {
     }
   });
 
-  it('sixel 路径：首行是 sixel 序列，后面是空占位行，序列行无 moveUp（位置无关）', () => {
+  it('sixel 路径：每行一条只画自己那段的序列，无 moveUp 前缀（位置无关）', () => {
     process.env.STEP_CODE_IMAGE_PROTOCOL = 'sixel';
     const comp = new ImageBlock(decoded(), 6);
     const lines = comp.render(62); // 60 列 * 9px = 540px > 8px，不放大
     expect(lines.length).toBeGreaterThanOrEqual(1);
-    const first = lines[0]!;
-    // 序列行以 DCS 引导段开头：不带 \x1b[NA 上移前缀。带前缀是滚动后重写漂移、
-    // 图画到错位区域并残影闪烁的根因（位置无关序列行 + 尾随占位行才是滚动安全的）。
-    expect(first.startsWith('\x1bP0;1;q')).toBe(true);
-    expect(/^\x1b\[\d+A/.test(first)).toBe(false);
-    expect(first).toContain('\x1b\\');
-    // 8x6 的图不缩放：540px 视口下按原尺寸，配 1 行（6px / 18px 向上取整）
-    expect(lines.slice(1).every((l) => l === '')).toBe(true);
+    for (const line of lines) {
+      // 序列行以 DCS 引导段开头：不带 \x1b[NA 上移前缀。带前缀是滚动后重写漂移、
+      // 图画到错位区域并残影闪烁的根因。
+      expect(line.startsWith('\x1bP0;1;q')).toBe(true);
+      expect(/^\x1b\[\d+A/.test(line)).toBe(false);
+      expect(line).toContain('\x1b\\');
+    }
+    // 8x6 的图不缩放：540px 视口下按原尺寸，6px 高配 1 行（6px / 18px 向上取整）
+    expect(lines.length).toBe(1);
   });
 
-  it('多行占位图：序列行后跟 rows-1 个空行，总数不超高度上限', () => {
+  it('多行图：每行各自一条序列（行间无像素依赖，重写一行不影响别行）', () => {
     process.env.STEP_CODE_IMAGE_PROTOCOL = 'sixel';
     const w = 100;
     const h = 60;
@@ -234,10 +279,15 @@ describe('ImageBlock', () => {
     }
     const comp = new ImageBlock({ width: w, height: h, rgb }, 24, 12);
     const lines = comp.render(62);
-    expect(lines[0]!.startsWith('\x1bP0;1;q')).toBe(true);
-    expect(lines.slice(1).every((l) => l === '')).toBe(true);
     expect(lines.length).toBeGreaterThanOrEqual(2);
     expect(lines.length).toBeLessThanOrEqual(12); // 高度上限生效
+    // 回归：早先是「首行整图 + 空占位行」，库层全屏重写时占位行的 \x1b[2K 会把
+    // 图擦到只剩第一行。现在每一行都必须自带序列，不能再出现空占位行。
+    for (const line of lines) {
+      expect(line.startsWith('\x1bP0;1;q')).toBe(true);
+      expect(line).toContain('\x1b\\');
+    }
+    expect(lines.some((l) => l === '')).toBe(false);
   });
 
   it('空视口/极端小宽度不抛异常', () => {

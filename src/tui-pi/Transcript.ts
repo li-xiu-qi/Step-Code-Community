@@ -14,6 +14,7 @@
 import { truncateToWidth, type Component } from '@earendil-works/pi-tui';
 import type { DisplayItem } from '../chat/types.js';
 import { ItemBlock } from './blocks.js';
+import { isImageSequenceLine } from './imageBlock.js';
 import { c } from './theme.js';
 
 /** 安全阀：保留的最近 turn 数。默认值高到日常用不到，纯防内存失控。 */
@@ -419,7 +420,11 @@ export class Transcript implements Component {
     }
     // 前缀各行由各块渲染器在冻结时已钳到 width（各 renderItem 分支逐行 truncateToWidth），
     // 同 width 下必然安全，故前缀不重复截断；尾块是热变更内容，保留一次截断作防回归安全网。
-    const safeTail = tail.map((l) => truncateToWidth(l, width));
+    // 图片序列行不能按宽度截断：库层 extractAnsiCode 不认 DCS 转义，visibleWidth
+    // 会把 sixel 载荷当成可见字符，一截就把序列切成没有 ST 结尾的残片。尾块是热点
+    // （工具结果图刚落盘时图片块就是尾块）。normalizeTerminalOutput/可见宽度都只管
+    // 文本行，图片行走协议自己的路径，原样放行。
+    const safeTail = tail.map((l) => (isImageSequenceLine(l) ? l : truncateToWidth(l, width)));
     const lines = [...head, ...prefix, ...safeTail];
     this.renderCache = { width, ver: this.structVer, head, tailRef: tail, lines, regions };
     return lines;

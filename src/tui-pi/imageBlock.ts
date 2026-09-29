@@ -263,48 +263,73 @@ export function quantize(img: DecodedImage, maxColors = 256): Quantized {
 }
 
 /**
- * 把量化后的索引图打包成 sixel 序列。
+ * 把量化后的索引图打包成 sixel 序列，可只输出像素行区间 [y0, y1)。
  *
- * 直接消费 quantize 产出的索引图（indices + palette），不做 RGBA 重建。此前试过
- * sixel 包的 sixelEncode（RGBA 入口），它的内部处理有两处对我们是负资产：slot 0
- * 被强制设为黑色（paletteWithZero[0] = 0），调色板里含纯黑时索引被挤位；对不在
- * 调色板中的颜色走 ED 最近色回退并叠加有序抖动，小图（如 8x6 测试图）12 个红色
- * 像素有 6 个退化成黑。索引路径没有这两步，颜色映射是确定性的恒等。
+ * 为什么需要行区间（区间契约的来历，改前必读）：一张图在转录区占 N 行。早先实现是
+ * 「首行放整图序列、后面 N-1 行空占位」，靠 WT 把序列从首行向下画满 N 行。库层
+ * doRender 有个 imagesNeedRedraw 分支：屏幕里任一行含图片序列，且该行与上一帧
+ * 不同，就把**所有行**重写一遍（含占位行），每行都以 `\x1b[2K` 开头。WT 的 sixel
+ * 像素附着在字符格上，EL 会连格内像素一起销毁（WT PR #18855）。于是先画的整图被
+ * 随后写入的占位行逐行擦掉，只剩第一行，症状是缩略图时而正常时而塌成一条
+ * （2026-09-29 截图复现；进程内 harness 实证：spanRows=9 时，图片行下移一行的
+ * 那一帧写满了全部 40 行）。
+ *
+ * 触发器不是图片自身变化，而是**图片行的屏幕行号位移**：任何让图片上方内容变高的
+ * 操作（spinner 计时、工具耗时、thinking 预览增长、子 agent 计数）都会点亮
+ * imagesNeedRedraw，所以这个擦除在活跃会话里必然反复发生。
+ *
+ * 修法：每行一条序列、每条只画自己那一行（18px）的像素。行与行之间不再有像素
+ * 依赖，任何一行被 `\x1b[2K` 重写都只影响自己，擦不掉别的行。代价是同一条调色板
+ * 要在每条序列里按需重定义（只定义该行用到的色），以及首帧要写 N 条序列；
+ * N 是缩略图高度（≤12），单行像素带只有 18px，序列总量与原单条同级。
  *
  * 结构：DCS 引导段（sixel 包的 introducer(1)，WT 验证过）+ raster 属性声明像素
- * 宽高，按 6 像素行一个 band、每个 band 内按颜色分层逐列输出位图字符
- * （63 + bits，bit row 对应该列自上而下第 row 个像素），层间用 graphics CR
- * （$）回车覆盖，band 间用 graphics LF（-）换带，ST 结尾。连续同字符做 RLE
- * （!<count><char>）压缩，调色板定义前置只写一次。
+ * 宽高（高 = 区间高度），调色板只定义区间内用到的色，按 6 像素行一个 band、每个
+ * band 内按颜色分层逐列输出位图字符（63 + bits，bit row 对应该列在区间内的第 row
+ * 个像素），层间用 graphics CR（$）回车覆盖，band 间用 graphics LF（-）换带，ST
+ * 结尾。连续同字符做 RLE（!<count><char>）压缩。
  *
  * 序列内不出现换行：TUI 里它是单行输出，换行会把一行拆多行、破坏光标记账。
  */
-export function encodeSixel(quant: Quantized, width: number, height: number): string {
+export function encodeSixel(
+  quant: Quantized,
+  width: number,
+  height: number,
+  y0 = 0,
+  y1 = height,
+): string {
   const GCR = String.fromCharCode(0x24); // graphics carriage return（层间回车覆盖）
-  // 调色板定义全部前置只写一次（band 内层只写 #slot 选择），避免 244 个 band
-  // 反复重复同一批定义
-  let header = introducer(1) + '"1;1;' + width + ';' + height;
-  for (let c = 0; c < quant.colors; c++) {
-    const r = Math.round((quant.palette[c * 3]! / 255) * 100);
-    const g = Math.round((quant.palette[c * 3 + 1]! / 255) * 100);
-    const b = Math.round((quant.palette[c * 3 + 2]! / 255) * 100);
-    header += '#' + c + ';2;' + r + ';' + g + ';' + b;
-  }
-  const bands = Math.ceil(height / 6);
+  const startY = Math.max(0, Math.min(height, Math.floor(y0)));
+  const endY = Math.max(startY, Math.min(height, Math.ceil(y1)));
+  const stripH = endY - startY;
+  // 区间内用到的调色板索引（保持首次出现顺序，输出稳定可测）。只定义用得上的色：
+  // 每条序列都要自带调色板，全量定义会让 N 条序列各背一份 256 色表。
+  const usedColors: number[] = [];
+  const seenColor = new Set<number>();
+
+  const firstBand = Math.floor(startY / 6);
+  const lastBand = Math.ceil(endY / 6); // exclusive
   const bandParts: string[] = [];
-  for (let band = 0; band < bands; band++) {
-    const bandH = Math.min(6, height - band * 6);
-    // 收集本 band 用到的调色板索引（保持首次出现顺序，输出稳定可测），
-    // 同时记录每色最后出现的列：层内位图只画到该列，之后的列不输出
-    // （层间 GCR 回车覆盖，截断不影响其他层的绘制起点）
+  for (let band = firstBand; band < lastBand; band++) {
+    const bandTop = band * 6;
+    // 区间可能在 band 中间起止：只输出区间覆盖到的像素行
+    const rowFrom = Math.max(startY, bandTop);
+    const rowTo = Math.min(endY, bandTop + 6);
+    if (rowTo <= rowFrom) continue;
+    // 收集本 band 用到的调色板索引（保持首次出现顺序），同时记录每色最后出现的列：
+    // 层内位图只画到该列，之后的列不输出（层间 GCR 回车覆盖，截断不影响起点）
     const used: number[] = [];
     const lastX = new Map<number, number>();
-    for (let row = 0; row < bandH; row++) {
-      const lineBase = (band * 6 + row) * width;
+    for (let row = rowFrom; row < rowTo; row++) {
+      const lineBase = row * width;
       for (let x = 0; x < width; x++) {
         const idx = quant.indices[lineBase + x]!;
         if (!lastX.has(idx)) used.push(idx);
         lastX.set(idx, x);
+        if (!seenColor.has(idx)) {
+          seenColor.add(idx);
+          usedColors.push(idx);
+        }
       }
     }
     let bandStr = '';
@@ -320,8 +345,10 @@ export function encodeSixel(quant: Quantized, width: number, height: number): st
       };
       for (let x = 0; x <= layerEnd; x++) {
         let bits = 0;
-        for (let row = 0; row < bandH; row++) {
-          if (quant.indices[(band * 6 + row) * width + x] === color) bits |= 1 << row;
+        for (let row = rowFrom; row < rowTo; row++) {
+          // bit 位是「区间内的第几行」，不是「绝对第几行」：raster 声明的高度是
+          // 区间高度，解码端从区间顶部开始数
+          if (quant.indices[row * width + x] === color) bits |= 1 << ((row - startY) % 6);
         }
         const ch = String.fromCharCode(63 + bits);
         if (ch === runChar) {
@@ -336,6 +363,13 @@ export function encodeSixel(quant: Quantized, width: number, height: number): st
       bandStr += GCR;
     }
     bandParts.push(bandStr);
+  }
+  let header = introducer(1) + '"1;1;' + width + ';' + stripH;
+  for (const c of usedColors) {
+    const r = Math.round((quant.palette[c * 3]! / 255) * 100);
+    const g = Math.round((quant.palette[c * 3 + 1]! / 255) * 100);
+    const b = Math.round((quant.palette[c * 3 + 2]! / 255) * 100);
+    header += '#' + c + ';2;' + r + ';' + g + ';' + b;
   }
   return header + bandParts.join('-') + FINALIZER;
 }
@@ -399,6 +433,25 @@ export function thumbnailCells(
 }
 
 /**
+ * 判断一行是否携带图片协议序列（sixel DCS / kitty APC / iTerm2 OSC 1337）。
+ *
+ * 为什么必须有这个判定：库层的 extractAnsiCode 只认 CSI、OSC、APC 三类转义，**不认
+ * DCS**（`ESC P ... ST`）。于是 visibleWidth 会把 sixel 序列的载荷（位图字符、调色板
+ * 定义、RLE 计数）全当成可见字符：一条 1794 字节的缩略图序列算出约 1500 列宽，
+ * 任何按宽度钳制的路径都会把它截成没有 ST 结尾的残片。进程内实测：尾块的图片行
+ * 被 Transcript.render 的 safeTail 一截，1794 字节变 113 字节，序列残缺、图渲染不出来。
+ *
+ * 尾块是热点场景：工具结果图刚从 read_media 落盘时，图片块就是尾块，正好撞上截断。
+ * 所以「按宽度截断」「按宽度补空格」这类操作都必须先过这个判定。
+ *
+ * 用 includes 而非 startsWith：块渲染器会给图片行加缩进前缀（如两个空格），
+ * 序列不在行首。
+ */
+export function isImageSequenceLine(line: string): boolean {
+  return line.includes('\x1bP') || line.includes('\x1b_G') || line.includes('\x1b]1337;');
+}
+
+/**
  * UI 层还原工具结果图的 base64。
  *
  * 背景：read_media 等工具回传图片时 offloadMedia 把 base64 换成 stepref:<hash> 附件仓
@@ -410,6 +463,7 @@ export function thumbnailCells(
  * 重复渲染不重复读盘）；还原失败（附件文件被移走）置空串，渲染层走降级文本行；
  * 非 stepref（小图内联未落盘）原样返回。
  */
+
 export function rehydrateToolImages(
   images: readonly ToolResultImage[] | undefined,
   store: { rehydrate(cwd: string, stepref: string): string | null } | undefined,
@@ -434,6 +488,11 @@ export function rehydrateToolImages(
  * 恰好落在哪一行——pi-tui 的差分渲染滚动后重写该行时光标已在新屏幕位置，上移
  * 落点随之漂移，图画到错误区域且旧图不清，症状是闪烁/黑屏/残影（2026-09-28
  * 用户实测三连）。位置上无关后，差分重写在任意滚动位置都画在该行当前处，成立。
+ *
+ * 占位契约在 2026-09-29 又翻修过一次：库层 imagesNeedRedraw 会在图片行位移时把
+ * 所有行重写，占位行的 `\x1b[2K` 会把首行画出的图逐行擦掉，只剩第一行。现在改成
+ * **每行一条只画自己那 18px 的序列**（见 encodeSixel 的行区间说明），行间无像素
+ * 依赖，重写任意一行都不影响别行。
  *
  * 占位行数 = 像素高 / 字符格高（18px）向上取整。注意 pi-tui 的 multi-row image
  * 记账只认 kitty APC 的行数声明（extractKittyImageRows），sixel 行走的是普通行
@@ -466,7 +525,13 @@ export class ImageBlock implements Component {
     return lines;
   }
 
-  /** sixel 路径：序列行在首行（位置无关），后面 rows-1 个空占位行。 */
+  /**
+   * sixel 路径：每行一条序列，序列只画该行对应的 18px 像素带。
+   *
+   * 为什么不再用「首行整图 + 空占位」：库层 imagesNeedRedraw 触发时会把占位行也用
+   * `\x1b[2K` 重写，WT 上等于把整图擦到剩一行（2026-09-29 复现，详见 encodeSixel）。
+   * 每行自带序列后，行与行之间没有共享像素，重写是幂等的。
+   */
   private renderSixel(width: number): string[] {
     const { width: w, height: h } = this.image;
     const CELL_W = 9;
@@ -481,10 +546,13 @@ export class ImageBlock implements Component {
     if (pxH % 6 !== 0) pxH += 6 - (pxH % 6); // sixel band 对齐
     const scaled: DecodedImage = scale === 1 ? this.image : resizeNearest(this.image, pxW, pxH);
     const quant = quantize(scaled);
-    const sequence = encodeSixel(quant, pxW, pxH);
     const usedRows = Math.max(1, Math.ceil(pxH / CELL_H));
-    const lines: string[] = [sequence];
-    for (let i = 1; i < usedRows; i++) lines.push('');
+    const lines: string[] = [];
+    for (let r = 0; r < usedRows; r++) {
+      const y0 = r * CELL_H;
+      const y1 = Math.min(pxH, y0 + CELL_H);
+      lines.push(encodeSixel(quant, pxW, pxH, y0, y1));
+    }
     return lines;
   }
 
