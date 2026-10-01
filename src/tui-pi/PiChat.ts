@@ -22,6 +22,7 @@ import { notifyDedupKeyFromOrigin, pendingDeliveredEvents } from '../agent/wirel
 import { buildSettleMessage, decideNotifyRoute, mergeSettleMessages, pendingBatchDeliveredEvents } from '../agent/background/notify.js';
 import { shouldDeliverStream, buildStreamMessage, mergeStreamMessages } from '../agent/background/monitorStream.js';
 import { startHeapWatch } from './heapWatch.js';
+import { supportsTerminalProgress } from './terminalProgress.js';
 import { logDebug } from '../utils/logger.js';
 import type { StreamEvent } from '../agent/background/manager.js';
 import { emitTerminalNotification } from '../agent/background/terminal-notify.js';
@@ -272,6 +273,14 @@ export const VIEWPORT_KEYBINDINGS: KeybindingsConfig = {
 export class PiChat {
   private readonly deps: PiChatDeps;
   private readonly tui: TuiAltScreen;
+  // 终端 tab 加载动画（OSC 9;4 不确定进度）：进程退出与紧急路径必须
+  // 显式置假（库层会写 \x1b]9;4;0 并清 keepalive 定时器），否则动画挂到用户后续命令
+  // 的 tab 上。设置与序列发送在库层，此处只做接线与能力探测。
+  private readonly terminal: ProcessTerminal;
+  /** tab 动画当前是否 active，配支持探测做幂等（重复发同一 state 无谓刷 stdout）。 */
+  private terminalProgressActive = false;
+  /** 终端是否支持 OSC 9;4。undefined = 未探测，探测一次后缓存。 */
+  private terminalProgressSupported: boolean | undefined;
   private readonly transcript = new Transcript();
   private readonly activity = new ActivityLine();
   private readonly status: StatusLine;
@@ -558,7 +567,8 @@ export class PiChat {
     this.queue = [...filtered];
     this.history = [...deps.session.messages];
 
-    this.tui = new TuiAltScreen(new ProcessTerminal(), undefined, undefined, {
+    this.terminal = new ProcessTerminal();
+    this.tui = new TuiAltScreen(this.terminal, undefined, undefined, {
       mouse: true,
       openUrl: (url) => this.handleUrlClick(url),
     });
@@ -988,6 +998,22 @@ export class PiChat {
     this.tui.requestRender();
   }
 
+  /**
+   * tab 加载动画（OSC 9;4）sync：terminal tab 在 agent 跑的时候转圈，停下来消失。
+   * 支持的宿主见 supportsTerminalProgress 的判据；tmux 内不发（序列会被吞，需要
+   * passthrough 才能出去）。busy 变化必然经过 syncStatus，故同步点挂在它末尾，
+   * 幂等由 terminalProgressActive 兜。
+   */
+  private syncTerminalProgress(): void {
+    if (this.terminalProgressSupported === undefined) {
+      this.terminalProgressSupported = supportsTerminalProgress(process.env);
+    }
+    if (!this.terminalProgressSupported) return;
+    if (this.terminalProgressActive === this.busy) return;
+    this.terminalProgressActive = this.busy;
+    this.terminal.setProgress(this.busy);
+  }
+
   private syncStatus(): void {
     const running = this.background.list().filter((t) => t.status === 'running');
     this.status.setState({
@@ -1007,6 +1033,9 @@ export class PiChat {
     this.chrome.setTodos(this.todos.items);
     this.chrome.setQueue(this.queue);
     this.chrome.setBusy(this.busy);
+    // tab 加载动画跟着 busy 走：busy 是所有状态同步的必经点，挂这里不必在每个
+    // 置位/复位的调用点各加一行。
+    this.syncTerminalProgress();
   }
 
   /**
@@ -1970,6 +1999,14 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
    * 每步独立 try/catch：终端已死时任一步都可能抛，不许异常冒泡到 handler 外面。
    */
   emergencyStop(): void {
+    // tab 加载动画先清：stop() 之后终端序列写不出去，动画会挂到用户后续命令的 tab 上。
+    // 幂等：未 active 时 setProgress(false) 也要写（不发则状态未知），代价是一条 8 字节序列。
+    try {
+      this.terminal.setProgress(false);
+      this.terminalProgressActive = false;
+    } catch {
+      // 终端已死，动画本就无从显示
+    }
     try {
       this.tui.stop();
     } catch {
@@ -2051,6 +2088,13 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     }
     // tab 标题清空，让终端回落自身默认（不清会残留到用户后续的其它命令上）
     this.termTitle.reset();
+    // tab 加载动画同样清（OSC 9;4;0 由库层写，顺带清它的 keepalive 定时器）
+    try {
+      this.terminal.setProgress(false);
+      this.terminalProgressActive = false;
+    } catch {
+      // 终端已死，动画本就无从显示
+    }
     this.tui.stop();
     this.resolveExit?.({ sessionId: this.session.id, hasContent: this.history.length > 0 });
     this.resolveExit = undefined;

@@ -270,15 +270,16 @@ describe('PiChat 接线：会话切换的清理与恢复', () => {
   it('两个 primed 定时器在退出时都被清理', () => {
     // 未清的 setTimeout 会让 node 事件循环多挂 5 秒才退出
     // 阈值随方法体增长：2026-08-19 实测 686 字符（原 600 会抓空误报）；2026-09-26 补了
-    // background.shutdown 与 persist 的 try/catch 后实测 1313 字符，留余量到 1600。
-    const exitBlock = /private exit\(\): void \{[\s\S]{0,1600}?\n  \}/.exec(piChat)?.[0] ?? '';
+    // background.shutdown 与 persist 的 try/catch 后实测 1313 字符，留余量到 1600；
+    // 2026-10-01 加 tab 动画清理（this.terminal.setProgress(false)）后超过 1600，抓到 2200。
+    const exitBlock = /private exit\(\): void \{[\s\S]{0,2200}?\n  \}/.exec(piChat)?.[0] ?? '';
     expect(exitBlock, 'exit 里应清 exitPrimedTimer').toContain('exitPrimedTimer');
     expect(exitBlock, 'exit 里应清 backtrackPrimedTimer').toContain('backtrackPrimedTimer');
   });
 
   it('spinner 与计时器两个 setInterval 在退出时都被清理', () => {
     // spinnerTimer 与 ticker 是两个 setInterval，漏清会让 node 事件循环挂住不退。
-    const exitBlock = /private exit\(\): void \{[\s\S]{0,1600}?\n  \}/.exec(piChat)?.[0] ?? '';
+    const exitBlock = /private exit\(\): void \{[\s\S]{0,2200}?\n  \}/.exec(piChat)?.[0] ?? '';
     expect(exitBlock, 'exit 里应清 ticker').toContain('this.ticker');
     expect(exitBlock, 'exit 里应清 spinnerTimer').toContain('this.spinnerTimer');
   });
