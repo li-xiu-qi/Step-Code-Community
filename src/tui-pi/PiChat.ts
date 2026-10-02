@@ -318,6 +318,8 @@ export class PiChat {
   private overlayTickCount = 0;
   /** 图片预览浮层句柄（打开时非空，焦点在浮层上）。 */
   private imagePreviewHandle: ReturnType<typeof this.tui.showOverlay> | null = null;
+  /** 预览浮层本体：tap 监听在它开着时把 SGR 鼠标直接转给它（库层对 press/release 无条件 consume）。 */
+  private imagePreviewOverlay: ImagePreviewOverlay | null = null;
   /** 图片点击的输入 listener 注销函数（exit 时摘，防退出后仍收序列）。 */
   private mouseTapOff: (() => void) | undefined;
   /**
@@ -614,6 +616,14 @@ export class PiChat {
       if (this.promptActive) return undefined; // 弹层（askLine/picker/审批）自己的输入优先
       const mouse = parseSGRMouse(data);
       if (mouse === undefined) return undefined;
+      // 预览开着：SGR 鼠标全部转给浮层自己处理。库层 handleViewportInput 对
+      // press/release 无条件 consume（wheel 才让行），浮层在正常分发路径上永远收不到
+      // 点击；不在这里转发，工具栏按钮、拖拽平移、点卡片外关闭全是死的。
+      // 同时这天然挡住了「点卡片后的图片区又开一个新预览」的叠层（旧 handle 泄漏）。
+      if (this.imagePreviewOverlay !== null) {
+        this.imagePreviewOverlay.handleMouse(mouse);
+        return { consume: true };
+      }
       if (mouse.kind !== 'press' || mouse.button !== 0) return undefined; // 滚轮/右键/拖拽放行
       const scrollTop = this.transcriptScrollView?.scrollTop ?? 0;
       const hit = this.transcript.imageRegionAt(mouse.row + scrollTop);
@@ -1147,6 +1157,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
    * 尺寸取解码后的真实值（快照里的记录值可能与实际不一致）。
    */
   private openImagePreview(blockIdx: number, imgIdx: number): void {
+    if (this.imagePreviewOverlay !== null) return; // 已开着：防叠层（tap 转发期不会走到这，兜底）
     const item = this.transcript.items()[blockIdx];
     if (item === undefined) return;
     let img: { base64: string; mediaType: string } | undefined;
@@ -1164,6 +1175,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     const close = (): void => {
       this.imagePreviewHandle?.hide();
       this.imagePreviewHandle = null;
+      this.imagePreviewOverlay = null;
       this.tui.setFocus(this.editor);
       this.tui.requestRender();
     };
@@ -1181,6 +1193,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       openOriginal: () => this.openImageOriginal(img),
     });
     this.imagePreviewHandle = this.tui.showOverlay(overlay, { width: '95%', maxHeight: '95%', anchor: 'center' });
+    this.imagePreviewOverlay = overlay;
     this.imagePreviewHandle.focus();
     this.tui.requestRender();
   }
