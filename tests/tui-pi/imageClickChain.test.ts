@@ -103,6 +103,9 @@ async function makeChat(): Promise<Harness> {
 /** SGR 左键 press（1006 模式，1-based 行列，parseSGRMouse 内部转 0-based）。 */
 const press = (col: number, row: number): string => `\x1b[<0;${col};${row}M`;
 
+/** SGR 左键 release（小写 m）。 */
+const release = (col: number, row: number): string => `\x1b[<0;${col};${row}m`;
+
 /** 往 transcript 推一块内容并同步渲染（区域表要渲染后才汇总）。 */
 function pushAndRender(chat: PiChat, item: DisplayItem): void {
   (chat as unknown as { transcript: { push: (i: DisplayItem) => void } }).transcript.push(item);
@@ -160,6 +163,64 @@ describe('图片点击预览链路（真 PiChat 进程内）', () => {
     const { chat, term } = h!;
     pushAndRender(chat, { kind: 'note', text: '纯文本，没有图' } as DisplayItem);
     term.send(press(10, 1)); // 第 0 行附近（welcome 区，非图）
+    await tick();
+    expect((chat as unknown as { imagePreviewHandle: unknown }).imagePreviewHandle).toBeNull();
+  }, 20000);
+
+  /** 推一张图并点开预览，返回图片区屏幕行（1-based）。 */
+  async function openPreview(chat: PiChat, term: FakeTerminal): Promise<number> {
+    pushAndRender(chat, {
+      kind: 'tool',
+      id: 't1',
+      name: 'read_media',
+      status: 'ok',
+      result: '（图）',
+      images: [{ mediaType: 'image/png', base64: PNG_B64 }],
+    } as DisplayItem);
+    const regions = (chat as unknown as { transcript: { imageRegions: () => { startRow: number }[] } }).transcript.imageRegions();
+    const screenRow = regions[0]!.startRow + 1;
+    term.send(press(10, screenRow));
+    await tick();
+    (chat as unknown as { tui: { renderNow: (f: boolean) => void } }).tui.renderNow(true);
+    await tick();
+    expect((chat as unknown as { imagePreviewHandle: unknown }).imagePreviewHandle).not.toBeNull();
+    return screenRow;
+  }
+
+  it('预览开着时 Esc 关闭（键盘路径）', async () => {
+    const { chat, term } = h!;
+    await openPreview(chat, term);
+    term.send('\x1b');
+    await tick();
+    expect((chat as unknown as { imagePreviewHandle: unknown }).imagePreviewHandle).toBeNull();
+    expect((chat as unknown as { imagePreviewOverlay: unknown }).imagePreviewOverlay).toBeNull();
+  }, 20000);
+
+  it('预览开着时点卡片外（press+release 同格）关闭——tap 转发给浮层的鼠标路径', async () => {
+    // 2026-10-02 bug：预览开着时库层 handleViewportInput 对 SGR press/release 无条件
+    // consume，浮层永远收不到点击，「点卡片外关闭」「[Esc] 按钮」全是死的，用户报
+    // 「点完之后弹窗关不掉」。修复后 tap 监听在预览期间把鼠标直接转给浮层。
+    const { chat, term } = h!;
+    await openPreview(chat, term);
+    term.send(press(5, 39)); // 底部远离卡片的区域
+    await tick();
+    term.send(release(5, 39));
+    await tick();
+    expect((chat as unknown as { imagePreviewHandle: unknown }).imagePreviewHandle).toBeNull();
+    expect((chat as unknown as { imagePreviewOverlay: unknown }).imagePreviewOverlay).toBeNull();
+  }, 20000);
+
+  it('预览开着时再点图片区不叠层：点击被浮层收走（同格 release 即关闭），不会重开新预览', async () => {
+    // 旧行为：tap 不查预览状态，点在卡片背后的图片区上又 openImagePreview 一次，
+    // showOverlay 叠层、旧 handle 泄漏，Esc 只关最上面一层——看起来「怎么都关不掉」。
+    const { chat, term } = h!;
+    const screenRow = await openPreview(chat, term);
+    term.send(press(10, screenRow)); // 再点同一图片区（在卡片背后）
+    await tick();
+    // 不叠层：handle 仍是同一个预览（没被重开替换）
+    const handle = (chat as unknown as { imagePreviewHandle: unknown }).imagePreviewHandle;
+    expect(handle).not.toBeNull();
+    term.send(release(10, screenRow)); // 同格释放 = 点卡片外/非工具栏 → 关闭
     await tick();
     expect((chat as unknown as { imagePreviewHandle: unknown }).imagePreviewHandle).toBeNull();
   }, 20000);
