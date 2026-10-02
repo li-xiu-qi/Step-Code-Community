@@ -72,9 +72,9 @@ const zh = {
   'question.other': 'Other（自由输入）',
   'question.counter': '(第 {index}/{total} 题) ',
   'question.multiHint': '（空格多选）',
-  'question.otherPlaceholder': '自己写一个答案',
-  'question.hint': '↑↓ 移动 · 数字键直选 · Enter 确认 · Esc 取消',
-  'question.hintMulti': '↑↓ 移动 · ←→ 切题 · 数字键直选 · Enter 确认 · Esc 取消',
+  'question.otherPlaceholder': '自己写一个答案（可多行）',
+  'question.hint': '↑↓ 移动 · 数字键直选 · Enter 确认 · Ctrl+J 换行 · Esc 取消',
+  'question.hintMulti': '↑↓ 移动 · ←→ 切题 · 数字键直选 · Enter 确认 · Ctrl+J 换行 · Esc 取消',
 
 
   // --- 底部输入框（PromptInput）---
@@ -878,9 +878,9 @@ const en: Record<keyof typeof zh, string> = {
   'question.other': 'Other (free input)',
   'question.counter': '(Question {index}/{total}) ',
   'question.multiHint': '(Space to multi-select)',
-  'question.otherPlaceholder': 'Write your own answer',
-  'question.hint': '↑↓ move · number keys select · Enter confirm · Esc cancel',
-  'question.hintMulti': '↑↓ move · ←→ switch question · number keys select · Enter confirm · Esc cancel',
+  'question.otherPlaceholder': 'Write your own answer (multi-line supported)',
+  'question.hint': '↑↓ move · number keys select · Enter confirm · Ctrl+J newline · Esc cancel',
+  'question.hintMulti': '↑↓ move · ←→ switch question · number keys select · Enter confirm · Ctrl+J newline · Esc cancel',
 
   // --- 选项基类（ChoiceBlock）---
   'choice.hint': '↑↓ select · Enter confirm · number keys direct · Esc cancel',

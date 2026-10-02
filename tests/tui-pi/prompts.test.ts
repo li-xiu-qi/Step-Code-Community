@@ -364,6 +364,80 @@ describe('QuestionPrompt', () => {
     block.handleInput('2'); // Q2 → b2，但 settled 已为 true，不重复 settle
     expect(settled).toHaveLength(1);
   });
+
+  it('Other 编辑态 Ctrl+J 换行：答案保留 \\n，Enter 仍提交', () => {
+    const { block, settled } = mk();
+    block.handleInput(UP);
+    block.handleInput(ENTER); // 进入编辑态
+    for (const ch of '第一行') block.handleInput(ch);
+    block.handleInput('\n'); // Ctrl+J 换行
+    for (const ch of '第二行') block.handleInput(ch);
+    block.handleInput(ENTER); // 提交
+    expect(settled).toEqual([{ 用哪个方案: '第一行\n第二行' }]);
+  });
+
+  it('Other 编辑态 Alt+Enter 与 Shift+Enter（modifyOtherKeys）同样换行', () => {
+    const { block, settled } = mk();
+    block.handleInput(UP);
+    block.handleInput(ENTER);
+    block.handleInput('a');
+    block.handleInput('\x1b\r'); // Alt+Enter
+    block.handleInput('b');
+    block.handleInput('\x1b[13;2~'); // Shift+Enter
+    block.handleInput('c');
+    block.handleInput(ENTER);
+    expect(settled).toEqual([{ 用哪个方案: 'a\nb\nc' }]);
+  });
+
+  it('Other 编辑态粘贴整块插入：\\r\\n 归一为 \\n，控制字符剥掉', () => {
+    // 旧实现只收单字符（data.length === 1），多字符粘贴整块丢弃——输入框「能力非常差劲」的直接来源。
+    const { block, settled } = mk();
+    block.handleInput(UP);
+    block.handleInput(ENTER);
+    block.handleInput('第一行\r\n第二行\x07\r第三行'); // 带 BEL 与孤立 \r 的粘贴
+    block.handleInput(ENTER);
+    expect(settled).toEqual([{ 用哪个方案: '第一行\n第二行\n第三行' }]);
+  });
+
+  it('Other 编辑态 emoji（代理对，length 2）不被丢弃', () => {
+    const { block, settled } = mk();
+    block.handleInput(UP);
+    block.handleInput(ENTER);
+    block.handleInput('好');
+    block.handleInput('👍'); // length 2，旧实现直接丢
+    block.handleInput(ENTER);
+    expect(settled).toEqual([{ 用哪个方案: '好👍' }]);
+  });
+
+  it('Other 编辑态多行时 ↑↓ 在文本内移行，首行 ↑ / 末行 ↓ 才退出编辑态', () => {
+    const { block, settled } = mk();
+    block.handleInput(UP);
+    block.handleInput(ENTER);
+    block.handleInput('ab\ncd'); // 光标在第二行行尾
+    block.handleInput(UP); // 文本内上移一行（不退出编辑态）
+    block.handleInput('X'); // 落在第一行行尾 → abX
+    block.handleInput(UP); // 已在首行，↑ 退出编辑态
+    block.handleInput(DOWN); // 导航态下移 → 回到 Other 行
+    block.handleInput(ENTER); // 重新进编辑态（草稿保留）
+    block.handleInput(ENTER); // 提交
+    expect(settled).toEqual([{ 用哪个方案: 'abX\ncd' }]);
+  });
+
+  it('Other 编辑态多行渲染每行不超宽（纵向开窗 + 光标行横向滚动）', () => {
+    const { block } = mk({
+      questions: [{ question: '输入点什么', options: [{ label: 'A' }] }],
+    });
+    block.handleInput(DOWN);
+    block.handleInput(ENTER);
+    const lines = ['第一行内容', '这是一段特别特别长的第二行内容用来触发横向滚动机制', '第三行', '第四行', '第五行', '第六行', '第七行', '第八行'];
+    block.handleInput(lines.join('\n')); // 整块粘贴，光标在末行
+    const width = 40;
+    for (const l of block.render(width)) {
+      expect(visibleWidth(l), `行超宽: ${plain([l]).join('')}`).toBeLessThanOrEqual(width);
+    }
+    // 超 OTHER_MAX_LINES 后纵向开窗：应有省略指示（紧凑形态 …↑N）
+    expect(plain(block.render(width)).join('\n')).toContain('…↑');
+  });
 });
 
 describe('ChoiceBlock render 出口宽度安全', () => {
