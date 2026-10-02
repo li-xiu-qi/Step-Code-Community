@@ -4,11 +4,12 @@
  * 三者共用 ChoiceBlock 的选项列表交互，各自只提供正文与结果语义。
  */
 import { Markdown, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from '@earendil-works/pi-tui';
+import type { Component } from '@earendil-works/pi-tui';
 import type { AskUserQuestion, AskUserRequest, QuestionAnswers } from '../tools/askUser.js';
 import { t } from '../i18n.js';
 import { ChoiceBlock, type Choice } from './ChoiceBlock.js';
 import { c, markdownTheme } from './theme.js';
-import { indexFromLineCol, lineColFromIndex, renderMultilineInput } from './scrollInput.js';
+import { indexFromLineCol, lineColFromIndex, renderMultilineInput, renderScrolledInput } from './scrollInput.js';
 import { markdownTransform } from '../chat/markdownPrep.js';
 
 /** 预览折叠行数上限。 */
@@ -228,6 +229,144 @@ export class PlanApproval extends ChoiceBlock<PlanValue> {
 
   protected renderBody(width: number): string[] {
     return [c.accent(t('plan.confirmTitle')), ...this.markdown.render(Math.max(1, width - 2)).map((l) => `  ${l}`)];
+  }
+}
+
+// ------------------------------------------------------------------ 单行文本输入
+
+/**
+ * 单行文本编辑现场：光标移动、删除、整块插入（粘贴归一 \r\n、剥控制字符）。
+ * LineInputPrompt 用；QuestionPrompt 的 Other 编辑逻辑是它的多行超集，暂未回迁。
+ */
+class LineEditState {
+  text: string;
+  cursor: number;
+  constructor(initial: string) {
+    this.text = initial;
+    this.cursor = initial.length;
+  }
+  /** 返回 true 表示按键被消费。提交/取消语义由调用方处理。 */
+  applyKey(data: string): boolean {
+    if (matchesKey(data, 'left')) {
+      if (this.cursor > 0) this.cursor -= 1;
+      return true;
+    }
+    if (matchesKey(data, 'right')) {
+      if (this.cursor < this.text.length) this.cursor += 1;
+      return true;
+    }
+    if (matchesKey(data, 'home') || matchesKey(data, 'ctrl+a')) {
+      this.cursor = 0;
+      return true;
+    }
+    if (matchesKey(data, 'end') || matchesKey(data, 'ctrl+e')) {
+      this.cursor = this.text.length;
+      return true;
+    }
+    if (matchesKey(data, 'ctrl+w')) {
+      const before = this.text.slice(0, this.cursor);
+      const trimmed = before.replace(/\s*\S*\s*$/, '');
+      this.text = trimmed + this.text.slice(this.cursor);
+      this.cursor = trimmed.length;
+      return true;
+    }
+    if (matchesKey(data, 'backspace')) {
+      if (this.cursor > 0) {
+        this.text = this.text.slice(0, this.cursor - 1) + this.text.slice(this.cursor);
+        this.cursor -= 1;
+      }
+      return true;
+    }
+    if (matchesKey(data, 'delete')) {
+      if (this.cursor < this.text.length) {
+        this.text = this.text.slice(0, this.cursor) + this.text.slice(this.cursor + 1);
+      }
+      return true;
+    }
+    if (!data.startsWith('\x1b')) {
+      const insert = data
+        .replace(/\r\n|\r/g, '\n')
+        .replace(/[\x00-\x1f\x7f]/g, '')
+        .replace(/\t/g, '    ');
+      if (insert !== '') {
+        this.text = this.text.slice(0, this.cursor) + insert + this.text.slice(this.cursor);
+        this.cursor += insert.length;
+      }
+      return true;
+    }
+    return false;
+  }
+}
+
+/**
+ * 通用单行输入块：/rename 这类「要用户填一个短文本」的交互统一走这里，
+ * 挂 showPrompt（inputSlot 内联替换 editor），与审批三桥同一条挂载路径。
+ *
+ * 取代 askLine 的底部浮层（showOverlay bottom-center）：浮层遮状态栏、盖转录区，
+ * 视觉上是突然贴上去的补丁；内联块出现在对话最底部、状态栏之上，不遮挡历史。
+ * Enter 提交（回 trim 前原文，调用方自行 trim）、Esc 取消回 null。
+ */
+export class LineInputPrompt implements Component {
+  private readonly edit: LineEditState;
+  private settled = false;
+
+  constructor(
+    private readonly title: string,
+    private readonly done: (value: string | null) => void,
+    private readonly requestRender: () => void,
+    private readonly opts: { initial?: string; hint?: string; placeholder?: string } = {},
+  ) {
+    this.edit = new LineEditState(opts.initial ?? '');
+  }
+
+  invalidate(): void {
+    // 弹层生命周期短，不做缓存
+  }
+
+  private settle(value: string | null): void {
+    if (this.settled) return;
+    this.settled = true;
+    this.done(value);
+  }
+
+  handleInput(data: string): void {
+    if (matchesKey(data, 'escape')) {
+      this.settle(null);
+      return;
+    }
+    if (matchesKey(data, 'enter')) {
+      this.settle(this.edit.text);
+      return;
+    }
+    if (this.edit.applyKey(data)) this.requestRender();
+  }
+
+  render(width: number): string[] {
+    const innerWidth = Math.max(10, width - 4); // 边框 2 + padding 2
+    const inner: string[] = [c.accent(this.title)];
+
+    const prefix = c.toolName('❯ ');
+    const textWidth = Math.max(1, innerWidth - visibleWidth(prefix));
+    if (this.edit.text !== '') {
+      inner.push(`${prefix}${renderScrolledInput(this.edit.text, this.edit.cursor, textWidth)}`);
+    } else {
+      const placeholder = this.opts.placeholder ?? '';
+      inner.push(`${prefix}\x1b[7m \x1b[27m${c.dim(placeholder)}`);
+    }
+
+    inner.push('');
+    if (this.opts.hint !== undefined) inner.push(c.dim(this.opts.hint));
+
+    const frameWidth = Math.min(innerWidth, Math.max(...inner.map((l) => Math.min(visibleWidth(l), innerWidth))));
+    const out: string[] = [c.accent(`╭${'─'.repeat(frameWidth + 2)}╮`)];
+    for (const line of inner) {
+      const w = visibleWidth(line);
+      const padded = w < frameWidth ? line + ' '.repeat(frameWidth - w) : truncateToWidth(line, frameWidth);
+      out.push(`${c.accent('│')} ${padded} ${c.accent('│')}`);
+    }
+    out.push(c.accent(`╰${'─'.repeat(frameWidth + 2)}╯`));
+    out.push('');
+    return out;
   }
 }
 
