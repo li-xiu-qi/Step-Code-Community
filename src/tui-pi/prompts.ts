@@ -8,11 +8,23 @@ import type { AskUserQuestion, AskUserRequest, QuestionAnswers } from '../tools/
 import { t } from '../i18n.js';
 import { ChoiceBlock, type Choice } from './ChoiceBlock.js';
 import { c, markdownTheme } from './theme.js';
-import { renderScrolledInput } from './scrollInput.js';
+import { indexFromLineCol, lineColFromIndex, renderMultilineInput } from './scrollInput.js';
 import { markdownTransform } from '../chat/markdownPrep.js';
 
 /** 预览折叠行数上限。 */
 const PREVIEW_LIMIT = 10;
+
+/** Other 自由输入的可见行数上限（超出纵向开窗滚动）。 */
+const OTHER_MAX_LINES = 6;
+
+/**
+ * 换行键判定：与 pi-tui Editor 同源（Ctrl+J 发 \n、Alt+Enter 发 \x1b\r、
+ * Shift+Enter 在支持 modifyOtherKeys 的终端发 \x1b[13;2~ / kitty 协议 \x1b[27;2;13~）。
+ * Enter（\r）保持提交语义，换行全走这组键。
+ */
+export function isNewlineKey(data: string): boolean {
+  return data === '\n' || data === '\x1b\r' || data === '\x1b[13;2~' || data === '\x1b[27;2;13~';
+}
 
 /**
  * 按工具定制的审批标题：存 i18n key 而不是文案。
@@ -304,6 +316,11 @@ export class QuestionPrompt {
     // ── 编辑态：Other 行按 Enter 进入，↑↓/Esc 退出 ──
     if (this.otherMode) {
       const slot = this.slot;
+      // 换行键先于 Enter 判定：matchesKey('enter') 把 \n（Ctrl+J）也算 enter，不拦就换行变提交
+      if (isNewlineKey(data)) {
+        this.handleOtherTextEdit(data);
+        return;
+      }
       if (matchesKey(data, 'enter')) {
         const text = slot.other.trim();
         if (text === '') return; // 空文本不放行
@@ -313,14 +330,26 @@ export class QuestionPrompt {
         return;
       }
       if (matchesKey(data, 'up')) {
-        this.otherMode = false;
-        slot.cursor = (slot.cursor - 1 + this.rowCount) % this.rowCount;
+        // 多行文本时光标在文本内上移一行；已在首行才退出编辑态（与主输入框同逻辑）
+        const { line, col } = lineColFromIndex(slot.other, slot.otherCursor);
+        if (line > 0) {
+          slot.otherCursor = indexFromLineCol(slot.other, line - 1, col);
+        } else {
+          this.otherMode = false;
+          slot.cursor = (slot.cursor - 1 + this.rowCount) % this.rowCount;
+        }
         this.requestRender();
         return;
       }
       if (matchesKey(data, 'down')) {
-        this.otherMode = false;
-        slot.cursor = (slot.cursor + 1) % this.rowCount;
+        const { line, col } = lineColFromIndex(slot.other, slot.otherCursor);
+        const lastLine = slot.other.split('\n').length - 1;
+        if (line < lastLine) {
+          slot.otherCursor = indexFromLineCol(slot.other, line + 1, col);
+        } else {
+          this.otherMode = false;
+          slot.cursor = (slot.cursor + 1) % this.rowCount;
+        }
         this.requestRender();
         return;
       }
@@ -407,7 +436,7 @@ export class QuestionPrompt {
     return this.otherIndex + 1;
   }
 
-  /** 编辑态下的文本编辑处理。 */
+  /** 编辑态下的文本编辑处理。支持多行：Ctrl+J / Alt+Enter / Shift+Enter 换行，粘贴整块插入。 */
   private handleOtherTextEdit(data: string): void {
     const slot = this.slot;
     if (matchesKey(data, 'left')) {
@@ -418,13 +447,30 @@ export class QuestionPrompt {
       if (slot.otherCursor < slot.other.length) { slot.otherCursor += 1; this.requestRender(); }
       return;
     }
+    if (isNewlineKey(data)) {
+      slot.other = slot.other.slice(0, slot.otherCursor) + '\n' + slot.other.slice(slot.otherCursor);
+      slot.otherCursor += 1;
+      this.requestRender();
+      return;
+    }
     if (matchesKey(data, 'home') || matchesKey(data, 'ctrl+a')) {
-      slot.otherCursor = 0;
+      // Home 到本行行首（多行输入后到家行首才符合直觉），Ctrl+A 仍到全文开头
+      if (matchesKey(data, 'ctrl+a')) {
+        slot.otherCursor = 0;
+      } else {
+        const { line } = lineColFromIndex(slot.other, slot.otherCursor);
+        slot.otherCursor = indexFromLineCol(slot.other, line, 0);
+      }
       this.requestRender();
       return;
     }
     if (matchesKey(data, 'end') || matchesKey(data, 'ctrl+e')) {
-      slot.otherCursor = slot.other.length;
+      if (matchesKey(data, 'ctrl+e')) {
+        slot.otherCursor = slot.other.length;
+      } else {
+        const { line } = lineColFromIndex(slot.other, slot.otherCursor);
+        slot.otherCursor = indexFromLineCol(slot.other, line, Number.MAX_SAFE_INTEGER);
+      }
       this.requestRender();
       return;
     }
@@ -452,10 +498,18 @@ export class QuestionPrompt {
       }
       return;
     }
-    if (data.length === 1 && data.charCodeAt(0) >= 32 && !data.startsWith('\x1b')) {
-      slot.other = slot.other.slice(0, slot.otherCursor) + data + slot.other.slice(slot.otherCursor);
-      slot.otherCursor += 1;
-      this.requestRender();
+    // 可打印输入：单字符、emoji（代理对）与多字符粘贴走同一条路。
+    // 粘贴的换行统一为 \n，控制字符与转义序列剥掉（tab 渲染宽度不可控，一并丢弃）。
+    if (!data.startsWith('\x1b')) {
+      const insert = data
+        .replace(/\r\n|\r/g, '\n')
+        .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
+        .replace(/\t/g, '    ');
+      if (insert !== '') {
+        slot.other = slot.other.slice(0, slot.otherCursor) + insert + slot.other.slice(slot.otherCursor);
+        slot.otherCursor += insert.length;
+        this.requestRender();
+      }
     }
   }
 
@@ -489,18 +543,19 @@ export class QuestionPrompt {
     const otherLabel = t('question.other');
     const otherPrefix = onOther ? c.toolName('❯ ') : '  ';
     if (this.otherMode) {
-      // 编辑态：横向滚动显示文本 + 反显光标，光标始终在可视区，长文本不被截断成省略号
+      // 编辑态：多行渲染，光标行横向滚动、光标始终在可视区，超 OTHER_MAX_LINES 纵向开窗
       const prefix = `${otherPrefix}[${this.otherIndex + 1}] ${c.toolName(otherLabel)} `;
       const prefixWidth = visibleWidth(prefix);
       const textWidth = Math.max(1, innerWidth - prefixWidth);
-      let text: string;
       if (slot.other !== '') {
-        text = renderScrolledInput(slot.other, slot.otherCursor, textWidth);
+        const ml = renderMultilineInput(slot.other, slot.otherCursor, textWidth, OTHER_MAX_LINES);
+        inner.push(`${prefix}${ml[0] ?? ''}`);
+        const contPad = ' '.repeat(prefixWidth);
+        for (let i = 1; i < ml.length; i++) inner.push(`${contPad}${ml[i]}`);
       } else {
         // 空输入：反显光标 + 暗色占位符
-        text = `\x1b[7m \x1b[27m${c.dim(t('question.otherPlaceholder'))}`;
+        inner.push(`${prefix}\x1b[7m \x1b[27m${c.dim(t('question.otherPlaceholder'))}`);
       }
-      inner.push(`${prefix}${text}`);
     } else {
       // 导航态：只显示标签，不显示文本（视觉上区分导航态和编辑态）
       inner.push(truncateToWidth(`${otherPrefix}[${this.otherIndex + 1}] ${onOther ? c.toolName(otherLabel) : otherLabel}`, innerWidth));
