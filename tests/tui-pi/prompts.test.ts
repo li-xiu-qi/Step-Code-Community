@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { visibleWidth } from '@earendil-works/pi-tui';
-import { InlineApproval, PlanApproval, QuestionPrompt, buildPreview, dangerWarnings } from '../../src/tui-pi/prompts.js';
+import { InlineApproval, LineInputPrompt, PlanApproval, QuestionPrompt, buildPreview, dangerWarnings } from '../../src/tui-pi/prompts.js';
 import type { ApprovalOutcome, PlanOutcome } from '../../src/tui-pi/prompts.js';
 import type { AskUserRequest, QuestionAnswers } from '../../src/tools/askUser.js';
 
@@ -437,6 +437,61 @@ describe('QuestionPrompt', () => {
     }
     // 超 OTHER_MAX_LINES 后纵向开窗：应有省略指示（紧凑形态 …↑N）
     expect(plain(block.render(width)).join('\n')).toContain('…↑');
+  });
+});
+
+describe('LineInputPrompt', () => {
+  function mkLine(opts?: { initial?: string; hint?: string }): { block: LineInputPrompt; settled: (string | null)[] } {
+    const settled: (string | null)[] = [];
+    const block = new LineInputPrompt('重命名会话', (v) => settled.push(v), () => {}, opts);
+    return { block, settled };
+  }
+
+  it('输入后 Enter 提交原文（trim 归调用方）', () => {
+    const { block, settled } = mkLine();
+    for (const ch of '新名字') block.handleInput(ch);
+    block.handleInput(ENTER);
+    expect(settled).toEqual(['新名字']);
+  });
+
+  it('Esc 取消回 null', () => {
+    const { block, settled } = mkLine();
+    block.handleInput('a');
+    block.handleInput(ESC);
+    expect(settled).toEqual([null]);
+  });
+
+  it('预填 initial：光标在末尾，可直接编辑（rename 预填当前名，改几个字即可）', () => {
+    const { block, settled } = mkLine({ initial: '旧名字' });
+    block.handleInput(LEFT); // 光标到「字」前
+    block.handleInput('X');
+    block.handleInput(ENTER);
+    expect(settled).toEqual(['旧名X字']);
+  });
+
+  it('粘贴整块插入，控制字符剥掉', () => {
+    const { block, settled } = mkLine();
+    block.handleInput('第一\x07第二');
+    block.handleInput(ENTER);
+    expect(settled).toEqual(['第一第二']);
+  });
+
+  it('settle 后忽略后续输入（守卫）', () => {
+    const { block, settled } = mkLine();
+    block.handleInput('a');
+    block.handleInput(ENTER);
+    block.handleInput('b');
+    block.handleInput(ENTER);
+    expect(settled).toEqual(['a']);
+  });
+
+  it('渲染每行不超宽（窄终端 + 长输入横向滚动）', () => {
+    const { block } = mkLine();
+    block.handleInput('这是一段特别特别长的会话名字用来触发横向滚动机制'.repeat(2));
+    const width = 36;
+    for (const l of block.render(width)) {
+      expect(visibleWidth(l), `行超宽: ${plain([l]).join('')}`).toBeLessThanOrEqual(width);
+    }
   });
 });
 

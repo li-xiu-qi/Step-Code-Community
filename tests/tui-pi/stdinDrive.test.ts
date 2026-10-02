@@ -107,11 +107,11 @@ async function driveAppCapture(inject: string, expected: string): Promise<{ out:
 }
 
 describe.skipIf(!hasDist)('stdin 驱动 /rename（输入框可见性回归）', () => {
-  it('输入 /rename：hint 行出现在终端输出里，进程存活', async () => {
+  it('输入 /rename：标题行出现在终端输出里，进程存活', async () => {
     const r = await driveAppCapture('/rename\r');
-    // 「/rename 后没有输入框」的回归判据：askLine 的提示行（i18n zh-CN）
-    // 必须出现在 stdout。dock 布局根 + addChild 旧路径下它完全不渲染。
-    expect(r.out).toContain('当前会话新名字');
+    // 「/rename 后没有输入框」的回归判据：LineInputPrompt 的标题行（i18n zh-CN）
+    // 必须出现在 stdout。askLine 底部浮层已下线，rename 改走 showPrompt 内联块。
+    expect(r.out).toContain('重命名会话');
     expect(r.alive).toBe(true);
   }, 25000);
 });

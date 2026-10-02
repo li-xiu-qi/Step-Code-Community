@@ -168,7 +168,8 @@ const zh = {
   'sessionPicker.renameHint': '输入新名字 · Enter 保存 · Esc 取消 · 留空保存则清除自定义名回退标题',
 
   // --- /rename 命令（当前会话改名）---
-  'session.rename.prompt': '当前会话新名字（Esc 取消，留空清除自定义名）',
+  'session.rename.title': '重命名会话',
+  'session.rename.hint': 'Enter 确认 · Esc 取消 · 留空清除自定义名',
   'session.rename.success': '已重命名为「{name}」',
   'session.rename.cleared': '已清除自定义名，回退自动标题',
   'session.rename.failed': '重命名失败',
@@ -978,7 +979,8 @@ const en: Record<keyof typeof zh, string> = {
   'sessionPicker.renameHint': 'type a new name · Enter save · Esc cancel · saving empty clears the custom name',
 
   // --- /rename command (rename current session) ---
-  'session.rename.prompt': 'New name for current session (Esc to cancel, empty to clear)',
+  'session.rename.title': 'Rename session',
+  'session.rename.hint': 'Enter confirm · Esc cancel · empty to clear custom name',
   'session.rename.success': 'Renamed to "{name}"',
   'session.rename.cleared': 'Custom name cleared, reverted to auto title',
   'session.rename.failed': 'Rename failed',

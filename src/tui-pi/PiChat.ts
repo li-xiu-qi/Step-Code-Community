@@ -118,7 +118,7 @@ import { generateContextReport } from '../chat/contextReport.js';
 import { TableHoldback } from '../chat/tableHoldback.js';
 import { composeSystem } from '../chat/composeSystem.js';
 import { toAnthropicTools } from '../tools/index.js';
-import { InlineApproval, PlanApproval, QuestionPrompt, type ApprovalOutcome, type PlanOutcome } from './prompts.js';
+import { InlineApproval, LineInputPrompt, PlanApproval, QuestionPrompt, type ApprovalOutcome, type PlanOutcome } from './prompts.js';
 import type { AskUserRequest, QuestionAnswers } from '../tools/askUser.js';
 import { ChatEditor } from './ChatEditor.js';
 import { ActivityLine, StatusLine } from './StatusLine.js';
@@ -2335,7 +2335,16 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
         return;
 
       case 'rename': {
-        const name = await askLine(this.tui, t('session.rename.prompt'));
+        // 内联单行输入（showPrompt 挂载），与审批三桥同一条路径；预填当前名，改几个字即可。
+        const name = await this.showPrompt<string | null>(
+          (settle) =>
+            new LineInputPrompt(
+              t('session.rename.title'),
+              (v) => settle(v),
+              () => this.tui.requestRender(),
+              { initial: this.session.name ?? '', hint: t('session.rename.hint') },
+            ),
+        );
         if (name === null) return; // Esc 取消
         const trimmed = name.trim();
         const ok = this.deps.store.rename(this.deps.ctx.cwd, this.session.id, trimmed);
