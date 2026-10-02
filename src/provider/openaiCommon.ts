@@ -42,6 +42,70 @@ export interface OpenAiToolCall {
   function: { name: string; arguments: string };
 }
 
+// ============ 图片/视频 url 字符串 intern ============
+
+/**
+ * 翻译层复制抑制的最后一环。OpenAI 协议要求图片/视频以 `data:<type>;base64,<data>`
+ * 内联发送，每个请求把整个 history 全量翻译一遍，同一张图每轮请求就拼接出一条新
+ * 字符串。V8 不对内容相同的运行时字符串去重，长会话里历史副本随轮数线性膨胀：
+ * 2026-09-26 堆快照（3.2GB 堆）实测，同一张截图在堆里出现 431 份、图片 base64
+ * 合计 2.9GB，占堆 90%。
+ *
+ * rehydrateCache（AttachmentStore）治的是「读盘还原」那一环：命中后 base64 本体是
+ * 同一字符串对象。但这里拼接的 url 是**另一个**新字符串，缓存帮不上。intern 把
+ * `media_type + base64` 当 key，命中直接复用同一条 url 对象，复制从 O(请求轮数)
+ * 压到 O(图片种数)。
+ *
+ * 为什么 base64 可以直接当 key：附件系统是内容寻址（sha256 进文件名），同一份
+ * base64 内容永远对应同一张图；rehydrateCache 已让同一附件的 base64 在进程内
+ * 恒为同一对象。key 里带 media_type 是为了防「同字节内容被标成两种 MIME」的
+ * 理论冲突，代价是一条 url 的内存。
+ */
+const imageUrlIntern = new Map<string, string>();
+/** intern 条数上限（粗限条数）。与 rehydrateCache 同量级，对齐那个模块的取值。 */
+const IMAGE_URL_INTERN_MAX_ENTRIES = 64;
+/** intern 字节预算：超出淘汰最旧。JS 字符串按 UTF-16 计（每字符 2 字节）。 */
+const IMAGE_URL_INTERN_MAX_BYTES = 32 * 1024 * 1024;
+let imageUrlInternBytes = 0;
+
+export function internImageUrl(mediaType: string, data: string): string {
+  const key = `${mediaType}\n${data}`;
+  const hit = imageUrlIntern.get(key);
+  if (hit !== undefined) return hit;
+  const url = `data:${mediaType};base64,${data}`;
+  // 单条就超预算的图不进 intern：进了也会立刻被自己淘汰，白折腾
+  if (url.length * 2 > IMAGE_URL_INTERN_MAX_BYTES) return url;
+  imageUrlIntern.set(key, url);
+  imageUrlInternBytes += url.length * 2;
+  while (
+    imageUrlInternBytes > IMAGE_URL_INTERN_MAX_BYTES ||
+    imageUrlIntern.size > IMAGE_URL_INTERN_MAX_ENTRIES
+  ) {
+    const oldest = imageUrlIntern.keys().next();
+    if (oldest.done === true) break;
+    const evicted = imageUrlIntern.get(oldest.value);
+    imageUrlIntern.delete(oldest.value);
+    if (evicted !== undefined) imageUrlInternBytes -= evicted.length * 2;
+  }
+  return url;
+}
+
+/** 测试用：清空 intern 状态。生产路径永不调用。 */
+export function resetImageUrlInternForTests(): void {
+  imageUrlIntern.clear();
+  imageUrlInternBytes = 0;
+}
+
+/** 测试用：指定 key 是否仍在 intern 中（断言淘汰语义，避免依赖 V8 字符串共享行为）。 */
+export function imageUrlInternHasForTests(mediaType: string, data: string): boolean {
+  return imageUrlIntern.has(`${mediaType}\n${data}`);
+}
+
+/** 测试用：当前 intern 条数。 */
+export function imageUrlInternSizeForTests(): number {
+  return imageUrlIntern.size;
+}
+
 /** OpenAI Chat 的一个工具定义（function 型）。 */
 export interface OpenAiTool {
   type: 'function';
@@ -90,7 +154,7 @@ function toolResultContent(block: Anthropic.ToolResultBlockParam): string | Open
   if (!Array.isArray(c)) {
     const obj = c as unknown as Record<string, unknown>;
     if (obj.type === 'image' && typeof obj.data === 'string' && typeof obj.mimeType === 'string') {
-      return [{ type: 'image_url', image_url: { url: `data:${obj.mimeType};base64,${obj.data}` } }];
+      return [{ type: 'image_url', image_url: { url: internImageUrl(obj.mimeType, obj.data) } }];
     }
     if (obj.type === 'text' && typeof obj.text === 'string') {
       return obj.text;
@@ -104,14 +168,14 @@ function toolResultContent(block: Anthropic.ToolResultBlockParam): string | Open
       parts.push({ type: 'text', text: part.text });
     } else if (part.type === 'image' && part.source.type === 'base64') {
       // data URI 格式：data:<media_type>;base64,<data>
-      const url = `data:${part.source.media_type};base64,${part.source.data}`;
+      const url = internImageUrl(part.source.media_type, part.source.data);
       parts.push({ type: 'image_url', image_url: { url } });
     } else if ((part as { type: string }).type === 'video') {
       // video 扩展块（官方类型无此块，read_media 视频回灌）→ video_url data URI。
       // 两个 openai 兼容端点实测接受该形态（2026-08-13 探针）。
       const src = (part as unknown as { source: { type: string; media_type: string; data: string } }).source;
       if (src.type === 'base64') {
-        parts.push({ type: 'video_url', video_url: { url: `data:${src.media_type};base64,${src.data}` } });
+        parts.push({ type: 'video_url', video_url: { url: internImageUrl(src.media_type, src.data) } });
       }
     }
     // document / tool_use / tool_result 等块在 tool_result 里不该出现，丢弃
@@ -170,7 +234,7 @@ export function messagesToOpenAi(
         if (b.type === 'image' && b.source.type === 'base64') {
           imageParts.push({
             type: 'image_url',
-            image_url: { url: `data:${b.source.media_type};base64,${b.source.data}` },
+            image_url: { url: internImageUrl(b.source.media_type, b.source.data) },
           });
         } else if ((b as { type: string }).type === 'video') {
           // user 消息内嵌视频块（与图片同路升格 parts 数组；read_media 视频经 tool_result
@@ -179,7 +243,7 @@ export function messagesToOpenAi(
           if (src.type === 'base64') {
             imageParts.push({
               type: 'video_url',
-              video_url: { url: `data:${src.media_type};base64,${src.data}` },
+              video_url: { url: internImageUrl(src.media_type, src.data) },
             });
           }
         }
