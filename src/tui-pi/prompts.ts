@@ -461,6 +461,16 @@ export class QuestionPrompt {
         return;
       }
       if (matchesKey(data, 'enter')) {
+        // 反斜杠约定（与主输入框同源，pi-tui Editor 的同款 fallback）：光标前是 \ 时
+        // 删掉它并换行，不提交。Windows Terminal 默认不发 Shift+Enter 序列（用户按了
+        // 等于 Enter），Alt+Enter 被 WT 抢去切全屏——这组键在 WT 下全灭，\+Enter 是
+        // 唯一所有终端都可达的换行路径（2026-10-03 实测：Ctrl+J 可用但用户发现不了）。
+        if (slot.otherCursor > 0 && slot.other[slot.otherCursor - 1] === '\\') {
+          slot.other = slot.other.slice(0, slot.otherCursor - 1) + '\n' + slot.other.slice(slot.otherCursor);
+          // 光标数值不变：删 \ 又插 \n，落在换行后的新行行首
+          this.requestRender();
+          return;
+        }
         const text = slot.other.trim();
         if (text === '') return; // 空文本不放行
         this.otherMode = false;

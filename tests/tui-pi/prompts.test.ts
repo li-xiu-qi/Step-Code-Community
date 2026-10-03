@@ -423,6 +423,21 @@ describe('QuestionPrompt', () => {
     expect(settled).toEqual([{ 用哪个方案: 'abX\ncd' }]);
   });
 
+  it('Other 编辑态 \\ + Enter 换行（无 Shift+Enter 终端的约定，删掉 \\ 插 \\n 不提交）', () => {
+    // WT 默认不发 Shift+Enter 序列、Alt+Enter 被 WT 抢去切全屏，\+Enter 与主输入框
+    // 的 pi-tui Editor fallback 同款，是唯一全终端可达的换行路径。
+    const { block, settled } = mk();
+    block.handleInput(UP);
+    block.handleInput(ENTER);
+    for (const ch of '第一行') block.handleInput(ch);
+    block.handleInput('\\');
+    block.handleInput(ENTER); // \ 结尾 + Enter → 换行而非提交
+    expect(settled).toHaveLength(0); // 没提交
+    for (const ch of '第二行') block.handleInput(ch);
+    block.handleInput(ENTER); // 提交
+    expect(settled).toEqual([{ 用哪个方案: '第一行\n第二行' }]);
+  });
+
   it('Other 编辑态多行渲染每行不超宽（纵向开窗 + 光标行横向滚动）', () => {
     const { block } = mk({
       questions: [{ question: '输入点什么', options: [{ label: 'A' }] }],
