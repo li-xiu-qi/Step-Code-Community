@@ -1319,11 +1319,11 @@ if (opts.reflect === true) {
     //
     // 崩溃落盘：stderr 在退出后会被终端冲掉，用户反馈「闪退」时拿不到任何证据，
     // 无法区分是内存爆、渲染异常还是终端已死。所以除 stderr 外再写一份到
-    // ~/.pi/agent/crash-<时间戳>.log，带堆统计、rss、uptime 与终端尺寸，供事后定位。
+    // ~/.step-code/crash-<时间戳>.log，带堆统计、rss、uptime 与终端尺寸，供事后定位。
     // 写盘自身失败不能阻断终端恢复，整段 try/catch。
     const writeCrashDump = (kind: string, err: unknown): void => {
       try {
-        const dir = join(homedir(), '.pi', 'agent');
+        const dir = join(homedir(), '.step-code');
         mkdirSync(dir, { recursive: true });
         const heap = getHeapStatistics();
         appendFileSync(

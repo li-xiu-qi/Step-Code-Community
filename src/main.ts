@@ -39,7 +39,21 @@ process.env.NODE_ENV ??= 'production';
 // 无静态 import，走动态 import node:v8 和 node:child_process。
 const TARGET_HEAP_MB = Number(process.env.STEP_CODE_MAX_HEAP_MB) || 4096;
 
-Promise.all([import('node:v8'), import('node:child_process')]).then(([v8, cp]) => {
+Promise.all([import('node:v8'), import('node:child_process'), import('node:os'), import('node:path')]).then(([v8, cp, os, path]) => {
+  // V8 致命错误（撞堆上限的 abort、native 崩溃）是 C++ 层直接死，JS 的
+  // uncaughtException / exit handler 一个都来不及跑，终端留在污染态且零证据。
+  // diagnostic report 是 V8 层自己写的，不经过 JS，是唯一能在这种死法下留现场的
+  // 通道。运行时 API 对两条路径（直跑 / re-exec）都生效；reportOnFatalError 覆盖
+  // abort 类，heapsnapshot-near-heap-limit 靠 re-exec 参数覆盖（V8 在启动期读取，
+  // 运行时 setFlagsFromString 装不上回调）。
+  // 落盘到 ~/.step-code 而不是 cwd：快照/报告动辄几百 MB，不能撒到用户的工作目录。
+  const diagDir = path.join(os.homedir(), '.step-code');
+  try {
+    process.report.reportOnFatalError = true;
+    process.report.directory = diagDir;
+  } catch {
+    // 老 Node 没有 report API 时不影响启动
+  }
   const currentHeapMB = v8.default.getHeapStatistics().heap_size_limit / 1024 / 1024;
   if (currentHeapMB >= TARGET_HEAP_MB * 0.9) {
     // 堆够大 → 加载 cli
@@ -63,7 +77,16 @@ Promise.all([import('node:v8'), import('node:child_process')]).then(([v8, cp]) =
   try {
     cp.execFileSync(
       process.execPath,
-      [`--max-old-space-size=${TARGET_HEAP_MB}`, ...forwarded, ...process.argv.slice(1)],
+      [
+        `--max-old-space-size=${TARGET_HEAP_MB}`,
+        // 致命错误取证：report 是 compact 现场（JS/native 栈、堆统计），快照是完整证据。
+        // 1 份就够——4GB 堆的快照近 1GB，多份只会把磁盘写穿。
+        '--report-on-fatalerror',
+        '--heapsnapshot-near-heap-limit=1',
+        `--diagnostic-dir=${diagDir}`,
+        ...forwarded,
+        ...process.argv.slice(1),
+      ],
       { stdio: 'inherit', env: { ...process.env, STEP_CODE_HEAP_REEXEC: '1' } },
     );
     process.exit(0);
