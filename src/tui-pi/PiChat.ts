@@ -490,6 +490,8 @@ export class PiChat {
   private thinkingAccum = '';
   /** 本次模型尝试的转录区起点下标：attempt_start 时记录，output_blocked 时据此撤回本次尝试的残文。 */
   private attemptStartIndex = 0;
+  /** 会话现场出现过内容（置位后不再回落）：退出时是否打印恢复提示的判据之一。 */
+  private sawContent = false;
   /** 回合中进度落盘的节流时间戳（persistProgress）。 */
   private lastProgressPersistAt = 0;
   /** thinking 预览尾部留的行数。比 StatusLine.PREVIEW_LINES(3) 多取几行，折行后仍够预览用。 */
@@ -1514,6 +1516,10 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
   /** 持久化。顺序不变量：先 appendFull 再 save（wireSeq 游标一致性）。 */
   private persist(): void {
     this.session.messages = this.history;
+    // 退出恢复提示的粘滞位在这里置位：persist 是所有消息入史后的必经检查点
+    // （回合末、回合中 persistProgress、命令处理），history 有过内容即标记，
+    // 后续 /new / /clear 清空也不回落——进程内「会话现场有过内容」这个事实不变。
+    if (this.history.length > 0) this.sawContent = true;
     this.session.todos = [...this.todos.items];
     this.session.mode = this.mode;
     this.session.model = this.currentAlias ?? this.model;
@@ -2126,7 +2132,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       // 终端已死，动画本就无从显示
     }
     this.tui.stop();
-    this.resolveExit?.({ sessionId: this.session.id, hasContent: this.history.length > 0 });
+    this.resolveExit?.({ sessionId: this.session.id, hasContent: this.history.length > 0 || this.sawContent });
     this.resolveExit = undefined;
   }
 
