@@ -490,6 +490,8 @@ export class PiChat {
   private thinkingAccum = '';
   /** 本次模型尝试的转录区起点下标：attempt_start 时记录，output_blocked 时据此撤回本次尝试的残文。 */
   private attemptStartIndex = 0;
+  /** 回合中进度落盘的节流时间戳（persistProgress）。 */
+  private lastProgressPersistAt = 0;
   /** thinking 预览尾部留的行数。比 StatusLine.PREVIEW_LINES(3) 多取几行，折行后仍够预览用。 */
   private static readonly PREVIEW_TAIL_LINES = 5;
   /** preview 只传 accum 尾部若干行，避免 Text 组件每 chunk 重折全量串。 */
@@ -1492,6 +1494,21 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
   private updateNotifyQueue(next: readonly string[]): void {
     this.notifyQueue = [...next];
     this.syncStatus();
+  }
+
+  /**
+   * 回合中进度落盘（1s 节流）。persist 此前只在回合末调用，崩溃会丢掉整轮的
+   * 工具执行轨迹——2026-10-03 实测：一轮跑 3.5 分钟、14 次工具调用、10 次模型
+   * 请求，进程死亡后 session.json 里这轮只有用户输入一条消息，wire 里只有
+   * tool.settle 遥测（无消息正文），恢复时中间过程全部不可重建。
+   * wire 尾段重放 + closeDanglingToolUse 闭合悬空 tool_use 的设施早就备好，
+   * 缺的只是回合中真正调 persist。节流防 subagent 密集 tool_end 下的写盘抖动。
+   */
+  private persistProgress(): void {
+    const now = Date.now();
+    if (now - this.lastProgressPersistAt < 1000) return;
+    this.lastProgressPersistAt = now;
+    this.persist();
   }
 
   /** 持久化。顺序不变量：先 appendFull 再 save（wireSeq 游标一致性）。 */
@@ -5118,6 +5135,8 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       case 'attempt_start':
         // 本次模型响应的起点：记录转录区块数作为边界。内部标记，无可见内容、不重绘。
         this.attemptStartIndex = this.transcript.size();
+        // 回合中落盘：此刻上一批 tool_result 已全部进 history，烧下一次模型请求前存盘
+        this.persistProgress();
         break;
       case 'output_blocked': {
         // PreOutput 拦截：撤回本次尝试已上屏的全部产出（thinking + 正文），
@@ -5242,6 +5261,10 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
         );
         // todo_list 工具改的是 this.todos，面板要跟着刷；其它工具走这一路开销是两次赋值
         this.chrome.setTodos(this.todos.items);
+        // 回合中落盘：工具结算一个存一个。assistant 的 tool_use 消息此时已在 history
+        // （result 消息要等本批收齐才进），崩溃留下悬空 tool_use 由 resume 的
+        // closeDanglingToolUse 合成错误结果闭合，是已有且测试过的路径。
+        this.persistProgress();
         break;
       case 'retry':
       case 'notice':
