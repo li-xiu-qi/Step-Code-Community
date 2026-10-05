@@ -9,6 +9,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { decode } from 'sixel';
 import {
+  decodeImage,
   decodePNG,
   detectImageProtocol,
   encodeSixel,
@@ -60,6 +61,49 @@ describe('decodePNG', () => {
 
   it('空 buffer 返回 null', () => {
     expect(decodePNG(Buffer.alloc(0))).toBeNull();
+  });
+});
+
+/** 8x6 四色块 JPEG（quality 95）：与 PNG_B64 同构图，JPEG 有损故颜色断言用容差。 */
+const JPEG_B64 =
+  '/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEAAIBAQEBAQIBAQECAgICAgQDAgICAgUEBAMEBgUGBgYFBgYGBwkIBgcJBwYGCAsICQoKCgoKBggLDAsKDAkKCgoBAgICAgICBQMDBQoHBgcKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCv/AABEIAAYACAMBEQACEQEDEQH/xAGiAAABBQEBAQEBAQAAAAAAAAAAAQIDBAUGBwgJCgsQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+gEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoLEQACAQIEBAMEBwUEBAABAncAAQIDEQQFITEGEkFRB2FxEyIygQgUQpGhscEJIzNS8BVictEKFiQ04SXxFxgZGiYnKCkqNTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqCg4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2dri4+Tl5ufo6ery8/T19vf4+fr/2gAMAwEAAhEDEQA/APNv+DpP9mDwD/wTX/4UX/wozV9Y1b/hNP8AhJ/7U/4Sy4in8r7H/ZPleV9nig25+1Sbt27OFxjBzOQxXD3tPq2vPa/Nr8N7Wtbuz7XxE47zfxM+q/2pCnD6vz8vslJX9pyX5uaU725Fa1ut79P/2Q==';
+
+describe('decodeImage', () => {
+  it('JPEG 魔数分发：解码 8x6 四色块，尺寸正确、四角颜色近似', () => {
+    const img = decodeImage(Buffer.from(JPEG_B64, 'base64'))!;
+    expect(img).not.toBeNull();
+    expect(img.width).toBe(8);
+    expect(img.height).toBe(6);
+    expect(img.rgb.length).toBe(8 * 6 * 3);
+    const at = (x: number, y: number): number[] => [
+      img.rgb[(y * 8 + x) * 3]!,
+      img.rgb[(y * 8 + x) * 3 + 1]!,
+      img.rgb[(y * 8 + x) * 3 + 2]!,
+    ];
+    const near = (got: number[], want: number[]): void =>
+      want.forEach((v, i) => expect(Math.abs(got[i]! - v)).toBeLessThanOrEqual(40));
+    near(at(0, 0), [230, 57, 70]);
+    near(at(7, 0), [29, 53, 87]);
+    near(at(0, 5), [255, 255, 255]);
+    near(at(7, 5), [0, 0, 0]);
+  });
+
+  it('PNG 魔数仍走内置解码器，逐像素精确', () => {
+    const img = decodeImage(Buffer.from(PNG_B64, 'base64'))!;
+    expect(img.width).toBe(8);
+    expect(img.rgb[0]).toBe(230);
+    expect(img.rgb[1]).toBe(57);
+    expect(img.rgb[2]).toBe(70);
+  });
+
+  it('截断的 JPEG 返回 null，不抛异常', () => {
+    const buf = Buffer.from(JPEG_B64, 'base64');
+    expect(decodeImage(buf.subarray(0, 100))).toBeNull();
+  });
+
+  it('非图片字节返回 null，不抛异常', () => {
+    expect(decodeImage(Buffer.from('definitely not an image'))).toBeNull();
+    expect(decodeImage(Buffer.alloc(2))).toBeNull();
   });
 });
 
