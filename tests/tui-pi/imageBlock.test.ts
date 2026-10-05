@@ -9,6 +9,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { decode } from 'sixel';
 import {
+  composeThumbnailRow,
   decodeImage,
   decodePNG,
   detectImageProtocol,
@@ -356,6 +357,69 @@ describe('ImageBlock', () => {
     const second = comp.render(8);
     expect(second).not.toBe(first);
     expect(second).toEqual(first);
+  });
+});
+
+describe('composeThumbnailRow', () => {
+  const solid = (w: number, h: number, rgb: [number, number, number]): DecodedImage => {
+    const data = new Uint8Array(w * h * 3);
+    for (let i = 0; i < w * h; i++) {
+      data[i * 3] = rgb[0];
+      data[i * 3 + 1] = rgb[1];
+      data[i * 3 + 2] = rgb[2];
+    }
+    return { width: w, height: h, rgb: data };
+  };
+
+  it('两张合成一行：画布宽 = 两格 + 间隔，槽位列区间不重叠', () => {
+    const red = solid(90, 90, [230, 57, 70]);
+    const blue = solid(90, 90, [29, 53, 87]);
+    const row = composeThumbnailRow(
+      [
+        { image: red, imgIdx: 0 },
+        { image: blue, imgIdx: 1 },
+      ],
+      10,
+      5,
+    );
+    expect(row.cols).toBe(21); // 10 + 1 + 10
+    expect(row.rows).toBe(5);
+    expect(row.image.width).toBe(21 * 9);
+    expect(row.image.height).toBe(5 * 18);
+    expect(row.slots).toEqual([
+      { imgIdx: 0, colStart: 0, colEnd: 10 },
+      { imgIdx: 1, colStart: 11, colEnd: 21 },
+    ]);
+    // 间隔列（第 10 格 = x 90..98）整列黑
+    const gapX = 10 * 9 + 4;
+    const midY = Math.floor(row.image.height / 2);
+    const gi = (midY * row.image.width + gapX) * 3;
+    expect([row.image.rgb[gi], row.image.rgb[gi + 1], row.image.rgb[gi + 2]]).toEqual([0, 0, 0]);
+    // 左槽中心是红、右槽中心是蓝（90x90 恰好填满 10x5 格，无缩放）
+    const li = (midY * row.image.width + 45) * 3;
+    expect([row.image.rgb[li], row.image.rgb[li + 1], row.image.rgb[li + 2]]).toEqual([230, 57, 70]);
+    const ri = (midY * row.image.width + 11 * 9 + 45) * 3;
+    expect([row.image.rgb[ri], row.image.rgb[ri + 1], row.image.rgb[ri + 2]]).toEqual([29, 53, 87]);
+  });
+
+  it('小图不放大：居中贴入，四周留黑', () => {
+    const tiny = solid(9, 18, [255, 255, 255]); // 1x1 格大
+    const row = composeThumbnailRow([{ image: tiny, imgIdx: 3 }], 10, 5);
+    expect(row.image.width).toBe(90);
+    // 画布中心（贴图中心）是白，左上角是黑
+    const ci = (45 * 90 + 45) * 3;
+    expect(row.image.rgb[ci]).toBe(255);
+    expect(row.image.rgb[0]).toBe(0);
+    expect(row.slots[0]!.imgIdx).toBe(3);
+  });
+
+  it('宽图保宽高比缩放：不撑破槽位，上下留黑', () => {
+    const wide = solid(360, 90, [100, 200, 50]); // 4:1
+    const row = composeThumbnailRow([{ image: wide, imgIdx: 0 }], 10, 5);
+    // 缩到 90x22.5≈23：水平填满、垂直居中，顶行黑、中间行有色
+    expect(row.image.rgb[4 * 90 * 3 + 45 * 3]).toBe(0);
+    const midI = (45 * 90 + 45) * 3;
+    expect(row.image.rgb[midI + 1]).toBe(200);
   });
 });
 

@@ -53,6 +53,9 @@ export interface TranscriptImageRegion {
   readonly blockIdx: number;
   /** 图片在该 user 块 images 数组中的下标。 */
   readonly imgIdx: number;
+  /** 多图网格时该图在行内的字符列区间 [colStart, colEnd)；纵向单图无此字段，命中不查列。 */
+  readonly colStart?: number;
+  readonly colEnd?: number;
 }
 
 export class Transcript implements Component {
@@ -389,7 +392,7 @@ export class Transcript implements Component {
         // 图片区域登记：块内 sixel 序列行换算成文档行（块起始行 + 本地行号）。
         // 只在块重渲时做（前缀缓存命中走上面的 regions 复用），成本 O(块数)。
         for (const seq of this.blocks[i]!.imageRows()) {
-          prefixRegions.push({ startRow: blockStart + seq.row, spanRows: seq.rows, blockIdx: i, imgIdx: seq.imgIdx });
+          prefixRegions.push({ startRow: blockStart + seq.row, spanRows: seq.rows, blockIdx: i, imgIdx: seq.imgIdx, ...(seq.colStart !== undefined ? { colStart: seq.colStart, colEnd: seq.colEnd! } : {}) });
         }
       }
       this.prefixCache = { width, ver: this.structVer, lines: prefix, regions: prefixRegions };
@@ -401,7 +404,7 @@ export class Transcript implements Component {
     if (lastIdx >= 0) {
       const tailStart = head.length + prefix.length;
       for (const seq of this.blocks[lastIdx]!.imageRows()) {
-        tailRegions.push({ startRow: tailStart + seq.row, spanRows: seq.rows, blockIdx: lastIdx, imgIdx: seq.imgIdx });
+        tailRegions.push({ startRow: tailStart + seq.row, spanRows: seq.rows, blockIdx: lastIdx, imgIdx: seq.imgIdx, ...(seq.colStart !== undefined ? { colStart: seq.colStart, colEnd: seq.colEnd! } : {}) });
       }
     }
     const regions = [...prefixRegions, ...tailRegions];
@@ -439,10 +442,15 @@ export class Transcript implements Component {
   }
 
   /**
-   * 命中查询：文档行 docRow 落在哪张图的占位区里。
-   * 区域不重叠（图片按文档顺序排列），线性扫描足够；条数是个位数。
+   * 命中查询：文档坐标 (docRow, docCol) 落在哪张图的占位区里。
+   * 区域不重叠（纵向单图按行排，网格图同行按列分），线性扫描足够；条数是个位数。
+   * docCol 只在区域带列区间（多图网格）时参与判定；不传时退回纯行判定（旧行为）。
    */
-  imageRegionAt(docRow: number): TranscriptImageRegion | undefined {
-    return this.imageRegions().find((r) => docRow >= r.startRow && docRow < r.startRow + r.spanRows);
+  imageRegionAt(docRow: number, docCol?: number): TranscriptImageRegion | undefined {
+    return this.imageRegions().find((r) => {
+      if (docRow < r.startRow || docRow >= r.startRow + r.spanRows) return false;
+      if (r.colStart !== undefined && docCol !== undefined && (docCol < r.colStart || docCol >= r.colEnd!)) return false;
+      return true;
+    });
   }
 }

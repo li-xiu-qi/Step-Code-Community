@@ -35,6 +35,9 @@ export interface DecodedImage {
 export const MAX_RENDER_PIXELS = 4_000_000;
 /** 单边像素上限：防畸形 header 声明巨大尺寸骗分配。 */
 const MAX_RENDER_EDGE = 8192;
+/** 终端字符格的像素尺寸（WT 默认 9x18）：格数与像素互算的换算基准。 */
+export const CELL_W_PX = 9;
+export const CELL_H_PX = 18;
 
 function paeth(a: number, b: number, c: number): number {
   const p = a + b - c;
@@ -572,8 +575,8 @@ export class ImageBlock implements Component {
    */
   private renderSixel(width: number): string[] {
     const { width: w, height: h } = this.image;
-    const CELL_W = 9;
-    const CELL_H = 18;
+    const CELL_W = CELL_W_PX;
+    const CELL_H = CELL_H_PX;
     // 尺寸：宽高同比例缩放，同时不超过 maxWidthCells 与 maxHeightCells（转录区缩略图
     // 传小上限，预览浮层传大上限）。只缩不放大：小图按原尺寸保文字可读。
     const cols = Math.max(1, Math.min(this.maxWidthCells, Math.max(1, width - 2)));
@@ -639,3 +642,57 @@ function resizeNearest(img: DecodedImage, targetW: number, targetH: number): Dec
   return { width: targetW, height: targetH, rgb: out };
 }
 
+
+// ---------- 多图网格：横向像素级合成 ----------
+
+/** 网格中一张缩略图的命中槽位。 */
+export interface ThumbnailSlot {
+  /** 该图在块 images 数组中的下标（透传自调用方）。 */
+  readonly imgIdx: number;
+  /** 槽位在合成行内的字符列区间 [colStart, colEnd)，相对行首（不含调用方加的缩进）。 */
+  readonly colStart: number;
+  readonly colEnd: number;
+}
+
+/**
+ * 把多张图横向合成成一张画布，供 ImageBlock 当单图渲染。
+ *
+ * 为什么不在序列层并排（band 序列 + 光标移动拼第二图）：那依赖「一条 sixel band 画完
+ * 后 WT 的光标落点」这一未文档化行为，错了就是整行花屏且离线测试抓不到。像素级合成
+ * 只动用已验证的原语（缩放、贴像素），一条图一条序列，光标契约与单图完全一致。
+ *
+ * 布局：每图一个 cellCols x cellRows 格的槽位，槽间 1 格间隔；图保宽高比缩放
+ * （只缩不放）后居中，余量留黑（letterbox）。返回槽位的字符列区间，供点击命中
+ * 把列换算回 imgIdx。
+ */
+export function composeThumbnailRow(
+  items: readonly { image: DecodedImage; imgIdx: number }[],
+  cellCols: number,
+  cellRows: number,
+): { image: DecodedImage; slots: ThumbnailSlot[]; cols: number; rows: number } {
+  const GAP_COLS = 1;
+  const n = items.length;
+  const cols = n * cellCols + (n - 1) * GAP_COLS;
+  const cellW = cellCols * CELL_W_PX;
+  const cellH = cellRows * CELL_H_PX;
+  const pxW = cols * CELL_W_PX;
+  const canvas = new Uint8Array(pxW * cellH * 3); // 零值即黑底
+  const slots: ThumbnailSlot[] = [];
+  for (let i = 0; i < n; i++) {
+    const { image: src, imgIdx } = items[i]!;
+    const scale = Math.min(1, cellW / src.width, cellH / src.height);
+    const fitted =
+      scale === 1
+        ? src
+        : resizeNearest(src, Math.max(1, Math.round(src.width * scale)), Math.max(1, Math.round(src.height * scale)));
+    const x0 = i * (cellW + GAP_COLS * CELL_W_PX) + Math.floor((cellW - fitted.width) / 2);
+    const y0 = Math.floor((cellH - fitted.height) / 2);
+    for (let y = 0; y < fitted.height; y++) {
+      const dstStart = ((y0 + y) * pxW + x0) * 3;
+      const srcStart = y * fitted.width * 3;
+      canvas.set(fitted.rgb.subarray(srcStart, srcStart + fitted.width * 3), dstStart);
+    }
+    slots.push({ imgIdx, colStart: i * (cellCols + GAP_COLS), colEnd: i * (cellCols + GAP_COLS) + cellCols });
+  }
+  return { image: { width: pxW, height: cellH, rgb: canvas }, slots, cols, rows: cellRows };
+}

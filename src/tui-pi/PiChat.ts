@@ -630,7 +630,7 @@ export class PiChat {
       }
       if (mouse.kind !== 'press' || mouse.button !== 0) return undefined; // 滚轮/右键/拖拽放行
       const scrollTop = this.transcriptScrollView?.scrollTop ?? 0;
-      const hit = this.transcript.imageRegionAt(mouse.row + scrollTop);
+      const hit = this.transcript.imageRegionAt(mouse.row + scrollTop, mouse.col);
       if (hit === undefined) return undefined; // 没点中图：放行给库层（选区/滚动条）
       this.openImagePreview(hit.blockIdx, hit.imgIdx);
       return { consume: true };
@@ -1144,13 +1144,13 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
   private handleTerminalMouse(ev: { kind: string; button: number; col: number; row: number }): void {
     if (process.env.STEP_CODE_DEBUG_MOUSE === '1') {
       const top = this.transcriptScrollView?.scrollTop ?? 0;
-      const probe = this.transcript.imageRegionAt(ev.row + top);
+      const probe = this.transcript.imageRegionAt(ev.row + top, ev.col);
       mouseDebug(`ev=${JSON.stringify(ev)} scrollTop=${top} hit=${probe !== undefined ? `${probe.blockIdx}/${probe.imgIdx}@${probe.startRow}+${probe.spanRows}` : 'none'}`);
     }
     if (ev.kind !== 'press' || ev.button !== 0) return;
     if (this.promptActive || this.imagePreviewHandle !== null) return;
     const scrollTop = this.transcriptScrollView?.scrollTop ?? 0;
-    const region = this.transcript.imageRegionAt(ev.row + scrollTop);
+    const region = this.transcript.imageRegionAt(ev.row + scrollTop, ev.col);
     if (region === undefined) return;
     this.openImagePreview(region.blockIdx, region.imgIdx);
   }
