@@ -129,7 +129,7 @@ import { sortAgents, AgentsOverlay } from './AgentsOverlay.js';
 import { openProviderManager, runProviderWizard } from './ProviderManager.js';
 import { allTodosDone } from '../chat/chromePanels.js';
 import { ItemBlock, summarizeInput, SPINNER_FRAME_MS, tickSpinner } from './blocks.js';
-import { decodePNG, rehydrateToolImages } from './imageBlock.js';
+import { decodeImage, rehydrateToolImages } from './imageBlock.js';
 import { ImagePreviewOverlay } from './ImagePreviewOverlay.js';
 import { mouseDebug } from './ChatEditor.js';
 import { FILE_LINK_SCHEME, fileUrlToPath, openWithSystem } from './fileLink.js';
@@ -1174,7 +1174,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       img = item.images?.[imgIdx];
     }
     if (img === undefined) return;
-    const decoded = decodePNG(Buffer.from(img.base64, 'base64'));
+    const decoded = decodeImage(Buffer.from(img.base64, 'base64'));
     if (decoded === null) return; // 解码失败：转录区里已经是降级文本行，点不到区域
     const close = (): void => {
       this.imagePreviewHandle?.hide();

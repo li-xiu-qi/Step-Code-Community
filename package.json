@@ -61,6 +61,7 @@
     "cli-highlight": "^2.1.11",
     "commander": "^15.0.0",
     "jimp": "^1.6.1",
+    "jpeg-js": "^0.4.4",
     "linkedom": "^0.18.13",
     "quickjs-emscripten": "^0.32.0",
     "smol-toml": "^1.7.0",
@@ -70,6 +71,7 @@
   },
   "devDependencies": {
     "@types/adm-zip": "^0.5.8",
+    "@types/jpeg-js": "^0.3.7",
     "@types/node": "^26.1.1",
     "esbuild": "^0.28.1",
     "postject": "1.0.0-alpha.6",

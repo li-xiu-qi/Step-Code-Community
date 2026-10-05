@@ -7,7 +7,7 @@ import { Markdown, truncateToWidth, visibleWidth, wrapTextWithAnsi, sliceByColum
 import type { Component } from '@earendil-works/pi-tui';
 import { basename } from 'node:path';
 import type { DisplayItem, WelcomeData } from '../chat/types.js';
-import { decodePNG, ImageBlock, thumbnailCells } from './imageBlock.js';
+import { decodeImage, ImageBlock, thumbnailCells } from './imageBlock.js';
 import { offloadIfNeeded as offloadLargeResult, readCachedOutput } from '../agent/outputCache.js';
 
 /** Braille 转圈帧序列，供 running 状态动态 spinner。 */
@@ -495,7 +495,7 @@ export class ItemBlock implements Component {
     // 时反复重画，闪烁与卡顿的来源之一）。并排布局未做，多张纵向排列。
     const available = Math.max(8, width - 6);
     for (const [imgIdx, img] of images.entries()) {
-      const decoded = decodePNG(Buffer.from(img.base64, 'base64'));
+      const decoded = decodeImage(Buffer.from(img.base64, 'base64'));
       if (decoded === null) {
         out.push(c.dim(`  [图片无法渲染：${img.mediaType}]`));
         continue;

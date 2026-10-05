@@ -12,11 +12,13 @@
  * 开启，2024 年后版本都远超阈值），并用 STEP_CODE_IMAGE_PROTOCOL 环境变量留人工
  * 覆盖口（sixel / halfblock / off）。
  *
- * 解码器只支持 8 位深、RGB/RGBA、非交错的 PNG（截图与常见导出图的形态），其他形态
- * 或解析失败一律降级，不抛异常——渲染路径上的异常会冒泡成 uncaughtException 杀进程。
+ * 解码走 decodeImage 按魔数分发：PNG（8 位深、RGB/RGBA、非交错）用内置解码器，
+ * JPEG 用 jpeg-js（纯 JS 同步）；gif/bmp/webp 暂无解码器。不支持的形态或解析失败
+ * 一律降级，不抛异常——渲染路径上的异常会冒泡成 uncaughtException 杀进程。
  */
 import { inflateSync } from 'node:zlib';
 import { spawnSync } from 'node:child_process';
+import { decode as jpegDecode } from 'jpeg-js';
 import { introducer, FINALIZER } from 'sixel';
 import type { Component } from '@earendil-works/pi-tui';
 import { isStepref } from '../session/attachments.js';
@@ -124,6 +126,42 @@ export function decodePNG(buffer: Buffer): DecodedImage | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * 解码 JPEG 为 RGB 像素（jpeg-js，纯 JS 同步解码）。失败返回 null 而非抛错。
+ *
+ * jpeg-js 输出 RGBA（含 alpha 通道），转成 DecodedImage 约定的 RGB 三通道。
+ * maxMemoryUsageInMB 防畸形文件骗分配；解码后再过统一的像素/单边预算。
+ */
+function decodeJPEG(buffer: Buffer): DecodedImage | null {
+  try {
+    const raw = jpegDecode(buffer, { maxMemoryUsageInMB: 512, formatAsRGBA: true });
+    const { width, height, data } = raw;
+    if (width === 0 || height === 0) return null;
+    if (width > MAX_RENDER_EDGE || height > MAX_RENDER_EDGE) return null;
+    if (width * height > MAX_RENDER_PIXELS) return null;
+    const rgb = new Uint8Array(width * height * 3);
+    for (let px = 0; px < width * height; px++) {
+      rgb[px * 3] = data[px * 4]!;
+      rgb[px * 3 + 1] = data[px * 4 + 1]!;
+      rgb[px * 3 + 2] = data[px * 4 + 2]!;
+    }
+    return { width, height, rgb };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 按魔数分发解码：PNG（89 50…）走内置解码器，JPEG（FF D8）走 jpeg-js。
+ * 不认 mediaType 标注——工具结果图的 mediaType 与实际字节可能不符，魔数才是硬证据。
+ * gif/bmp/webp 暂无解码器，返回 null 走降级文本行。
+ */
+export function decodeImage(buffer: Buffer): DecodedImage | null {
+  if (buffer.length < 4) return null;
+  if (buffer[0] === 0xff && buffer[1] === 0xd8) return decodeJPEG(buffer);
+  return decodePNG(buffer);
 }
 
 /** 双线性采样源图像素坐标 (fx, fy) 处的颜色。 */
