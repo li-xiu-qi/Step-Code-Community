@@ -61,18 +61,26 @@ describe('Transcript 图片区域登记', () => {
     expect(item.kind === 'user' && item.images![hit.imgIdx]!.id).toBe(7);
   });
 
-  it('多图：按文档顺序登记两条区域，imgIdx 各自正确且不重叠', () => {
+  it('多图：网格并排同一占位行，列区间分流命中各自的 imgIdx', () => {
     const t = new Transcript();
     t.push({ kind: 'user', text: '两图', images: [image(1), image(2)] });
     t.render(W);
     const regions = t.imageRegions();
     expect(regions).toHaveLength(2);
     expect(regions.map((r) => r.imgIdx)).toEqual([0, 1]);
-    // 第一条占位区结束于第二条起始之前（不重叠）
-    expect(regions[0]!.startRow + regions[0]!.spanRows).toBeLessThanOrEqual(regions[1]!.startRow);
-    // 两条各自命中（第二张的序列行）
-    expect(t.imageRegionAt(regions[0]!.startRow)!.imgIdx).toBe(0);
-    expect(t.imageRegionAt(regions[1]!.startRow)!.imgIdx).toBe(1);
+    // 网格并排：两条区域共享同一行区间，靠列区间区分
+    expect(regions[0]!.startRow).toBe(regions[1]!.startRow);
+    expect(regions[0]!.spanRows).toBe(regions[1]!.spanRows);
+    expect(regions[0]!.colStart).toBeDefined();
+    expect(regions[1]!.colStart).toBeDefined();
+    expect(regions[0]!.colEnd!).toBeLessThanOrEqual(regions[1]!.colStart!);
+    // 行内按列命中各自的图；纯行判定（不传列）取第一条，向后兼容
+    const row = regions[0]!.startRow;
+    expect(t.imageRegionAt(row, regions[0]!.colStart!)!.imgIdx).toBe(0);
+    expect(t.imageRegionAt(row, regions[1]!.colStart!)!.imgIdx).toBe(1);
+    expect(t.imageRegionAt(row)!.imgIdx).toBe(0);
+    // 两图之间的间隔列不命中任何图
+    expect(t.imageRegionAt(row, regions[0]!.colEnd!)).toBeUndefined();
   });
 
   it('降级图（坏 base64）不进区域表', () => {

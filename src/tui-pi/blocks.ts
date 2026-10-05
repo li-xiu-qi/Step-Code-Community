@@ -7,7 +7,7 @@ import { Markdown, truncateToWidth, visibleWidth, wrapTextWithAnsi, sliceByColum
 import type { Component } from '@earendil-works/pi-tui';
 import { basename } from 'node:path';
 import type { DisplayItem, WelcomeData } from '../chat/types.js';
-import { decodeImage, ImageBlock, thumbnailCells } from './imageBlock.js';
+import { composeThumbnailRow, decodeImage, ImageBlock, thumbnailCells, type DecodedImage } from './imageBlock.js';
 import { offloadIfNeeded as offloadLargeResult, readCachedOutput } from '../agent/outputCache.js';
 
 /** Braille 转圈帧序列，供 running 状态动态 spinner。 */
@@ -279,6 +279,9 @@ export interface ImageSeqRow {
   readonly imgIdx: number;
   /** 该图占位的总行数（含前面的空占位行），命中区 = [row - rows + 1, row]。 */
   readonly rows: number;
+  /** 多图网格时该图在行内的字符列区间 [colStart, colEnd)（含缩进）；纵向单图无此字段，命中不查列。 */
+  readonly colStart?: number;
+  readonly colEnd?: number;
 }
 
 export class ItemBlock implements Component {
@@ -492,20 +495,51 @@ export class ItemBlock implements Component {
     const seqRows: ImageSeqRow[] = [];
     // 缩略图化：转录区里只放小图（单图 ≤24×12 格、多图 10 格宽），点击进预览看
     // 全尺寸。大图直接全宽渲染既占屏幕又让 100KB 级序列进入差分重绘路径（滚动
-    // 时反复重画，闪烁与卡顿的来源之一）。并排布局未做，多张纵向排列。
+    // 时反复重画，闪烁与卡顿的来源之一）。
     const available = Math.max(8, width - 6);
-    for (const [imgIdx, img] of images.entries()) {
-      const decoded = decodeImage(Buffer.from(img.base64, 'base64'));
-      if (decoded === null) {
-        out.push(c.dim(`  [图片无法渲染：${img.mediaType}]`));
-        continue;
+    if (images.length > 1) {
+      // 多图网格：按可用宽度每行排 capacity 张，像素级横向合成成一张画布再渲染
+      // （不在序列层并排的原因见 composeThumbnailRow）。解码失败的图按文档顺序
+      // 原位插降级文本行。
+      const cell = thumbnailCells(0, 0, images.length, available);
+      const capacity = Math.max(1, Math.floor((available + 1) / (cell.cols + 1)));
+      let pending: { image: DecodedImage; imgIdx: number }[] = [];
+      const flush = (): void => {
+        for (let i = 0; i < pending.length; i += capacity) {
+          const row = composeThumbnailRow(pending.slice(i, i + capacity), cell.cols, cell.rows);
+          // 画布像素宽 = row.cols 格整，ImageBlock 按 row.cols+2 渲染时 scale=1 不再重采样
+          const imgLines = new ImageBlock(row.image, row.cols, cell.rows).render(row.cols + 2).map((l) => `  ${l}`);
+          for (const slot of row.slots) {
+            // +2：行首有两格缩进，列区间换算成产物行里的字符列
+            seqRows.push({ row: out.length, imgIdx: slot.imgIdx, rows: imgLines.length, colStart: slot.colStart + 2, colEnd: slot.colEnd + 2 });
+          }
+          out.push(...imgLines);
+        }
+        pending = [];
+      };
+      for (const [imgIdx, img] of images.entries()) {
+        const decoded = decodeImage(Buffer.from(img.base64, 'base64'));
+        if (decoded === null) {
+          flush();
+          out.push(c.dim(`  [图片无法渲染：${img.mediaType}]`));
+          continue;
+        }
+        pending.push({ image: decoded, imgIdx });
       }
-      const { cols, rows } = thumbnailCells(decoded.width, decoded.height, images.length, available);
-      const imgLines = new ImageBlock(decoded, cols, rows).render(cols).map((l) => `  ${l}`);
-      // 序列行是 ImageBlock 产物的首行（位置无关布局：序列在前、空占位在后）
-      seqRows.push({ row: out.length, imgIdx, rows: imgLines.length });
-      out.push(...imgLines);
+      flush();
+      return { lines: out, seqRows };
     }
+    const img = images[0]!;
+    const decoded = decodeImage(Buffer.from(img.base64, 'base64'));
+    if (decoded === null) {
+      out.push(c.dim(`  [图片无法渲染：${img.mediaType}]`));
+      return { lines: out, seqRows };
+    }
+    const { cols, rows } = thumbnailCells(decoded.width, decoded.height, 1, available);
+    const imgLines = new ImageBlock(decoded, cols, rows).render(cols).map((l) => `  ${l}`);
+    // 序列行是 ImageBlock 产物的首行（位置无关布局：序列在前、空占位在后）
+    seqRows.push({ row: out.length, imgIdx: 0, rows: imgLines.length });
+    out.push(...imgLines);
     return { lines: out, seqRows };
   }
 
