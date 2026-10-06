@@ -9,6 +9,7 @@ import { existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'n
 import { homedir, tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { basename, join } from 'node:path';
+import { consumeUngracefulMarker, diagDir } from '../lifecycle.js';
 import { Container, ProcessTerminal, TuiAltScreen, ScrollView, VStack, matchesKey, getKeybindings } from '@earendil-works/pi-tui';
 import type { Component, KeybindingsConfig, SelectItem } from '@earendil-works/pi-tui';
 import type { AgentEvent, SubagentProgressEvent, WorkflowStepEvent } from '../agent/events.js';
@@ -898,6 +899,17 @@ export class PiChat {
     this.syncGoalBadge();
     if (this.deps.configStartupNotice !== undefined) {
       this.push({ kind: 'note', text: this.deps.configStartupNotice });
+    }
+    // 上次运行未正常退出的取证提示（lifecycle 检出，详见 lifecycle.ts 背景）。
+    // 这层覆盖的是 crash dump / V8 report 全都抓不到的死法：干净 exit 与被外部杀死。
+    const ungraceful = consumeUngracefulMarker(diagDir());
+    if (ungraceful !== null) {
+      const when = new Date(ungraceful.ts).toLocaleString();
+      this.push({
+        kind: 'note',
+        text: `检测到上次运行（pid ${ungraceful.pid}，${when}）未正常退出：没有留下任何退出记录。` +
+          '如果是闪退（非手动关窗），请把 ~/.step-code/lifecycle.jsonl 末尾几行发给维护者。',
+      });
     }
     // SessionStart hook：会话创建/恢复后触发一次，stdout 注入 system 尾部。
     // notice 出口先挂上，否则 hook 的可见性提示会静默丢（/reload 时也补挂，见 runReload）。

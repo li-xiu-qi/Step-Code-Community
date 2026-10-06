@@ -39,7 +39,11 @@ process.env.NODE_ENV ??= 'production';
 // 无静态 import，走动态 import node:v8 和 node:child_process。
 const TARGET_HEAP_MB = Number(process.env.STEP_CODE_MAX_HEAP_MB) || 4096;
 
-Promise.all([import('node:v8'), import('node:child_process'), import('node:os'), import('node:path')]).then(([v8, cp, os, path]) => {
+Promise.all([
+  import('node:v8'),
+  import('node:child_process'),
+  import('./lifecycle.js'),
+]).then(async ([v8, cp, life]) => {
   // V8 致命错误（撞堆上限的 abort、native 崩溃）是 C++ 层直接死，JS 的
   // uncaughtException / exit handler 一个都来不及跑，终端留在污染态且零证据。
   // diagnostic report 是 V8 层自己写的，不经过 JS，是唯一能在这种死法下留现场的
@@ -47,17 +51,24 @@ Promise.all([import('node:v8'), import('node:child_process'), import('node:os'),
   // abort 类，heapsnapshot-near-heap-limit 靠 re-exec 参数覆盖（V8 在启动期读取，
   // 运行时 setFlagsFromString 装不上回调）。
   // 落盘到 ~/.step-code 而不是 cwd：快照/报告动辄几百 MB，不能撒到用户的工作目录。
-  const diagDir = path.join(os.homedir(), '.step-code');
+  const diagDir = life.diagDir();
   try {
     process.report.reportOnFatalError = true;
     process.report.directory = diagDir;
   } catch {
     // 老 Node 没有 report API 时不影响启动
   }
+  // 生命周期日志：现有取证只覆盖 uncaughtException 与 V8 fatal 两类死法，「干净的
+  // process.exit」与「被外部杀死」（关 tab / dwm 连坐）零证据。start/exit 成对
+  // 登记后，下次启动能检出上次的非配对 start = 未正常退出。细节见 lifecycle.ts。
+  const loadCli = (): void => {
+    life.beginLifecycle(diagDir, 'app');
+    import('./cli.js').catch((e) => { console.error(e); process.exit(1); });
+  };
   const currentHeapMB = v8.default.getHeapStatistics().heap_size_limit / 1024 / 1024;
   if (currentHeapMB >= TARGET_HEAP_MB * 0.9) {
     // 堆够大 → 加载 cli
-    import('./cli.js').catch((e) => { console.error(e); process.exit(1); });
+    loadCli();
     return;
   }
   if (process.env.STEP_CODE_HEAP_REEXEC) {
@@ -67,13 +78,14 @@ Promise.all([import('node:v8'), import('node:child_process'), import('node:os'),
       `[step] 警告：请求堆上限 ${TARGET_HEAP_MB}MB 未生效（实际约 ${Math.round(currentHeapMB)}MB），` +
         '可能受系统或容器内存限制，长会话存在 OOM 风险。可设 STEP_CODE_MAX_HEAP_MB 调低目标值。',
     );
-    import('./cli.js').catch((e) => { console.error(e); process.exit(1); });
+    loadCli();
     return;
   }
   // 堆不够：re-exec 加 --max-old-space-size。
   // 转发原有 node 标志（--inspect / --enable-source-maps / --import 等），剔除已存在的
   // --max-old-space-size 避免重复冲突——调试与 source-map 不因 re-exec 静默失效。
   const forwarded = process.execArgv.filter((a) => !a.startsWith('--max-old-space-size'));
+  life.beginLifecycle(diagDir, 'reexec-parent');
   try {
     cp.execFileSync(
       process.execPath,
@@ -89,8 +101,12 @@ Promise.all([import('node:v8'), import('node:child_process'), import('node:os'),
       ],
       { stdio: 'inherit', env: { ...process.env, STEP_CODE_HEAP_REEXEC: '1' } },
     );
+    // 父进程是子进程终态的唯一见证者：子进程被信号杀死/异常退出时 status/signal
+    // 都在这里。这一行必须在 process.exit 之前落盘。
+    life.recordChildExit(diagDir, 0, null);
     process.exit(0);
   } catch (e: any) {
+    life.recordChildExit(diagDir, e?.status ?? null, e?.signal ?? null);
     if (e?.status != null) process.exit(e.status);
     console.error('heap re-exec failed:', e);
     process.exit(1);

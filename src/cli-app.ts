@@ -11,6 +11,7 @@
 
 import { configureProxyFromEnv } from './utils/proxy.js';
 import { installTerminalResetGuard } from './tui-pi/terminalResetGuard.js';
+import { diagDir } from './lifecycle.js';
 import { Command } from 'commander';
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -1323,7 +1324,7 @@ if (opts.reflect === true) {
     // 写盘自身失败不能阻断终端恢复，整段 try/catch。
     const writeCrashDump = (kind: string, err: unknown): void => {
       try {
-        const dir = join(homedir(), '.step-code');
+        const dir = diagDir();
         mkdirSync(dir, { recursive: true });
         const heap = getHeapStatistics();
         appendFileSync(
