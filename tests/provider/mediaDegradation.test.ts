@@ -135,3 +135,70 @@ describe('withMediaDegradation', () => {
     expect(second).toContain('aW1n10');
   });
 });
+
+/**
+ * 迭代期错误覆盖（2026-10-06 session c527ea 实证缺口）：
+ * OpenAI 兼容通道的 fetch 在首个事件拉取时才发出，媒体 400 在迭代起点抛出，
+ * 永远走不到 finalMessage——只拦 finalMessage 的 wrapper 全程不触发。
+ */
+class IterMockProvider implements ChatProvider {
+  readonly name = 'iter-mock';
+  calls: Anthropic.MessageParam[][] = [];
+  constructor(private behavior: 'throw-first' | 'throw-after-event') {}
+  stream(params: { messages: Anthropic.MessageParam[] }): ReturnType<ChatProvider['stream']> {
+    this.calls.push(params.messages);
+    const callNo = this.calls.length;
+    const behavior = this.behavior;
+    const handle = {
+      async *iterate() {
+        if (callNo === 1) {
+          if (behavior === 'throw-first') {
+            throw new Error('HTTP 400 · images_too_may: The amount of images you provided exceeds the model\'s limitation.');
+          }
+          yield { type: 'content_block_delta', delta: { type: 'text_delta', text: 'partial' } };
+          throw new Error('HTTP 400 · images_too_may: The amount of images you provided exceeds the model\'s limitation.');
+        }
+        yield { type: 'content_block_delta', delta: { type: 'text_delta', text: 'ok' } };
+      },
+      async finalMessage(): Promise<Anthropic.Message> {
+        return okMessage;
+      },
+    };
+    return {
+      finalMessage: handle.finalMessage,
+      [Symbol.asyncIterator]: () => handle.iterate(),
+    } as unknown as ReturnType<ChatProvider['stream']>;
+  }
+}
+
+describe('withMediaDegradation 迭代期错误', () => {
+  const imgMessages = [
+    { role: 'user', content: [imageBlock, { type: 'text', text: '看图' }] },
+  ] as unknown as Anthropic.MessageParam[];
+
+  it('迭代起点抛媒体 400：换档重发且第二次调用图片已换占位', async () => {
+    const p = new IterMockProvider('throw-first');
+    // keepRecentImages: 0 强制全换占位（默认 keep=10 会保留这 1 张图，见 finalMessage 侧同构用例）
+    const w = withMediaDegradation(p, { keepRecentImages: 0 });
+    const events: string[] = [];
+    for await (const ev of w.stream({ messages: imgMessages } as never)) {
+      events.push(JSON.stringify(ev));
+    }
+    expect(p.calls).toHaveLength(2);
+    expect(JSON.stringify(p.calls[1])).toContain('[image removed');
+    expect(events.some((e) => e.includes('ok'))).toBe(true);
+  });
+
+  it('已吐出事件后抛媒体错误：不重试，错误原样抛出（防正文重复上屏）', async () => {
+    const p = new IterMockProvider('throw-after-event');
+    const w = withMediaDegradation(p);
+    const events: string[] = [];
+    await expect(async () => {
+      for await (const ev of w.stream({ messages: imgMessages } as never)) {
+        events.push(JSON.stringify(ev));
+      }
+    }).rejects.toThrow(/images_too_may/);
+    expect(p.calls).toHaveLength(1); // 没有第二次调用
+    expect(events.some((e) => e.includes('partial'))).toBe(true);
+  });
+});

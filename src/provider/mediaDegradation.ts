@@ -20,9 +20,13 @@ import type { ChatProvider } from './types.js';
  * 降级兜底，包装顺序无所谓（一个请求前整形、一个发送时兜底）。
  *
  * 实现要点：ChatProvider.stream 是同步返回流句柄的接口，重试只能发生在
- * finalMessage 的异步阶段。因此本 wrapper 返回一个代理流句柄：原样透传所有
- * 流式事件（on/once 等），只重写 finalMessage——内部跑降级重试循环，对调用方
- * 表现为一次 finalMessage 调用（与 StepfunAdapter.send() 的语义一致）。
+ * 异步阶段。本 wrapper 返回代理流句柄，拦截两个错误面：
+ * - finalMessage：媒体 400 在流正常结束后才抛的通道（原有路径）；
+ * - 迭代器 next()：OpenAI 兼容通道的 fetch 在首个事件拉取时才发请求，
+ *   400 在迭代起点就抛出，永远走不到 finalMessage（2026-10-06 session c527ea
+ *   实证：stepfun-plan 通道 10 张图被 images_too_many 拒绝，重试链全程未触发）。
+ *   迭代重试只在「零事件已吐出」时发生——吐过事件再重发会把正文重复上屏。
+ * 两条路径共享同一份 used/messages/当前流状态，迭代已降过的档 finalMessage 不重复降。
  */
 
 /** wrapper 构造参数。 */
@@ -39,7 +43,7 @@ type StreamHandle = ReturnType<ChatProvider['stream']>;
 type StreamParams = Parameters<ChatProvider['stream']>[0];
 
 /**
- * 包装一个 ChatProvider：stream 的 finalMessage 遇可重投影错误时沿降级链重试。
+ * 包装一个 ChatProvider：stream 的迭代与 finalMessage 遇可重投影错误时沿降级链重试。
  * 其他属性/方法原样透传（用原型链 + 属性拷贝保留 inner 的完整形态）。
  */
 export function withMediaDegradation<T extends ChatProvider>(
@@ -54,31 +58,68 @@ export function withMediaDegradation<T extends ChatProvider>(
   return wrapped;
 }
 
-/** 发起一次 stream 并代理其 finalMessage：遇可重投影错误沿降级链重发。 */
+/** 发起一次 stream：迭代期与 finalMessage 期的媒体错误都沿降级链重发。 */
 function wrapStream(inner: ChatProvider, params: StreamParams, keepRecent: number): StreamHandle {
-  const used = new Set<ReprojectionLevel>(['normal']);
-  const first = inner.stream(params);
-  return new Proxy(first, {
-    get(target, prop, receiver) {
-      if (prop !== 'finalMessage') {
-        const v = Reflect.get(target, prop, receiver);
-        return typeof v === 'function' ? v.bind(target) : v;
-      }
-      return async (): Promise<Anthropic.Message> => {
-        let messages = params.messages;
-        let stream = target;
-        for (;;) {
-          try {
-            return await stream.finalMessage();
-          } catch (err) {
-            const level = nextReprojectionLevel(err, used);
-            if (level === null) throw err;
-            used.add(level);
-            messages = applyReprojectionLevel(messages, level, keepRecent);
-            stream = inner.stream({ ...params, messages });
+  /** 两条错误路径共享的可变状态：当前流、当前消息（可能已降级）、已用档位。 */
+  const state = {
+    used: new Set<ReprojectionLevel>(['normal']),
+    messages: params.messages,
+    stream: inner.stream(params),
+  };
+  /** 能降级就换档重发（更新 state），不能就把错误原样抛出。 */
+  const degradeOrThrow = (err: unknown): void => {
+    const level = nextReprojectionLevel(err, state.used);
+    if (level === null) throw err;
+    state.used.add(level);
+    state.messages = applyReprojectionLevel(state.messages, level, keepRecent);
+    state.stream = inner.stream({ ...params, messages: state.messages });
+  };
+  return new Proxy(state.stream, {
+    get(_target, prop, receiver) {
+      if (prop === 'finalMessage') {
+        return async (): Promise<Anthropic.Message> => {
+          for (;;) {
+            try {
+              return await state.stream.finalMessage();
+            } catch (err) {
+              degradeOrThrow(err);
+            }
           }
-        }
-      };
+        };
+      }
+      if (prop === Symbol.asyncIterator) {
+        return (): AsyncIterableIterator<unknown> => {
+          let emitted = false;
+          let it: AsyncIterator<unknown> = state.stream[Symbol.asyncIterator]();
+          const self: AsyncIterableIterator<unknown> = {
+            async next(...args) {
+              for (;;) {
+                try {
+                  const r = await it.next(...args);
+                  if (!r.done) emitted = true;
+                  return r;
+                } catch (err) {
+                  // 已吐出事件后不再重试：重发会让同一段正文/思考重复上屏。
+                  // 零事件时的错误（典型：首个拉取才发请求的通道撞上 400）换档重发。
+                  if (emitted) throw err;
+                  degradeOrThrow(err);
+                  it = state.stream[Symbol.asyncIterator]();
+                }
+              }
+            },
+            async return(...args) {
+              return it.return !== undefined ? it.return(...args) : { done: true as const, value: undefined };
+            },
+            [Symbol.asyncIterator]() {
+              return self;
+            },
+          };
+          return self;
+        };
+      }
+      // 其他属性从当前流读取（降级重发后 state.stream 已换新句柄）
+      const v = Reflect.get(state.stream, prop, receiver);
+      return typeof v === 'function' ? v.bind(state.stream) : v;
     },
   });
 }
