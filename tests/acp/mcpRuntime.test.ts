@@ -154,7 +154,10 @@ describe('ACP agent 循环（skill + MCP + 白名单）', () => {
 
     agent = spawn(process.execPath, [DIST_MAIN, '--acp'], {
       cwd: ws,
-      env: { ...process.env, HOME: ws, USERPROFILE: ws, STEP_CODE_API_KEY: 'fixture-key' },
+      env: { ...process.env, HOME: ws, USERPROFILE: ws, STEP_CODE_API_KEY: 'fixture-key',
+        // 跳过堆重拉起（2026-10-06 起默认目标 8192MB 触发 re-exec 父子结构）：
+        // 单进程路径启动更快、断言时序与旧基线一致（afterAll 的 taskkill /T 虽能整树收尾）。
+        STEP_CODE_MAX_HEAP_MB: '512' },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
   });

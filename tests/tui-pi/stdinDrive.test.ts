@@ -32,6 +32,9 @@ async function driveApp(inject: string): Promise<{ bytes: number; delta: number;
   // 生命周期日志隔离：测试收尾用 SIGTERM 杀子进程，不写 exit 记录，
   // 不隔离的话每轮全量测试都会让下次真机启动误报「上次未正常退出」。
   env['STEP_CODE_DIAG_DIR'] = mkdtempSync(join(tmpdir(), 'step-diag-'));
+  // 跳过堆重拉起（2026-10-06 起默认目标 8192MB 会触发 re-exec 父子结构）：
+  // 测试收尾 SIGTERM 只杀父进程会让孙进程孤儿化泄漏，且多一跳启动延迟。
+  env['STEP_CODE_MAX_HEAP_MB'] = '512';
 
   const child = spawn(process.execPath, [entry], { cwd: repoRoot, env, stdio: ['pipe', 'pipe', 'pipe'] });
   let bytes = 0;

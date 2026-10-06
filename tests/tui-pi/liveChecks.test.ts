@@ -85,6 +85,9 @@ async function runProcess(
   // ——它们的 stopWhen 命中的是向导文案里的字样，属假绿。故下面加了 assertPastFirstRun。
   if (opts.noApiKey === true) delete env['STEP_CODE_API_KEY'];
   else env['STEP_CODE_API_KEY'] = 'sk-test-not-a-real-key';
+  // 跳过堆重拉起（2026-10-06 起默认目标 8192MB 触发 re-exec 父子结构）：
+  // 本文件的用例按 pid 杀进程收尾，re-exec 会让孙进程孤儿化泄漏，且多一跳启动延迟。
+  env['STEP_CODE_MAX_HEAP_MB'] = '512';
 
   const child = spawn(process.execPath, [entry, ...(opts.args ?? [])], {
     cwd: work,
