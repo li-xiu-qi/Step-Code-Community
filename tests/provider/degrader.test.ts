@@ -388,6 +388,9 @@ describe('nextReprojectionLevel 错误驱动档位', () => {
       "400 The amount of videos you provided exceeds the model's limitation.",
       'too many videos in one request',
       'video exceeds maximum allowed size',
+      // 尺寸下限方言（2026-10-06 session c527ea 实录，doubao 通道）：最小边 14px，
+      // 「too small / Minimum allowed」不沾任何既有 exceed/limit/maximum 模式
+      'BadRequest: image data 21 failed: Image dimensions are too small. Minimum allowed dimension: 14 pixels. Current dimension: 8 pixels.',
     ];
     for (const msg of dialects) {
       const err = new Anthropic.APIError(400, undefined, msg, undefined);

@@ -202,3 +202,60 @@ describe('withMediaDegradation 迭代期错误', () => {
     expect(events.some((e) => e.includes('partial'))).toBe(true);
   });
 });
+
+/**
+ * 会话级粘性档位（2026-10-06 session c527ea：21 张图滞留历史，旧行为下每轮
+ * 都先送一次注定 400 的完整形态再降级——白付一次 400 往返 + 打出一行错误）。
+ * 一旦某次请求降级后成功，后续请求直接从该档位的形态发，不再重探底。
+ */
+describe('withMediaDegradation 粘性档位', () => {
+  const imgMessages = [
+    { role: 'user', content: [imageBlock, { type: 'text', text: '看图' }] },
+  ] as unknown as Anthropic.MessageParam[];
+
+  it('finalMessage 路径：第一轮降级成功后，第二轮首发即是降级形态（不再吃 400）', async () => {
+    const inner = new MockProvider([mediaErr(), 'ok', 'ok']);
+    const p = withMediaDegradation(inner, { keepRecentImages: 0 });
+    // 第一轮：正常形态 400 → 降级重发成功
+    await p.stream({ system: 's', tools: [], messages: imgMessages }).finalMessage();
+    expect(inner.calls).toHaveLength(2);
+    expect(JSON.stringify(inner.calls[0])).toContain('base64');
+    expect(JSON.stringify(inner.calls[1])).toContain('[image removed');
+    // 第二轮：首发直接是降级形态（粘性），不再先送完整图撞一次 400
+    await p.stream({ system: 's', tools: [], messages: imgMessages }).finalMessage();
+    expect(inner.calls).toHaveLength(3);
+    expect(JSON.stringify(inner.calls[2])).toContain('[image removed');
+    expect(JSON.stringify(inner.calls[2])).not.toContain('base64');
+  });
+
+  it('迭代路径同样回写粘性：第二轮首发即降级形态', async () => {
+    const p = new IterMockProvider('throw-first');
+    const w = withMediaDegradation(p, { keepRecentImages: 0 });
+    for await (const _ of w.stream({ messages: imgMessages } as never)) {
+      // 第一轮：迭代起点 400 → 降级重发至成功（done 时回写粘性）
+    }
+    expect(p.calls).toHaveLength(2);
+    // 第二轮：IterMock 后续调用都成功；断言首发消息已是占位形态
+    for await (const _ of w.stream({ messages: imgMessages } as never)) {
+      // 消费完即可
+    }
+    expect(p.calls).toHaveLength(3);
+    expect(JSON.stringify(p.calls[2])).toContain('[image removed');
+    expect(JSON.stringify(p.calls[2])).not.toContain('aGVsbG8=');
+  });
+
+  it('粘性档之上仍出错时从更深档继续（不重复用已粘住的档）', async () => {
+    // 第一轮降级到 media-degraded 成功；第二轮首发即 media-degraded，
+    // 仍 400（模拟通道额度进一步收紧）→ 应直接进 media-stripped，不重发同档。
+    const inner = new MockProvider([mediaErr(), 'ok', mediaErr(), 'ok']);
+    const p = withMediaDegradation(inner, { keepRecentImages: 0 });
+    await p.stream({ system: 's', tools: [], messages: imgMessages }).finalMessage();
+    await p.stream({ system: 's', tools: [], messages: imgMessages }).finalMessage();
+    expect(inner.calls).toHaveLength(4);
+    // 第二轮首发（calls[2]）是 media-degraded 形态（占位文案）；
+    // 降级后（calls[3]）是 media-stripped 形态（媒体块整个移除，连占位都没有）
+    expect(JSON.stringify(inner.calls[2])).toContain('[image removed');
+    expect(JSON.stringify(inner.calls[3])).not.toContain('[image removed');
+    expect(JSON.stringify(inner.calls[3])).not.toContain('base64');
+  });
+});

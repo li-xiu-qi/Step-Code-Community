@@ -281,6 +281,10 @@ const MEDIA_ERROR_PATTERNS: readonly RegExp[] = [
   /too many images|images too many/i,
   /image(s)? (exceeds?|too (large|many|big))/i,
   /image dimensions exceed/i,
+  // 尺寸下限方言（2026-10-06 session c527ea 实证，doubao 通道）：
+  // "image data 21 failed: Image dimensions are too small. Minimum allowed dimension: 14 pixels"
+  // ——既有模式只认 exceed/limit/maximum，「too small / Minimum allowed」一个词都不沾。
+  /dimensions? (are )?too small|minimum allowed dimension/i,
   /\d+ image links/i,
   /at most \d+ image/i,
   /image base64 size.*exceeds/i,

@@ -51,27 +51,69 @@ export function withMediaDegradation<T extends ChatProvider>(
   options: MediaDegradationOptions = {},
 ): T {
   const keepRecent = options.keepRecentImages ?? 10;
+  // 会话级粘性档位：某通道拒绝过媒体后，后续请求直接从已降档的形态发，
+  // 不再每轮先送一次注定 400 的完整历史（2026-10-06 session c527ea：21 张图
+  // 滞留在历史里，每一轮都白付一次 400 往返 + 打出一行错误）。会话历史单调
+  // 变长，「超限」一旦成立就持续成立，粘性是安全的；compaction 把图压没之后
+  // 最多是「保守了一点」（旧图仍是占位），不会出错。不跨进程持久化：重启即复位。
+  const sticky: { current: ReprojectionLevel } = { current: 'normal' };
   const wrapped = Object.create(Object.getPrototypeOf(inner)) as T;
   Object.assign(wrapped, inner);
   wrapped.stream = (params: StreamParams): StreamHandle =>
-    wrapStream(inner, params, keepRecent);
+    wrapStream(inner, params, keepRecent, sticky);
   return wrapped;
 }
 
+/** 档位序列与 degrader 内部一致：normal < media-degraded < media-stripped < strict。 */
+const LEVEL_ORDER: readonly ReprojectionLevel[] = ['normal', 'media-degraded', 'media-stripped', 'strict'];
+
+/** 粘性档位的 used 种子：sticky 档及之前的档位都视为已用，重试从更深的档继续。 */
+function seedUsed(sticky: ReprojectionLevel): Set<ReprojectionLevel> {
+  const used = new Set<ReprojectionLevel>();
+  for (const lv of LEVEL_ORDER) {
+    used.add(lv);
+    if (lv === sticky) break;
+  }
+  return used;
+}
+
 /** 发起一次 stream：迭代期与 finalMessage 期的媒体错误都沿降级链重发。 */
-function wrapStream(inner: ChatProvider, params: StreamParams, keepRecent: number): StreamHandle {
+function wrapStream(
+  inner: ChatProvider,
+  params: StreamParams,
+  keepRecent: number,
+  sticky: { current: ReprojectionLevel },
+): StreamHandle {
+  // 粘性预降级：上次成功的最深处档位直接作为本次起点，跳过注定失败的完整形态。
+  const initialMessages =
+    sticky.current === 'normal'
+      ? params.messages
+      : applyReprojectionLevel(params.messages, sticky.current, keepRecent);
   /** 两条错误路径共享的可变状态：当前流、当前消息（可能已降级）、已用档位。 */
   const state = {
-    used: new Set<ReprojectionLevel>(['normal']),
-    messages: params.messages,
-    stream: inner.stream(params),
+    used: seedUsed(sticky.current),
+    messages: initialMessages,
+    stream: inner.stream({ ...params, messages: initialMessages }),
+  };
+  /** 请求成功后回写粘性档位（用了比 normal 深的档才记）。两条成功路径都调。 */
+  const commitSticky = (): void => {
+    for (let i = LEVEL_ORDER.length - 1; i > 0; i--) {
+      const lv = LEVEL_ORDER[i]!;
+      if (state.used.has(lv)) {
+        sticky.current = lv;
+        return;
+      }
+    }
   };
   /** 能降级就换档重发（更新 state），不能就把错误原样抛出。 */
   const degradeOrThrow = (err: unknown): void => {
     const level = nextReprojectionLevel(err, state.used);
     if (level === null) throw err;
     state.used.add(level);
-    state.messages = applyReprojectionLevel(state.messages, level, keepRecent);
+    // 档位语义是「该档的完整形态」而非增量叠加：必须作用于原始 messages。
+    // 叠在已降级的 messages 上时，占位文本已是 text 块，更深的档（media-stripped
+    // 移除媒体块）够不到它，会留下占位残留（粘性预降级 + 再降级时实测触发）。
+    state.messages = applyReprojectionLevel(params.messages, level, keepRecent);
     state.stream = inner.stream({ ...params, messages: state.messages });
   };
   return new Proxy(state.stream, {
@@ -80,7 +122,9 @@ function wrapStream(inner: ChatProvider, params: StreamParams, keepRecent: numbe
         return async (): Promise<Anthropic.Message> => {
           for (;;) {
             try {
-              return await state.stream.finalMessage();
+              const msg = await state.stream.finalMessage();
+              commitSticky();
+              return msg;
             } catch (err) {
               degradeOrThrow(err);
             }
@@ -96,7 +140,8 @@ function wrapStream(inner: ChatProvider, params: StreamParams, keepRecent: numbe
               for (;;) {
                 try {
                   const r = await it.next(...args);
-                  if (!r.done) emitted = true;
+                  if (r.done) commitSticky();
+                  else emitted = true;
                   return r;
                 } catch (err) {
                   // 已吐出事件后不再重试：重发会让同一段正文/思考重复上屏。
