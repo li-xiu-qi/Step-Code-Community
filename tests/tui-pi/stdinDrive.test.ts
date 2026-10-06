@@ -12,7 +12,8 @@
  * 进程存活。依赖 dist/ 已构建，未构建则跳过（与 firstFrameSmoke 同策略）。
  */
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { mkdtempSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -28,6 +29,9 @@ async function driveApp(inject: string): Promise<{ bytes: number; delta: number;
   delete env['NODE_ENV'];
   delete env['VITEST'];
   delete env['VITEST_WORKER_ID'];
+  // 生命周期日志隔离：测试收尾用 SIGTERM 杀子进程，不写 exit 记录，
+  // 不隔离的话每轮全量测试都会让下次真机启动误报「上次未正常退出」。
+  env['STEP_CODE_DIAG_DIR'] = mkdtempSync(join(tmpdir(), 'step-diag-'));
 
   const child = spawn(process.execPath, [entry], { cwd: repoRoot, env, stdio: ['pipe', 'pipe', 'pipe'] });
   let bytes = 0;
