@@ -43,6 +43,12 @@ const VIDEO_DEGRADED_TEXT = '[video removed: endpoint rejected video input, drop
  * 这个是已知的单请求视频数上限。模型需要能区分「被降级链剥掉」和「超上限被截」。
  */
 const VIDEO_OVER_LIMIT_TEXT = '[video removed: exceeded per-request video limit]';
+/** 字节预算驱逐占位（与计数/超限区分文案：这是「单请求媒体体积超预算，最旧的先让位」）。 */
+const MEDIA_OVER_BUDGET_TEXT_BY_TYPE: Record<string, string> = {
+  image: '[image removed: exceeded per-request media byte budget, oldest dropped to fit]',
+  video: '[video removed: exceeded per-request media byte budget, oldest dropped to fit]',
+  document: '[document removed: exceeded per-request media byte budget, oldest dropped to fit]',
+};
 
 /** 按块类型选主动降级占位文本。 */
 const OMITTED_TEXT_BY_TYPE: Record<string, string> = {
@@ -161,8 +167,71 @@ export function capVideos(
 }
 
 /**
+ * 单请求媒体字节预算：总量超 budgetBytes 时，从最旧的媒体块开始换占位，
+ * 直到剩余总量 ≤ evictToBytes（kimi-code 同款：单请求 20MB 预算、驱逐到 10MB
+ * 以下——2026-10-06 对它的源码调查，mediaResolverService.ts）。
+ *
+ * 为什么需要它：我们的会话历史里 base64 图片常驻且只增不减（还没有引用化存储），
+ * 长会话每轮请求的工作拷贝体积单调上涨，是撞堆（V8 fail-fast）与 413/400 超限的
+ * 共同来源。张数轴（capVideos、反应式降级链 keepRecent）管「端点收几张」，
+ * 字节轴管「单请求多大」——大图少量场景张数轴管不到，必须有这条。
+ *
+ * 字节估算：base64 字符数 × 3/4（padding 误差忽略）；url source 不占请求体积，按 0 计。
+ * 下钻 tool_result 内嵌块（read_media 回灌的图在内层）。不改动入参，未超预算时
+ * 原样返回同一引用（零拷贝快路径）。
+ */
+export function capMediaBytes(
+  messages: Anthropic.MessageParam[],
+  budgetBytes: number = 20 * 1024 * 1024,
+  evictToBytes: number = 10 * 1024 * 1024,
+): Anthropic.MessageParam[] {
+  if (budgetBytes <= 0) return messages;
+  // 按出现顺序收集全部媒体块及其估算字节（含 tool_result 内层）。
+  const all: { block: Block; bytes: number }[] = [];
+  const collect = (block: Block): void => {
+    if (!isMediaBlock(block)) return;
+    const src = (block as unknown as { source?: { type?: string; data?: unknown } }).source;
+    const b64 = src !== undefined && src.type === 'base64' && typeof src.data === 'string' ? src.data : '';
+    all.push({ block, bytes: Math.ceil(b64.length * 0.75) });
+  };
+  for (const msg of messages) {
+    if (typeof msg.content === 'string') continue;
+    for (const block of msg.content) {
+      collect(block);
+      if (block.type === 'tool_result' && Array.isArray(block.content)) {
+        for (const inner of block.content) collect(inner as Block);
+      }
+    }
+  }
+  const total = all.reduce((s, e) => s + e.bytes, 0);
+  if (total <= budgetBytes) return messages;
+  // 从最旧的开始驱逐，直到剩余 ≤ evictToBytes。块对象身份判等（同 capVideos）。
+  const drop = new Set<Block>();
+  let remaining = total;
+  for (const e of all) {
+    if (remaining <= evictToBytes) break;
+    drop.add(e.block);
+    remaining -= e.bytes;
+  }
+  return messages.map((msg) =>
+    mapBlocks(msg, (block) =>
+      drop.has(block)
+        ? {
+            type: 'text',
+            text:
+              MEDIA_OVER_BUDGET_TEXT_BY_TYPE[(block as unknown as { type: string }).type] ??
+              MEDIA_OVER_BUDGET_TEXT_BY_TYPE['image']!,
+          }
+        : block,
+    ),
+  );
+}
+
+/**
  * 主动降级：按能力声明整形消息。
  * - image_in 为 false：媒体块换成占位文本（保留轮次结构，模型知道这里本来有图）。
+ * - 媒体字节预算：单请求媒体总量超 20MB 时从最旧的开始换占位直到 ≤10MB
+ *   （{@link capMediaBytes}，通道无关，防 413 与单请求体积撞堆）。
  * - max_videos：视频块超过单请求上限时保留最近的、更早的换占位（见 {@link capVideos}）。
  * - cache_control 为 false：剥掉所有块的 cache_control（不兼容个案在此收敛，
  *   请求代码不再特判）。
@@ -175,7 +244,8 @@ export function degradeMessages(
 ): Anthropic.MessageParam[] {
   // 视频数裁剪在能力门控之前做：video_in=false 时下面会把视频全换占位，
   // 那时再数数量已无意义；先裁上限保证「保留最近 N 个」的选取稳定。
-  const capped = capVideos(messages, capability.max_videos);
+  // 媒体字节预算同理在门控前：先掐体积峰值（防 413/撞堆），再做能力投影。
+  const capped = capMediaBytes(capVideos(messages, capability.max_videos));
   return capped.map((msg) =>
     mapBlocks(msg, (block) => {
       let b: Block | null = block;

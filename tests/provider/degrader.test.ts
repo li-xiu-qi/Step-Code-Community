@@ -548,3 +548,90 @@ describe('capVideos 单请求视频数上限（2026-09-24 事故）', () => {
     expect((out[1]!.content as { type: string }[])[0]!.type).toBe('video');
   });
 });
+
+/**
+ * 单请求媒体字节预算（kimi-code 同款思路，2026-10-06 源码调查引入）：
+ * 历史里 base64 常驻且只增不减，字节预算掐住单请求体积峰值——
+ * 撞堆（V8 fail-fast）与 413/400 超限的共同来源。
+ */
+describe('capMediaBytes 单请求媒体字节预算', () => {
+  /** 造一块估算体积约 n 字节的图片（base64 字符数 × 0.75）。 */
+  const imgOf = (bytes: number, tag: string): Anthropic.ContentBlockParam => {
+    // 把 tag 垫到目标长度：data 全一样不好断言谁被驱逐，前缀 tag 便于识别
+    const len = Math.ceil(bytes / 0.75);
+    return {
+      type: 'image',
+      source: { type: 'base64', media_type: 'image/png', data: tag.padEnd(len, 'x') },
+    } as unknown as Anthropic.ContentBlockParam;
+  };
+  const msg = (content: Anthropic.ContentBlockParam[]): Anthropic.MessageParam =>
+    ({ role: 'user', content }) as Anthropic.MessageParam;
+
+  it('未超预算原样返回同一引用（零拷贝快路径）', async () => {
+    const { capMediaBytes } = await import('../../src/provider/degrader.js');
+    const messages = [msg([imgOf(1000, 'a')])];
+    expect(capMediaBytes(messages, 20 * 1024 * 1024, 10 * 1024 * 1024)).toBe(messages);
+  });
+
+  it('超预算从最旧的开始换占位，直到剩余 ≤ evictTo', async () => {
+    const { capMediaBytes } = await import('../../src/provider/degrader.js');
+    // 4 张各约 1MB：总量 4MB，预算 3MB，驱逐到 2.5MB → 最旧两张被换占位
+    //（evictTo 留 0.5MB 余量：base64×0.75 估算有 ±1 字节舍入，贴边取值会让断言撞舍入）
+    const messages = [
+      msg([imgOf(1024 * 1024, 'img1')]),
+      msg([imgOf(1024 * 1024, 'img2')]),
+      msg([imgOf(1024 * 1024, 'img3')]),
+      msg([imgOf(1024 * 1024, 'img4')]),
+    ];
+    const out = capMediaBytes(messages, 3 * 1024 * 1024, 2.5 * 1024 * 1024);
+    const types = out.map((m) => (m.content as { type: string }[])[0]!.type);
+    expect(types).toEqual(['text', 'text', 'image', 'image']);
+    const first = (out[0]!.content as { text?: string }[])[0]!;
+    expect(first.text).toContain('media byte budget');
+    // 新图的 base64 原样保留
+    expect(JSON.stringify(out[3])).toContain('img4');
+  });
+
+  it('下钻 tool_result 内嵌块：内层图片也计入预算并可被驱逐', async () => {
+    const { capMediaBytes } = await import('../../src/provider/degrader.js');
+    const inner = imgOf(2 * 1024 * 1024, 'inner');
+    const toolResult = {
+      type: 'tool_result',
+      tool_use_id: 't1',
+      content: [inner],
+    } as unknown as Anthropic.ContentBlockParam;
+    const outer = imgOf(2 * 1024 * 1024, 'outer');
+    const messages = [msg([toolResult]), msg([outer])];
+    // 总量约 4MB，预算 3MB 驱逐到 2.5MB → 最旧的（内层 inner）被换占位，外层保留
+    const out = capMediaBytes(messages, 3 * 1024 * 1024, 2.5 * 1024 * 1024);
+    const tr = (out[0]!.content as { content: { type: string; text?: string }[] }[])[0]!;
+    expect(tr.content[0]!.type).toBe('text');
+    expect(tr.content[0]!.text).toContain('media byte budget');
+    expect(JSON.stringify(out[1])).toContain('outer');
+  });
+
+  it('url source 不占请求体积（按 0 计），不因引用而误驱逐', async () => {
+    const { capMediaBytes } = await import('../../src/provider/degrader.js');
+    const urlImg = {
+      type: 'image',
+      source: { type: 'url', url: 'https://example.com/a.png' },
+    } as unknown as Anthropic.ContentBlockParam;
+    const messages = [msg([urlImg]), msg([imgOf(2 * 1024 * 1024, 'b64')])];
+    const out = capMediaBytes(messages, 3 * 1024 * 1024, 2 * 1024 * 1024);
+    expect(out[0]).toBe(messages[0]); // url 图原样
+    expect(JSON.stringify(out[1])).toContain('b64');
+  });
+
+  it('接入 degradeMessages 主动整形链：超预算历史在能力投影前已被瘦身', async () => {
+    const big = Array.from({ length: 30 }, (_, i) =>
+      msg([imgOf(1024 * 1024, `img${String(i).padStart(2, '0')}`)]),
+    );
+    // 30MB > 20MB 默认预算 → 最旧的一批被换占位，最近的保留
+    const out = degradeMessages(big, FULL_CAPABILITY);
+    const types = out.map((m) => (m.content as { type: string }[])[0]!.type);
+    expect(types[0]).toBe('text');
+    expect(types[types.length - 1]).toBe('image');
+    // 剩余总量应 ≤ 10MB（驱逐目标）：数一下保留的 image 块不超过 10 张
+    expect(types.filter((t) => t === 'image').length).toBeLessThanOrEqual(10);
+  });
+});
