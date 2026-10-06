@@ -39,18 +39,25 @@ process.env.NODE_ENV ??= 'production';
 // 检测当前堆上限，若低于目标值则用 execPath 重新拉起进程并附加 --max-old-space-size。
 // 无静态 import，走动态 import node:v8 和 node:child_process。
 //
-// 目标值 8192 的取舍（2026-10-06 修订，原 4096）：Node 24 x64 默认堆约 4.3GB，
-// 0.9 阈值判定为「够大」→ 跳过 re-exec → --report-on-fatalerror /
-// --heapsnapshot-near-heap-limit 两个只在启动期生效的取证参数装不上，且 4.3GB 在
-// 「主会话 + 多个 100k 上下文 sub agent + 图片 base64」压力下就是死因本身。
-// 64GB 内存的机器 8GB 老年代是安全水位；内存更小的环境用 STEP_CODE_MAX_HEAP_MB 调低。
-const TARGET_HEAP_MB = Number(process.env.STEP_CODE_MAX_HEAP_MB) || 8192;
+// 目标值策略（2026-10-06 二次修订）：默认 = 物理内存 1/4，钳在 [4096, 8192]MB。
+// gemini-cli 的做法是 totalmem×0.5（packages/cli/index.ts getMemoryNodeArgs），
+// 但堆上限是「允许涨到的天花板」而非实际占用，64GB 机器给 32GB 天花板会掩盖
+// 真泄漏；1/4 在 64GB 机器落 8192（与当天第一次修订的固定值一致），16GB 机器
+// 落 4096（贴着 Node 默认 4.3GB 下沿，跳过 re-exec 不折腾）。Node 24 x64 默认堆
+// 约 4.3GB，在「主会话 + 并发子会话大上下文 + 图片 base64」压力下就是 fail-fast
+// （0xC0000409，WER 收尸，JS handler 零机会——2026-10-06 pid 51996 实证）的死因。
+// STEP_CODE_MAX_HEAP_MB 显式覆盖一切。
+const HEAP_ENV_MB = Number(process.env.STEP_CODE_MAX_HEAP_MB);
 
 Promise.all([
   import('node:v8'),
   import('node:child_process'),
+  import('node:os'),
   import('./lifecycle.js'),
-]).then(async ([v8, cp, life]) => {
+]).then(async ([v8, cp, osMod, life]) => {
+  const totalMB = Math.floor(osMod.default.totalmem() / 1048576);
+  const TARGET_HEAP_MB =
+    HEAP_ENV_MB > 0 ? HEAP_ENV_MB : Math.min(8192, Math.max(4096, Math.floor(totalMB / 4)));
   // V8 致命错误（撞堆上限的 abort、native 崩溃）是 C++ 层直接死，JS 的
   // uncaughtException / exit handler 一个都来不及跑，终端留在污染态且零证据。
   // diagnostic report 是 V8 层自己写的，不经过 JS，是唯一能在这种死法下留现场的
