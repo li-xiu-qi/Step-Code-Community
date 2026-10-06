@@ -160,3 +160,55 @@ export function recordChildExit(dir: string, status: number | null, signal: stri
     uptimeS: Math.round(process.uptime()),
   });
 }
+
+// ---------- 活跃会话心跳：被外部杀死时给下次启动留「恢复谁」的指针 ----------
+
+/**
+ * 心跳文件记录当前进程正在跑的会话（pid + sessionId + cwd）。PiChat 在启动与每次
+ * 回合中落盘时刷新，干净退出时清除。进程被外部杀死时心跳残留，下次启动检出
+ * prev-ungraceful 且心跳 pid 与死者相同，就能把提示从「有东西死了」升级成
+ * 「死的是哪个会话、用哪条命令恢复」。
+ *
+ * 单文件后写者胜：并发开多个实例会互相覆盖，所以消费端必须校验 pid 与死者一致
+ * 才采用，不一致退回通用提示。
+ */
+export interface HeartbeatInfo {
+  readonly pid: number;
+  readonly sessionId: string;
+  readonly cwd: string;
+  readonly ts: string;
+}
+
+export function heartbeatFile(dir: string): string {
+  return path.join(dir, 'last-active-session.json');
+}
+
+export function writeHeartbeat(dir: string, info: Omit<HeartbeatInfo, 'ts'>): void {
+  try {
+    writeFileSync(heartbeatFile(dir), JSON.stringify({ ...info, ts: new Date().toISOString() }), 'utf8');
+  } catch {
+    // 静默：心跳写不进不影响主流程
+  }
+}
+
+export function readHeartbeat(dir: string): HeartbeatInfo | null {
+  try {
+    const file = heartbeatFile(dir);
+    if (!existsSync(file)) return null;
+    const j = JSON.parse(readFileSync(file, 'utf8')) as HeartbeatInfo;
+    if (typeof j.pid !== 'number' || typeof j.sessionId !== 'string') return null;
+    return j;
+  } catch {
+    return null;
+  }
+}
+
+/** 干净退出时清除心跳。只清自己的：文件里的 pid 不是自己就保留（可能是另一个在跑的实例）。 */
+export function clearHeartbeat(dir: string, selfPid: number): void {
+  try {
+    const cur = readHeartbeat(dir);
+    if (cur !== null && cur.pid === selfPid) writeFileSync(heartbeatFile(dir), '', 'utf8');
+  } catch {
+    // 静默
+  }
+}
