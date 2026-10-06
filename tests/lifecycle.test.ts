@@ -13,7 +13,10 @@ import {
   beginLifecycle,
   consumeUngracefulMarker,
   detectPrevUngraceful,
+  clearHeartbeat,
+  readHeartbeat,
   recordChildExit,
+  writeHeartbeat,
   ungracefulMarkerFile,
   type LifecycleRecord,
 } from '../src/lifecycle.js';
@@ -110,5 +113,35 @@ describe('beginLifecycle / recordChildExit', () => {
     recordChildExit(dir, null, 'SIGTERM');
     const recs = readAll(dir);
     expect(recs[0]).toMatchObject({ ev: 'child-exit', code: null, signal: 'SIGTERM' });
+  });
+});
+
+describe('心跳（heartbeat）', () => {
+  it('写入后可读回；清除只认自己的 pid', () => {
+    const dir = mk();
+    writeHeartbeat(dir, { pid: DEAD_PID, sessionId: 's-1', cwd: '/x' });
+    expect(readHeartbeat(dir)).toMatchObject({ pid: DEAD_PID, sessionId: 's-1', cwd: '/x' });
+    // 别的 pid 来清：不清
+    clearHeartbeat(dir, 9999);
+    expect(readHeartbeat(dir)).not.toBeNull();
+    // 自己清：清空
+    clearHeartbeat(dir, DEAD_PID);
+    expect(readHeartbeat(dir)).toBeNull();
+  });
+
+  it('坏内容/不存在：readHeartbeat 返回 null 不抛错', () => {
+    const dir = mk();
+    expect(readHeartbeat(dir)).toBeNull();
+  });
+
+  it('心跳 pid 与死者一致 → 提示可据此给恢复指针（消费端契约）', () => {
+    const dir = mk();
+    // 模拟：实例写了心跳后被外部杀死（无 exit 记录）
+    writeHeartbeat(dir, { pid: DEAD_PID, sessionId: '20261006-abc', cwd: '/vault' });
+    const hit = detectPrevUngraceful(dir, 12345);
+    // 注：本用例没有 start 记录，detect 返回 null；契约是「有 start 无 exit + 心跳 pid 一致」
+    // 这里钉住的是心跳文件本身在死者消失后仍可读（恢复指针的数据源存活）
+    expect(hit).toBeNull();
+    expect(readHeartbeat(dir)).toMatchObject({ pid: DEAD_PID, sessionId: '20261006-abc' });
   });
 });

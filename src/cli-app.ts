@@ -11,7 +11,7 @@
 
 import { configureProxyFromEnv } from './utils/proxy.js';
 import { installTerminalResetGuard } from './tui-pi/terminalResetGuard.js';
-import { diagDir } from './lifecycle.js';
+import { appendRecord, diagDir } from './lifecycle.js';
 import { Command } from 'commander';
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -106,6 +106,22 @@ const opts = program.opts<{
 // 恢复就在下面这个 catch 里。ACP 模式的 stdout 是 JSON-RPC 通道，写复位序列会污染协议，
 // 必须排除。
 installTerminalResetGuard(opts.acp === true);
+// SIGHUP/SIGTERM 兜底：Windows 上控制台窗口关闭会对 Node 生成 SIGHUP，且约 10 秒后
+// 无条件强杀（Node 官方文档）；此前这条路径零证据零清理（终端污染形态的来源之一）。
+// 这里记一条 signal 记录后立即 process.exit——exit 事件会带起终端复位序列与
+// 生命周期 exit 记录，把「无声被杀」转成「有日志的干净退出」。SIGINT 不动：
+// Ctrl+C 的交互语义由 TUI 自己管。ACP 模式 stdout 是协议通道，但这两条路径只写
+// 日志文件不写 stdout，无需排除。
+for (const [sig, code] of [['SIGHUP', 129], ['SIGTERM', 143]] as const) {
+  process.once(sig, () => {
+    try {
+      appendRecord(diagDir(), { ts: new Date().toISOString(), ev: 'exit', pid: process.pid, code, signal: sig });
+    } catch {
+      // 静默：取证失败不阻断退出
+    }
+    process.exit(code);
+  });
+}
 const cwd = opts.cwd !== undefined ? resolve(opts.cwd) : process.cwd();
 // --yolo 与 --auto 互斥：同时给属于用户笔误，
 // 静默让 yolo 赢会掩盖意图不明，直接报错更诚实。

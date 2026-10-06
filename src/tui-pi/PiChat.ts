@@ -9,7 +9,7 @@ import { existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'n
 import { homedir, tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { basename, join } from 'node:path';
-import { consumeUngracefulMarker, diagDir } from '../lifecycle.js';
+import { clearHeartbeat, consumeUngracefulMarker, diagDir, readHeartbeat, writeHeartbeat } from '../lifecycle.js';
 import { Container, ProcessTerminal, TuiAltScreen, ScrollView, VStack, matchesKey, getKeybindings } from '@earendil-works/pi-tui';
 import type { Component, KeybindingsConfig, SelectItem } from '@earendil-works/pi-tui';
 import type { AgentEvent, SubagentProgressEvent, WorkflowStepEvent } from '../agent/events.js';
@@ -905,12 +905,23 @@ export class PiChat {
     const ungraceful = consumeUngracefulMarker(diagDir());
     if (ungraceful !== null) {
       const when = new Date(ungraceful.ts).toLocaleString();
+      // 心跳指针：死者若带着会话现场（外部杀死来不及清理），给出可粘贴的恢复命令。
+      // pid 必须一致才采用——单文件多实例会互相覆盖，不一致时退回通用提示。
+      const hb = readHeartbeat(diagDir());
+      const resumeHint =
+        hb !== null && hb.pid === ungraceful.pid
+          ? `死在半路的会话是 ${hb.sessionId}（${hb.cwd}），恢复命令：step -r ${hb.sessionId}`
+          : '恢复命令见退出时提示（step -r <会话id>）。';
       this.push({
         kind: 'note',
         text: `检测到上次运行（pid ${ungraceful.pid}，${when}）未正常退出：没有留下任何退出记录。` +
+          resumeHint +
           '如果是闪退（非手动关窗），请把 ~/.step-code/lifecycle.jsonl 末尾几行发给维护者。',
       });
     }
+    // 活跃会话心跳：本进程若被外部杀死，下次启动靠它给出恢复指针。后续每次
+    // 回合中落盘（persistProgress）都会刷新（/new 换会话后指针跟着走）。
+    writeHeartbeat(diagDir(), { pid: process.pid, sessionId: this.session.id, cwd: this.deps.ctx.cwd });
     // SessionStart hook：会话创建/恢复后触发一次，stdout 注入 system 尾部。
     // notice 出口先挂上，否则 hook 的可见性提示会静默丢（/reload 时也补挂，见 runReload）。
     const engine = this.deps.hookEngineRef.current;
@@ -1523,6 +1534,8 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     if (now - this.lastProgressPersistAt < 1000) return;
     this.lastProgressPersistAt = now;
     this.persist();
+    // 心跳跟着落盘节流走：会话切换（/new、resume）后指针自动指向新会话
+    writeHeartbeat(diagDir(), { pid: process.pid, sessionId: this.session.id, cwd: this.deps.ctx.cwd });
   }
 
   /** 持久化。顺序不变量：先 appendFull 再 save（wireSeq 游标一致性）。 */
@@ -2144,6 +2157,8 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       // 终端已死，动画本就无从显示
     }
     this.tui.stop();
+    // 干净退出清除心跳：残留心跳 + 无 exit 记录 = 被外部杀死，下次启动要拿它给恢复指针
+    clearHeartbeat(diagDir(), process.pid);
     this.resolveExit?.({ sessionId: this.session.id, hasContent: this.history.length > 0 || this.sawContent });
     this.resolveExit = undefined;
   }
