@@ -33,11 +33,18 @@
 // （别名赋值无法可靠地静态识别），等于用一个真实的回归缺口换一条日志的干净。
 process.env.NODE_ENV ??= 'production';
 
-// 堆内存保障：长会话（50+ 轮、大 transcript）下 Node.js 默认堆上限（约 1.5GB）不够，
-// 会导致 FATAL ERROR: Ineffective mark-compacts near heap limit。
+// 堆内存保障：长会话（50+ 轮、大 transcript、并发 sub agent 大上下文）下 Node.js 默认
+// 堆上限不够，会导致 FATAL ERROR: Ineffective mark-compacts near heap limit（fail-fast
+// 0xC0000409，WER 直接收尸，JS handler 零机会——2026-10-06 pid 51996 实证）。
 // 检测当前堆上限，若低于目标值则用 execPath 重新拉起进程并附加 --max-old-space-size。
 // 无静态 import，走动态 import node:v8 和 node:child_process。
-const TARGET_HEAP_MB = Number(process.env.STEP_CODE_MAX_HEAP_MB) || 4096;
+//
+// 目标值 8192 的取舍（2026-10-06 修订，原 4096）：Node 24 x64 默认堆约 4.3GB，
+// 0.9 阈值判定为「够大」→ 跳过 re-exec → --report-on-fatalerror /
+// --heapsnapshot-near-heap-limit 两个只在启动期生效的取证参数装不上，且 4.3GB 在
+// 「主会话 + 多个 100k 上下文 sub agent + 图片 base64」压力下就是死因本身。
+// 64GB 内存的机器 8GB 老年代是安全水位；内存更小的环境用 STEP_CODE_MAX_HEAP_MB 调低。
+const TARGET_HEAP_MB = Number(process.env.STEP_CODE_MAX_HEAP_MB) || 8192;
 
 Promise.all([
   import('node:v8'),
