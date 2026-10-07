@@ -5,7 +5,9 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
-  '@earendil-works/pi-tui@0.84.4': 742229b9b9d522ca086ffe17faab0320337f3d963c47f2ac09576ef383a5cf6c
+  '@earendil-works/pi-tui@0.84.4':
+    hash: 742229b9b9d522ca086ffe17faab0320337f3d963c47f2ac09576ef383a5cf6c
+    path: patches/@earendil-works__pi-tui@0.84.4.patch
 
 importers:
 
