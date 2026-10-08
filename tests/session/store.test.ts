@@ -545,7 +545,7 @@ describe('SessionStore 索引缓存（_index.json）', () => {
     store.save(s);
 
     const indexFile = join(base, workdirKey(cwd), '_index.json');
-    expect(readFileSync(indexFile, 'utf8')).toContain('"version":1');
+    expect(readFileSync(indexFile, 'utf8')).toMatch(/"version":\d+/);
 
     // 第二次 list 应走索引（不重新读 .json 快照，通过结果一致隐式验证）
     const metas = store.list(cwd);
@@ -609,7 +609,7 @@ describe('SessionStore 索引缓存（_index.json）', () => {
     expect(metas[0]!.id).toBe(s.id);
     // 重建后索引应恢复正常
     const raw = readFileSync(indexFile, 'utf8');
-    expect(JSON.parse(raw).version).toBe(1);
+    expect(JSON.parse(raw).version).toBeGreaterThanOrEqual(2);
   });
 
   it('索引不存在时全量重建', () => {
@@ -691,6 +691,22 @@ describe('SessionStore 索引缓存（_index.json）', () => {
     writeFileSync(join(subDir, `${sub.id}.json`), JSON.stringify({ ...sub, messages: [] }), 'utf8');
 
     expect(store.list(cwd).map((m) => m.id)).toEqual([s.id]);
+  });
+
+  // 2026-10-07 事故回归：桶根的非会话 JSON（_usage-cache.json 等缓存）曾被 rebuildIndex
+  // 当成会话快照，产出 {messageCount:0} 这种缺 id 的索引条目，/resume 选择器对它取
+  // id.slice 直接抛 TypeError 退出（崩溃日志 2 次，堆占用仅 138MB/8GB，与内存无关）。
+  it('list 不把桶根的非会话 JSON 当成会话（缺 id 的条目被剔除）', () => {
+    const s = store.create(cwd, 'm');
+    store.save(s);
+    writeFileSync(join(base, workdirKey(cwd), '_usage-cache.json'), JSON.stringify({ version: 1, files: {} }), 'utf8');
+    writeFileSync(join(base, workdirKey(cwd), 'no-id.json'), JSON.stringify({ messageCount: 0 }), 'utf8');
+
+    const metas = store.list(cwd);
+    expect(metas.map((m) => m.id)).toEqual([s.id]);
+    // 索引落盘后也不带坏条目（防止本次修好后又被旧索引喂回去）
+    const raw = JSON.parse(readFileSync(join(base, workdirKey(cwd), '_index.json'), 'utf8'));
+    expect(raw.sessions.every((m: { id?: string }) => typeof m.id === 'string' && m.id !== '')).toBe(true);
   });
 });
 

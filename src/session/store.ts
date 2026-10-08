@@ -134,7 +134,9 @@ const PREVIEW_MAX = 200;
 /** 索引文件固定名。 */
 const INDEX_FILE = '_index.json';
 /** 索引格式版本。 */
-const INDEX_VERSION = 1;
+// v2：v1 会把桶根的非会话 JSON（_usage-cache.json）当成会话快照读进索引，产出缺 id 的
+// 条目，/resume 选择器对它取 id.slice 直接崩。版本号 bump 让旧索引整体作废重建。
+const INDEX_VERSION = 2;
 
 /** 会话列表索引结构。 */
 interface SessionIndex {
@@ -355,15 +357,23 @@ export class SessionStore {
         if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
         if (entry.name === INDEX_FILE) continue;
         const name = entry.name;
+        // 桶根除会话快照外还躺着缓存文件（_index.json、_usage-cache.json）。它们同样以
+        // .json 结尾，曾被 JSON.parse 后喂给 toIndexEntry，得到 id/updatedAt 全 undefined
+        // 的条目（stringify 后只剩 {"messageCount":0} 落进索引），把 /resume 选择器
+        // 和 sort 比较器一起带崩。双保险：下划线开头的一律跳过；内容必须带 id 与
+        // updatedAt 才认它是会话快照。
+        if (name.startsWith('_')) continue;
         try {
           const data = JSON.parse(readFileSync(join(dir, name), 'utf8')) as SessionData;
+          if (typeof data.id !== 'string' || data.id === '') continue;
+          if (typeof data.updatedAt !== 'string' || data.updatedAt === '') continue;
           sessions.push(this.toIndexEntry(data));
         } catch {
           // 跳过损坏文件
         }
       }
     }
-    sessions.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    sessions.sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''));
     const index: SessionIndex = {
       version: INDEX_VERSION,
       rebuiltAt: new Date().toISOString(),
@@ -375,6 +385,8 @@ export class SessionStore {
 
   /** 增量更新索引中的单个会话（upsert）。 */
   private updateIndexEntry(cwd: string, entry: SessionMeta): void {
+    // 无 id 的条目没有归属：写进去也删不掉（removeIndexEntry 按 id 过滤），只会污染索引。
+    if (typeof entry.id !== 'string' || entry.id === '') return;
     const index = this.readIndex(cwd) ?? { version: INDEX_VERSION, rebuiltAt: new Date().toISOString(), sessions: [] };
     const idx = index.sessions.findIndex((s) => s.id === entry.id);
     if (idx >= 0) {
@@ -383,7 +395,7 @@ export class SessionStore {
       index.sessions.push(entry);
     }
     // 保持倒序
-    index.sessions.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    index.sessions.sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''));
     index.rebuiltAt = new Date().toISOString();
     this.writeIndex(cwd, index);
   }
@@ -756,7 +768,8 @@ export class SessionStore {
     // 优先读索引
     const index = this.readIndex(cwd);
     if (index !== null && !this.isIndexStale(cwd, index)) {
-      return index.sessions;
+      // 兜底过滤：索引只是缓存，历史版本写过缺 id 的坏条目，漏一条到 UI 就会让选择器崩。
+      return index.sessions.filter((s) => typeof s.id === 'string' && s.id !== '');
     }
     // 索引不存在或过期：全量重建
     return this.rebuildIndex(cwd);

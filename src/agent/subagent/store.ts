@@ -129,8 +129,13 @@ export class SubagentStore {
         // 仅处理 .json 快照；.lock（锁文件）和 .jsonl（全量日志）不属于会话元信息
         if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
         if (entry.name === SUBAGENT_INDEX_FILE) continue;
+        if (entry.name.startsWith('_')) continue;
         try {
           const data = JSON.parse(readFileSync(join(dir, entry.name), 'utf8')) as SessionData;
+          // 与主会话 store.rebuildIndex 同源：目录里出现过不带 id 的 JSON（缓存/残留），
+          // 曾被当成快照读成缺 id 的索引条目，让 /agents 选择器取 id.slice 时崩。
+          if (typeof data.id !== 'string' || data.id === '') continue;
+          if (typeof data.updatedAt !== 'string' || data.updatedAt === '') continue;
           const messages = data.messages ?? [];
           sessions.push({
             id: data.id,
@@ -154,7 +159,7 @@ export class SubagentStore {
         }
       }
     }
-    sessions.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    sessions.sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''));
     const index: SubagentIndex = {
       version: SUBAGENT_INDEX_VERSION,
       rebuiltAt: new Date().toISOString(),

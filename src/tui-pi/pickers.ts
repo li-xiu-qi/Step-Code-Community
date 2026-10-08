@@ -333,9 +333,21 @@ export class PickerOverlay implements Component {
   }
 }
 
+/**
+ * 可展示的会话元信息：剔除没有 id 的条目。
+ *
+ * 索引是可重建缓存，历史版本会把桶里的非会话 JSON（_usage-cache.json）读成缺 id 的
+ * 元信息。这种条目打不开也删不掉，但对它取 id.slice 会让整个选择器抛异常退出
+ * （2026-10-07 两次崩溃实录，堆占用仅 138MB/8GB，与内存无关）。源头已在
+ * store.rebuildIndex 堵住，这里再兜一层：UI 层不假设上游数据干净。
+ */
+function openableMetas<T extends { id?: string }>(metas: readonly T[]): T[] {
+  return metas.filter((m): m is T => typeof m.id === 'string' && m.id !== '');
+}
+
 /** 会话选择器候选项：标题 + 相对时间 + 消息数。 */
 export function sessionItems(metas: readonly SessionMeta[], now = Date.now(), currentSessionId?: string): SelectItem[] {
-  return metas.map((m) => ({
+  return openableMetas(metas).map((m) => ({
     value: m.id,
     label: m.id === currentSessionId ? `${c.ok('●')} ${m.name ?? m.title ?? m.preview?.slice(0, 40) ?? m.id}` : (m.name ?? m.title ?? m.preview?.slice(0, 40) ?? m.id),
     description: `${relativeTime(m.updatedAt, now)} · ${t('sessionPicker.count', { count: m.messageCount })} · ${m.id.slice(0, 8)}${m.id === currentSessionId ? ' ' + c.ok(t('sessionPicker.current')) : ''}`,
@@ -362,7 +374,7 @@ export function agentItems(agents: readonly SessionMeta[], now = Date.now()): Se
       default: return c.dim('·');
     }
   };
-  return agents.map((a) => {
+  return openableMetas(agents).map((a) => {
     const depth = a.depth ?? 0;
     const indent = depth > 0 ? '  '.repeat(depth) : '';
     const type = c.accent(a.agentType ?? 'general');
