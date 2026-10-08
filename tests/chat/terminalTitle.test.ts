@@ -112,4 +112,54 @@ describe('TerminalTitleWriter', () => {
     w.reset();
     expect(written).toEqual(['\x1b]0;step · 查看存储占用\x07', '\x1b]0;\x07']);
   });
+
+  // re-assert 机制（2026-10-08 加）：标题是控制台级共享属性，Ctrl+G 外部编辑器
+  // （spawnSync + stdio inherit）、外部 CLI、崩溃后 shell 提示符都会改掉它，而 sync
+  // 只在 rename/new/fork/resume/标题生成触发，被改走后不会自愈。两个新语义：set 对
+  // 重复文本去重（让 idle 边界可以随便调），reassert 强制重发（明确知道被抢过时用）。
+  it('set 对相同文本去重：重复调用不重复写序列', () => {
+    const written: string[] = [];
+    const w = new TerminalTitleWriter({ TERM: 'xterm-256color' }, true, true, (s) => written.push(s));
+    w.set('任务A');
+    w.set('任务A');
+    w.set('任务A');
+    expect(written).toEqual(['\x1b]0;step · 任务A\x07']);
+  });
+
+  it('set 文本变化时照常写', () => {
+    const written: string[] = [];
+    const w = new TerminalTitleWriter({ TERM: 'xterm-256color' }, true, true, (s) => written.push(s));
+    w.set('任务A');
+    w.set('任务B');
+    expect(written).toEqual(['\x1b]0;step · 任务A\x07', '\x1b]0;step · 任务B\x07']);
+  });
+
+  it('reassert 绕过去重强制重发，用于外部抢走标题后夺回', () => {
+    const written: string[] = [];
+    const w = new TerminalTitleWriter({ TERM: 'xterm-256color' }, true, true, (s) => written.push(s));
+    w.set('任务A');
+    w.reassert();
+    w.reassert();
+    expect(written).toEqual([
+      '\x1b]0;step · 任务A\x07',
+      '\x1b]0;step · 任务A\x07',
+      '\x1b]0;step · 任务A\x07',
+    ]);
+  });
+
+  it('未写过标题时 reassert 是空操作（无从重宣告）', () => {
+    const written: string[] = [];
+    const w = new TerminalTitleWriter({ TERM: 'xterm-256color' }, true, true, (s) => written.push(s));
+    w.reassert();
+    expect(written).toEqual([]);
+  });
+
+  it('reset 之后再 set 同文本仍会写（清空后 lastWritten 已失效）', () => {
+    const written: string[] = [];
+    const w = new TerminalTitleWriter({ TERM: 'xterm-256color' }, true, true, (s) => written.push(s));
+    w.set('任务A');
+    w.reset();
+    w.set('任务A');
+    expect(written).toEqual(['\x1b]0;step · 任务A\x07', '\x1b]0;\x07', '\x1b]0;step · 任务A\x07']);
+  });
 });

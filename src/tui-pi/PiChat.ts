@@ -10,6 +10,7 @@ import { homedir, tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { basename, join } from 'node:path';
 import { clearHeartbeat, consumeUngracefulMarker, diagDir, readHeartbeat, writeHeartbeat } from '../lifecycle.js';
+import { installConsoleGuard } from '../chat/consoleGuard.js';
 import { Container, ProcessTerminal, TuiAltScreen, ScrollView, VStack, matchesKey, getKeybindings } from '@earendil-works/pi-tui';
 import type { Component, KeybindingsConfig, SelectItem } from '@earendil-works/pi-tui';
 import type { AgentEvent, SubagentProgressEvent, WorkflowStepEvent } from '../agent/events.js';
@@ -538,6 +539,12 @@ export class PiChat {
   /** 堆水位看护的停止函数（见 heapWatch.ts：接近上限时预警并留一份快照）。 */
   private stopHeapWatch: (() => void) | undefined;
   private resolveExit: ((info: PiChatExit) => void) | undefined;
+  /** 控制台护栏的恢复函数（start 装、exit 拆，职责见 consoleGuard.ts 头注）。 */
+  private consoleGuardRestore: (() => void) | undefined;
+  /** 护栏拦截计数：前几条原文上屏，之后按节奏汇总，避免转录区变第二个控制台。 */
+  private consoleGuardCount = 0;
+  /** 周期自愈帧计数：spinner 定时器 200ms 一拍，每 150 拍（30s）强制一次全量重绘。 */
+  private healTickCount = 0;
   /** 弹层（审批/计划/提问）激活中：暂停 spinner，用户此时在读弹层，动画只是噪声与无谓重绘。 */
   private promptActive = false;
   /** 判断队列条目是否为后台任务终态通知正文。 */
@@ -883,6 +890,31 @@ export class PiChat {
 
   /** 启动 TUI，返回的 Promise 在退出时 resolve。 */
   start(): Promise<PiChatExit> {
+    // 控制台护栏：TUI 存活期接管 console.* 与 stderr 直写（含 Node 运行时 warning），
+    // 帧外直写会打破 alt-screen 帧模型的「屏幕只被 diff 写」不变量，被污染的行永远
+    // 得不到重写（幽灵帧）。拦截文本节流上屏 + 全量落 diag 日志；exit() 里恢复。
+    // vitest 下不装：测试里 PiChat 常被 start 后不 exit（护栏拆不掉会吞掉同 worker
+    // 后续文件的 console），且测试运行器自己拥有控制台。
+    if (process.env.VITEST === undefined && process.env.VITEST_WORKER_ID === undefined) {
+      this.consoleGuardRestore?.();
+      this.consoleGuardRestore = installConsoleGuard({
+        logPath: join(diagDir(), 'console-guard.log'),
+        onText: (text) => {
+          this.consoleGuardCount += 1;
+          const n = this.consoleGuardCount;
+          if (n <= 5 || n % 25 === 0) {
+            const oneLine = text.replace(/\s+/g, ' ').slice(0, 160);
+            this.push({
+              kind: 'note',
+              text:
+                n <= 5
+                  ? `拦截控制台输出：${oneLine}`
+                  : `控制台输出已拦截 ${n} 条（详见 ${join(diagDir(), 'console-guard.log')}）`,
+            });
+          }
+        },
+      });
+    }
     // 欢迎框是第一个条目（新建与 resume 都显示），放 replayHistory 之前，恢复会话时它也在历史回放之上。
     this.transcript.push({
       kind: 'welcome',
@@ -973,6 +1005,13 @@ export class PiChat {
     // 不从墙钟派生，避免「重渲了但 frame 没变」的空刷帧。
     this.spinnerTimer = setInterval(() => {
       const hasRunningSubagent = this.runningSubagentIds.size > 0;
+      // 周期自愈：帧模型「屏幕只被 diff 写」的不变量可能被帧外因素打破（ConPTY 丢
+      // 字节、滚动快路径边角），被污染的行在模型里「无变化」、永远不会被重写，表现
+      // 为常驻幽灵帧。consoleGuard 堵住帧外直写后，剩下的物理层脱节靠定期强制全量
+      // 重绘愈合：模型整屏重盖一次，sync output 包帧，用户无感。30s 一拍，与是否
+      // busy 无关（idle 时后台通知一样可能带来污染）。
+      this.healTickCount += 1;
+      if (this.healTickCount % 150 === 0) this.tui.requestRender(true);
       if (this.promptActive) return;
       if (this.busy) {
         tickSpinner();
@@ -2157,6 +2196,9 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       // 终端已死，动画本就无从显示
     }
     this.tui.stop();
+    // 控制台护栏在 TUI 停掉后立刻恢复：之后的输出（退出统计、shell 提示）要走真出口
+    this.consoleGuardRestore?.();
+    this.consoleGuardRestore = undefined;
     // 干净退出清除心跳：残留心跳 + 无 exit 记录 = 被外部杀死，下次启动要拿它给恢复指针
     clearHeartbeat(diagDir(), process.pid);
     this.resolveExit?.({ sessionId: this.session.id, hasContent: this.history.length > 0 || this.sawContent });
@@ -4302,6 +4344,16 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     if (plan.action === 'idle') {
       // 自动睡眠巩固：idle 时检查是否需要后台触发 dream
       void this.maybeAutoDream();
+      // 标题夺回：标题是控制台级共享属性，运行期可能被外部进程改掉（Ctrl+G 外部
+      // 编辑器、外部 CLI、崩溃后 shell 提示符），而 syncTerminalTitle 只在
+      // rename/new/fork/resume/标题生成这几个点触发，被改走后要等到下一次这类事件
+      // 才恢复。回合彻底回到 idle 是天然的 re-assert 点；writer 内部对重复内容去重，
+      // 标题没被抢走时一条序列都不发。
+      this.syncTerminalTitle();
+      // 回合边界自愈：与 spinner 定时器的 30s 周期自愈同源——回合是输出最密集的时段，
+      // 物理层脱节若发生大概率发生在回合内，回到 idle 这一刻整屏重盖一次，把可能
+      // 存在的幽灵帧在用户开始读屏之前抹掉。
+      this.tui.requestRender(true);
       return;
     }
     if (plan.action === 'submit-queue') {
@@ -5430,6 +5482,12 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       // 无论成功失败都要重启 TUI
       this.tui.start();
     }
+
+    // 标题夺回：编辑器是 spawnSync + stdio inherit，直接吃这个 tty。vi 之类会自己写
+    // OSC 0 设标题，GUI 编辑器改不动标题但 tui.stop() 那个窗口里 shell 也可能趁虚
+    // 设一下。刚跑完这几百毫秒标题归属说不准，强制重宣告一次。用 reassert 而非 set
+    // 是为了绕过「内容没变就不写」的去重——这条路径标题确实被抢过。
+    this.termTitle.reassert();
 
     // 读回文件内容
     try {

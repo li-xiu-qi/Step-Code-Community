@@ -127,6 +127,8 @@ export function withTitlePrefix(title: string): string {
  */
 export class TerminalTitleWriter {
   private readonly enabled: boolean;
+  /** 上次成功写入的文本（含前缀）。用于去重：内容不变就不写。 */
+  private lastWritten: string | null = null;
 
   constructor(
     private readonly env: Record<string, string | undefined>,
@@ -138,12 +140,39 @@ export class TerminalTitleWriter {
     this.enabled = configEnabled && canSetTerminalTitle(env, isTTY);
   }
 
-  /** 设置标题（自动加前缀）。未启用时空操作。 */
+  /**
+   * 设置标题（自动加前缀）。未启用时、空标题、或文本与上次一致时为空操作。
+   *
+   * 去重是为了让调用方能放心在「回合结束」这类边界反复调用来做 re-assert：
+   * 标题是控制台级共享属性，Ctrl+G 外部编辑器（stdio inherit）、外部 CLI、崩溃后
+   * shell 提示符都会改掉它，我们必须能在竞争里重复宣告。有了 lastWritten 比对，
+   * 重复宣告同一文本时一条序列都不发，成本为零。
+   */
   set(title: string): void {
     if (!this.enabled) return;
     const text = withTitlePrefix(title);
     if (text === '') return;
+    if (text === this.lastWritten) return;
     this.write(buildTitleSequence(text, this.env));
+    this.lastWritten = text;
+  }
+
+  /**
+   * 重新宣告当前标题（内容不变，只为在外部改写过之后夺回）。
+   *
+   * 与 set 的区别：绕过 lastWritten 去重强制再发一次。用于「刚有个继承 tty 的
+   * 外部进程跑完」这类明确知道标题被抢走的时点；没写过标题时是空操作。
+   */
+  reassert(): void {
+    if (!this.enabled) return;
+    const text = this.lastWritten;
+    if (text === null) return;
+    this.write(buildTitleSequence(text, this.env));
+  }
+
+  /** 当前已宣告的标题文本（含前缀），未宣告过为 null。供 re-assert 的调用方判断是否需要。 */
+  current(): string | null {
+    return this.lastWritten;
   }
 
   /**
@@ -156,5 +185,8 @@ export class TerminalTitleWriter {
   reset(): void {
     if (!this.enabled) return;
     this.write(buildTitleSequence('', this.env));
+    // 必须失效 lastWritten：清空之后终端的标题已不是我们的文本，若不去重标记，
+    // 紧接着 set 同一文本会被判定为「没变」而跳过，标题就再也回不来了。
+    this.lastWritten = null;
   }
 }
