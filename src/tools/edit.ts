@@ -14,6 +14,75 @@ const EDIT_DIFF_MAX_LINES = 40;
 const MAX_DIFF_FILES = 20;
 
 /**
+ * 计算 needle 在 haystack 中的全部起始下标（不重叠）。
+ *
+ * 用于匹配失败的行号诊断：模型拿到的报错要能直接指到文件里的行，而不是一句
+ * 「未找到」让人盲目重试。
+ */
+function allIndexOf(haystack: string, needle: string): number[] {
+  const at: number[] = [];
+  let from = 0;
+  for (;;) {
+    const i = haystack.indexOf(needle, from);
+    if (i === -1) break;
+    at.push(i);
+    from = i + needle.length;
+  }
+  return at;
+}
+
+/** 字符下标转行号（1 起）。 */
+function lineAt(text: string, index: number): number {
+  let line = 1;
+  const end = Math.min(index, text.length);
+  for (let i = 0; i < end; i++) {
+    if (text[i] === '\n') line++;
+  }
+  return line;
+}
+
+/** 行号列表压成人类可读串：最多展示 limit 个，超出附总数。 */
+function formatLineList(lines: number[], limit = 6): string {
+  const head = lines.slice(0, limit).join('、');
+  return lines.length > limit ? `${head} 等 ${lines.length} 处` : head;
+}
+
+/**
+ * 匹配失败诊断：为什么 old_string 没找到，以及它可能在哪。
+ *
+ * 三级排查，逐级给出可执行信息：
+ * 1. 空白归一化后能否命中（缩进/tab/CRLF 不一致是最常见原因）→ 报真实行号；
+ * 2. 首行能否定位（说明锚点对上了，是后续内容漂移）→ 报首行行号；
+ * 3. 都不行 → 只给文件行数，让模型重新 read_file。
+ *
+ * 只读 text，不改动它；返回给人看的提示行（不含前缀，调用方拼 label）。
+ */
+function diagnoseMiss(text: string, oldStr: string): string {
+  // 1. 空白归一化：把每行的行尾空白与连续空格/tab 折叠后比较
+  const normLine = (s: string): string => s.replace(/[ \t]+/g, ' ').replace(/\s+$/, '');
+  const normText = text.split('\n').map(normLine).join('\n');
+  const normOld = oldStr.split('\n').map(normLine).join('\n');
+  const normAt = allIndexOf(normText, normOld);
+  if (normAt.length > 0) {
+    // normLine 只删行尾空白、折叠空格，不增删换行，故同一下标仍在同一行
+    const lines = normAt.map((i) => lineAt(text, i));
+    return `原文的空白（缩进/tab/行尾空格）与文件不一致，忽略空白后命中的行：${formatLineList(lines)}。请按 read_file 返回的原文字符复刻。`;
+  }
+  // 2. 首行定位：至少告诉模型它锚在第一行没错，往后错了
+  const firstLine = oldStr.split('\n')[0] ?? '';
+  if (firstLine.trim() !== '') {
+    const at = allIndexOf(text, firstLine);
+    if (at.length > 0) {
+      const lines = at.map((i) => lineAt(text, i));
+      return `old_string 首行在文件中位于 ${formatLineList(lines)}，但其后内容与文件不一致（可能已被其它编辑改过，或漏抄了中间行）。`;
+    }
+  }
+  // 3. 兜底：给文件规模，暗示可能读的不是当前版本
+  const totalLines = text.split('\n').length;
+  return `文件当前 ${totalLines} 行，未找到任何相近片段。请重新 read_file 读取当前内容后再试。`;
+}
+
+/**
  * 完整 diff 落盘到 `.step-code/tool-output/edit-diff-*.log`，返回相对 cwd 的路径。
  * 磁盘不可写等失败返回 null（调用方退回原提示文案）。超出保留数按 mtime 删最旧。
  */
@@ -146,12 +215,18 @@ export const editFileTool: ToolDef<z.infer<typeof schema>> = {
       const label = entries.length > 1 ? ` edits[${i}]` : '';
       if (occurrences === 0) {
         return fail(
-          `未找到 old_string${label}。请先 read_file 确认原文（含缩进与换行）后再试。`,
+          `未找到 old_string${label}。\n${diagnoseMiss(searchText, oldStr)}`,
         );
       }
       if (occurrences > 1 && entry.replace_all !== true) {
+        // 报错必须能指路：把每处位置的行号列出来，模型才知道该补哪段上下文、
+        // 或者确实该用 replace_all。行号基于当前 searchText（前面的 edits 可能已改动过它）。
+        const at = allIndexOf(searchText, oldStr);
+        const lines = at.map((idx) => lineAt(searchText, idx));
+        const shown = formatLineList(lines);
         return fail(
-          `old_string${label} 在文件中出现 ${occurrences} 次，不唯一。请补充上下文使其唯一，或设 replace_all=true。`,
+          `old_string${label} 在文件中出现 ${occurrences} 次，不唯一（第 ${shown} 行）。\n` +
+            `请补充上下文使其唯一，或设 replace_all=true 全部替换。`,
         );
       }
 
