@@ -17,16 +17,22 @@ function jsonResponse(obj: unknown, status = 200): Response {
   return new Response(JSON.stringify(obj), { status, headers: { 'content-type': 'application/json' } });
 }
 
-function makeProvider(response: Response, capture?: { body?: unknown; url?: string }): OpenAiResponsesProvider {
+function makeProvider(
+  response: Response,
+  capture?: { body?: unknown; url?: string; headers?: unknown },
+  anonymous = false,
+): OpenAiResponsesProvider {
   const fetchImpl = (async (url: string, init: RequestInit) => {
     if (capture !== undefined) {
       capture.url = url;
       capture.body = JSON.parse(init.body as string);
+      capture.headers = init.headers;
     }
     return response;
   }) as unknown as typeof fetch;
   return new OpenAiResponsesProvider({
     apiKey: 'k',
+    anonymous,
     baseUrl: 'https://api.stepfun.com/v1',
     model: 'step-3.7-flash',
     maxTokens: 32768,
@@ -295,6 +301,14 @@ describe('OpenAiResponsesProvider', () => {
     expect(body['tools']).toEqual([
       { type: 'function', name: 'get_weather', description: '查天气', parameters: { type: 'object' } },
     ]);
+  });
+
+  it('匿名渠道 → 请求头不含 authorization 键（同 openaiChat：不带头才是匿名语义）', async () => {
+    const capture: { headers?: unknown } = {};
+    const provider = makeProvider(sseResponse([completedEvent([])]), capture, true);
+    const stream = provider.stream({ system: '', tools: [], messages: [{ role: 'user', content: 'hi' }] });
+    await stream.finalMessage();
+    expect('authorization' in (capture.headers as Record<string, string>)).toBe(false);
   });
 
   it('请求体：工具结果回灌 → input 里 function_call 与 function_call_output 成对且 call_id 一致', async () => {

@@ -25,6 +25,10 @@ import type { ChatProvider } from './types.js';
  * - openai_responses → {@link OpenAiResponsesProvider}（/v1/responses）
  * 未知 provider（不在 PROVIDER_PRESETS 内）抛错；apiKey 缺失/空串抛带配置指引的错误
  * （loadConfig 起不再强制 key，密钥解析允许多渠道独立配置，缺失在此兜底）。
+ * 匿名渠道（config.anonymous=true，[providers.<id>] 的 `anonymous = true`）豁免
+ * apiKey 校验：该渠道端点不需要鉴权（如限免活动的匿名网关），请求不带 Authorization
+ * 头。仅 openai / openai_responses 协议生效；anthropic 协议走官方 SDK 构造 x-api-key，
+ * 匿名对它无意义，配了也照旧要求 key。
  *
  * 装配不对称说明：
  * - openai / openai_responses / anthropic 三条路径的返回值用 {@link withHistoryNormalization}
@@ -39,10 +43,10 @@ export function createProvider(config: StepCodeConfig): ChatProvider {
       t('factory.unknownProvider', { provider: config.provider, list: Object.keys(PROVIDER_PRESETS).join(' | ') }),
     );
   }
-  if (config.apiKey === undefined || config.apiKey === '') {
+  if (!config.anonymous && (config.apiKey === undefined || config.apiKey === '')) {
     throw new Error(t('factory.missingApiKey', { provider: config.provider }));
   }
-  const apiKey = config.apiKey;
+  const apiKey = config.apiKey ?? '';
 
   // thinking 解析必须在所有协议分支之前：Step 的三个接口都有思考控制字段
   // （messages→output_config.effort、chat→reasoning_effort、responses→reasoning.effort），
@@ -80,6 +84,7 @@ export function createProvider(config: StepCodeConfig): ChatProvider {
         withHistoryNormalization(
           new OpenAiChatProvider({
             apiKey,
+            anonymous: config.anonymous,
             baseUrl: config.baseUrl,
             model: config.model,
             maxTokens: config.maxTokens,
@@ -105,6 +110,7 @@ export function createProvider(config: StepCodeConfig): ChatProvider {
         withHistoryNormalization(
           new OpenAiResponsesProvider({
             apiKey,
+            anonymous: config.anonymous,
             baseUrl: config.baseUrl,
             model: config.model,
             maxTokens: config.maxTokens,

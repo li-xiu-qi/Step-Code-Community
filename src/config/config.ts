@@ -270,6 +270,15 @@ export interface ProviderEntry {
   apiKey?: string;
   /** 间接引用：只存环境变量名（api_key_env），密钥不落盘；解析时读 process.env[apiKeyEnv]。 */
   apiKeyEnv?: string;
+  /**
+   * 匿名渠道开关（config.toml 的 `anonymous = true`）：该渠道端点不需要鉴权。
+   * 仅 type 为 openai / openai_responses 时有效（这两个协议自构请求头，匿名时
+   * 不发 Authorization；anthropic 协议走官方 SDK 内部构造 x-api-key，不支持匿名）。
+   * 开启后工厂跳过 apiKey 缺失校验，请求不带任何鉴权头。
+   * ⚠️ 只对确认免鉴权的端点使用（如限免活动的匿名网关）；误配到需要鉴权的端点
+   * 会在请求时被上游 401，且错误不再经过「缺少 API key」的本地指引。
+   */
+  anonymous?: boolean;
 }
 
 /**
@@ -308,6 +317,12 @@ export interface StepCodeConfig {
    * 允许 undefined：缺失时由 provider 工厂在构造前抛带指引的错误。
    */
   apiKey: string | undefined;
+  /**
+   * 匿名渠道标记：由 [providers.<id>] 的 anonymous 经 resolveModelEntry 带入（顶层不可配）。
+   * undefined/false 时工厂照常要求 apiKey 非空；true 时跳过校验且请求不带鉴权头
+   * （仅 openai / openai_responses 协议有效）。
+   */
+  anonymous?: boolean;
   baseUrl: string;
   model: string;
   /** 模型上下文上限（token）。默认对齐内置默认模型的窗口（256K）；更大窗口的模型需经 config.toml max_context_size 显式声明。 */
@@ -1169,6 +1184,8 @@ export function resolveProviders(raw: unknown): Record<string, ProviderEntry> | 
     if (apiKey !== undefined) entry.apiKey = apiKey;
     const apiKeyEnv = asString(t['api_key_env']);
     if (apiKeyEnv !== undefined) entry.apiKeyEnv = apiKeyEnv;
+    // 匿名开关严格布尔：只有 TOML 里写 true（布尔）才生效，字符串 "yes" / 数字 1 等一律忽略
+    if (t['anonymous'] === true) entry.anonymous = true;
     out[id] = entry;
   }
   return Object.keys(out).length > 0 ? out : undefined;
@@ -1240,6 +1257,7 @@ export function resolveModelEntry(config: StepCodeConfig, name: string): StepCod
   let provider: string;
   let baseUrl: string;
   let apiKey: string | undefined;
+  let anonymous: boolean | undefined;
   const channel = entry.provider !== undefined ? config.providers?.[entry.provider] : undefined;
   if (channel !== undefined) {
     // 自定义渠道：协议实现由渠道 type 决定；端点渠道优先、回落 entry → 顶层；密钥走渠道分支回落链
@@ -1276,6 +1294,8 @@ export function resolveModelEntry(config: StepCodeConfig, name: string): StepCod
       entry.apiKey ??
       envValue(entry.apiKeyEnv) ??
       config.apiKey;
+    // 匿名是渠道属性（端点免鉴权），只从显式渠道带入；继承顶层 provider 的路径恒为 undefined
+    anonymous = channel.anonymous;
     baseUrl = channel.baseUrl ?? entry.baseUrl ?? config.baseUrl;
     if (channel.baseUrl === undefined && entry.baseUrl === undefined && provider !== config.provider) {
       baseUrl = PROVIDER_PRESETS[provider]?.baseUrl ?? config.baseUrl;
@@ -1299,6 +1319,7 @@ export function resolveModelEntry(config: StepCodeConfig, name: string): StepCod
     ...config,
     provider,
     apiKey,
+    anonymous,
     baseUrl,
     model: entry.model ?? name,
     maxContextSize: entry.maxContextSize ?? config.maxContextSize,

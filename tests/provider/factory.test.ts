@@ -59,6 +59,37 @@ describe('createProvider', () => {
     expect(() => createProvider(baseConfig({ provider: 'not-a-real-provider' }))).toThrow(/未知服务商/);
   });
 
+  it('匿名渠道（anonymous=true）无 apiKey 也放行 → OpenAiChatProvider 实例', () => {
+    const p = createProvider(
+      baseConfig({
+        provider: 'openai',
+        baseUrl: 'https://gw.example.com/v1',
+        apiKey: undefined,
+        anonymous: true,
+      }),
+    );
+    const inner = (p as NormalizedChatProvider).inner;
+    expect(inner).toBeInstanceOf(OpenAiChatProvider);
+  });
+
+  it('openai_responses 匿名渠道无 apiKey 也放行', () => {
+    const p = createProvider(
+      baseConfig({
+        provider: 'openai_responses',
+        baseUrl: 'https://gw.example.com/v1',
+        apiKey: undefined,
+        anonymous: true,
+      }),
+    );
+    const inner = (p as NormalizedChatProvider).inner;
+    expect(inner).toBeInstanceOf(OpenAiResponsesProvider);
+  });
+
+  it('无 apiKey 且非匿名 → 抛缺少 key 错误（fail-fast 不能被匿名开关旁路）', () => {
+    expect(() => createProvider(baseConfig({ provider: 'openai', apiKey: undefined }))).toThrow(/缺少 API key/);
+    expect(() => createProvider(baseConfig({ provider: 'anthropic', apiKey: undefined }))).toThrow(/缺少 API key/);
+  });
+
   it('stepfun + [thinking] enabled=true → sendThinking 覆盖为 true 并注入档位', () => {
     const p = createProvider(
       baseConfig({

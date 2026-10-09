@@ -11,11 +11,18 @@ import type { ChatProvider, ThinkingParam } from './types.js';
 
 /** {@link OpenAiResponsesProvider} 构造参数。 */
 export interface OpenAiResponsesProviderOptions {
-  apiKey: string;
+  /**
+   * API key。匿名渠道（{@link anonymous}）可省略；非匿名时由工厂保证非空。
+   */
+  apiKey?: string;
   /** 带 /v1 的 base_url（拼 /responses）。 */
   baseUrl: string;
   model: string;
   maxTokens: number;
+  /**
+   * 匿名渠道：端点不需要鉴权，请求不发 Authorization 头。默认 false。
+   */
+  anonymous?: boolean;
   /** 注入的 fetch 实现（测试用 mock）；缺省用全局 fetch。 */
   fetchImpl?: typeof fetch;
   /**
@@ -201,15 +208,17 @@ export class OpenAiResponsesProvider implements ChatProvider {
   private readonly fetchImpl: typeof fetch;
   private readonly sendThinking: boolean;
   private readonly thinking?: ThinkingParam;
+  private readonly anonymous: boolean;
 
   constructor(options: OpenAiResponsesProviderOptions) {
-    this.apiKey = options.apiKey;
+    this.apiKey = options.apiKey ?? '';
     this.baseUrl = options.baseUrl.replace(/\/$/, '');
     this.model = options.model;
     this.maxTokens = options.maxTokens;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.sendThinking = options.sendThinking ?? false;
     this.thinking = options.thinking;
+    this.anonymous = options.anonymous ?? false;
   }
 
   stream(params: {
@@ -248,8 +257,10 @@ export class OpenAiResponsesProvider implements ChatProvider {
     const url = `${this.baseUrl}/responses`;
     const headers: Record<string, string> = {
       'content-type': 'application/json',
-      authorization: `Bearer ${this.apiKey}`,
     };
+    // 匿名渠道（免鉴权端点）不发 Authorization 头：空值或占位 token 会被上游判无效而 401，
+    // 不带头才是匿名语义（同 openaiChat）。
+    if (!this.anonymous) headers.authorization = `Bearer ${this.apiKey}`;
     const maxTokens = this.maxTokens;
 
     // 最终 response 对象（response.completed 的权威值）；未收到时用 undefined 兜底为空消息。

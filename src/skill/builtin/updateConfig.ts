@@ -215,6 +215,7 @@ endpoint 解析优先级：[search.web]/[search.image] → [search] → 主会�
 | base_url | string | 渠道端点 |
 | api_key | string | 渠道密钥 |
 | api_key_env | string | 环境变量名间接引用 |
+| anonymous | boolean | 匿名渠道开关（严格布尔，只认 true）：端点不需要鉴权，工厂跳过 apiKey 缺失校验、请求不发 Authorization 头。仅 type 为 openai / openai_responses 时有效（这两个协议自构请求头；anthropic 走官方 SDK 内部构造 x-api-key，不支持）。只对确认免鉴权的端点使用（如限免活动的匿名网关） |
 
 ## 二·五、渠道与模型速查（当前全景）
 

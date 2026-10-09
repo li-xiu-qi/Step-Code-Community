@@ -492,7 +492,11 @@ describe('httpErrorToApiError', () => {
 });
 
 describe('OpenAiChatProvider 流式响应翻译', () => {
-  function makeProvider(response: Response, capture?: { body?: unknown; url?: string; headers?: unknown }): OpenAiChatProvider {
+  function makeProvider(
+    response: Response,
+    capture?: { body?: unknown; url?: string; headers?: unknown },
+    anonymous = false,
+  ): OpenAiChatProvider {
     const fetchImpl = (async (url: string, init: RequestInit) => {
       if (capture !== undefined) {
         capture.url = url;
@@ -503,6 +507,7 @@ describe('OpenAiChatProvider 流式响应翻译', () => {
     }) as unknown as typeof fetch;
     return new OpenAiChatProvider({
       apiKey: 'k',
+      anonymous,
       baseUrl: 'https://api.stepfun.com/v1',
       model: 'step-3.7-flash',
       maxTokens: 32768,
@@ -673,6 +678,17 @@ describe('OpenAiChatProvider 流式响应翻译', () => {
     expect((body['messages'] as OpenAiMessage[])[0]).toEqual({ role: 'system', content: 'sys' });
     expect(Array.isArray(body['tools'])).toBe(true);
     expect((capture.headers as Record<string, string>)['authorization']).toBe('Bearer k');
+  });
+
+  it('匿名渠道 → 请求头不含 authorization 键（空值/占位 token 会被上游 401，不带头才是匿名语义）', async () => {
+    const capture: { headers?: unknown } = {};
+    const provider = makeProvider(
+      sseResponse([JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] })]),
+      capture,
+      true,
+    );
+    await drive(provider, { messages: [{ role: 'user', content: 'hi' }] });
+    expect('authorization' in (capture.headers as Record<string, string>)).toBe(false);
   });
 
   it('无工具时不带 tools 字段', async () => {

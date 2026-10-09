@@ -13,11 +13,20 @@ import type { ChatProvider, ThinkingParam } from './types.js';
 
 /** {@link OpenAiChatProvider} 构造参数。 */
 export interface OpenAiChatProviderOptions {
-  apiKey: string;
+  /**
+   * API key。匿名渠道（{@link anonymous}）可省略；非匿名时由工厂保证非空
+   * （工厂的 missingApiKey 校验在构造前拦截，这里不再重复防御）。
+   */
+  apiKey?: string;
   /** 带 /v1 的 base_url（拼 /chat/completions）。 */
   baseUrl: string;
   model: string;
   maxTokens: number;
+  /**
+   * 匿名渠道：端点不需要鉴权，请求不发 Authorization 头。
+   * 默认 false。只影响请求头，不影响其余协议行为。
+   */
+  anonymous?: boolean;
   /** 注入的 fetch 实现（测试用 mock）；缺省用全局 fetch。 */
   fetchImpl?: typeof fetch;
   /**
@@ -52,9 +61,10 @@ export class OpenAiChatProvider implements ChatProvider {
   private readonly sendThinking: boolean;
   private readonly thinking?: ThinkingParam;
   private readonly reasoning: boolean;
+  private readonly anonymous: boolean;
 
   constructor(options: OpenAiChatProviderOptions) {
-    this.apiKey = options.apiKey;
+    this.apiKey = options.apiKey ?? '';
     this.baseUrl = options.baseUrl.replace(/\/$/, '');
     this.model = options.model;
     this.maxTokens = options.maxTokens;
@@ -62,6 +72,7 @@ export class OpenAiChatProvider implements ChatProvider {
     this.sendThinking = options.sendThinking ?? false;
     this.thinking = options.thinking;
     this.reasoning = options.reasoning ?? true;
+    this.anonymous = options.anonymous ?? false;
   }
 
   stream(params: {
@@ -102,10 +113,12 @@ export class OpenAiChatProvider implements ChatProvider {
     const url = `${this.baseUrl}/chat/completions`;
     const headers: Record<string, string> = {
       'content-type': 'application/json',
-      authorization: `Bearer ${this.apiKey}`,
       // 自报家门：诚实标识客户端与版本（不伪装任何官方客户端），便于上游识别与归因。
       'user-agent': `step-code/${VERSION}`,
     };
+    // 匿名渠道（免鉴权端点，如限免活动的匿名网关）不发 Authorization 头——
+    // 带空值或占位 token 反而可能被上游判为无效 token 而 401，不带头才是匿名语义。
+    if (!this.anonymous) headers.authorization = `Bearer ${this.apiKey}`;
 
     // Anthropic 风格的事件流：for await 吐 content_block_delta（text_delta/thinking_delta）。
     async function* iterate(): AsyncGenerator<Anthropic.MessageStreamEvent> {

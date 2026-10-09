@@ -510,6 +510,15 @@ describe('resolveProviders（渠道表解析）', () => {
   it('id 空串或渠道值非对象 → 跳过该渠道', () => {
     expect(resolveProviders({ '': { type: 'stepfun' }, bad: 'not-object', arr: [1] })).toBeUndefined();
   });
+
+  it('anonymous = true（布尔）→ 解析为 true；非布尔值一律忽略（"yes"/false 不生效）', () => {
+    expect(resolveProviders({ gw: { type: 'openai', anonymous: true } })).toEqual({
+      gw: { type: 'openai', anonymous: true },
+    });
+    // 严格布尔：TOML 写字符串或 false 都不该开启匿名
+    expect(resolveProviders({ gw: { type: 'openai', anonymous: 'yes' } })).toEqual({ gw: { type: 'openai' } });
+    expect(resolveProviders({ gw: { type: 'openai', anonymous: false } })).toEqual({ gw: { type: 'openai' } });
+  });
 });
 
 describe('resolveModelEntry（自定义渠道合并）', () => {
@@ -544,6 +553,24 @@ describe('resolveModelEntry（自定义渠道合并）', () => {
     expect(merged!.baseUrl).toBe('https://gw.example.com');
     expect(merged!.apiKey).toBe('k-gw');
     expect(merged!.model).toBe('test-model-y');
+  });
+
+  it('匿名渠道：anonymous 从渠道带入解析结果；继承顶层 provider 的路径恒为 undefined', () => {
+    const merged = resolveModelEntry(
+      channelConfig(
+        { gw: { type: 'openai', baseUrl: 'https://gw.example.com/v1', anonymous: true } },
+        { m: { provider: 'gw', model: 'test-model-y' } },
+      ),
+      'm',
+    );
+    expect(merged).not.toBeNull();
+    expect(merged!.anonymous).toBe(true);
+    // 继承分支（别名不指向渠道）不带 anonymous——匿名是渠道属性
+    const inherited = resolveModelEntry(
+      channelConfig(undefined, { m: { model: 'test-model-y' } }),
+      'm',
+    );
+    expect(inherited!.anonymous).toBeUndefined();
   });
 
   it('渠道缺省字段回落 entry → 顶层', () => {
