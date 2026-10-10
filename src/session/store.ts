@@ -387,7 +387,16 @@ export class SessionStore {
   private updateIndexEntry(cwd: string, entry: SessionMeta): void {
     // 无 id 的条目没有归属：写进去也删不掉（removeIndexEntry 按 id 过滤），只会污染索引。
     if (typeof entry.id !== 'string' || entry.id === '') return;
-    const index = this.readIndex(cwd) ?? { version: INDEX_VERSION, rebuiltAt: new Date().toISOString(), sessions: [] };
+    let index = this.readIndex(cwd);
+    if (index === null) {
+      // 读到 null = 索引缺失/半写/版本不符（混合运行期：启动于旧构建的长会话仍在按
+      // 旧 INDEX_VERSION 写索引，读新索引即 mismatch）。旧实现在这里从空索引起步，
+      // upsert 后整桶只剩这一条，/resume 列表瞬间消失（2026-10-10 现场：1504 文件
+      // 的桶索引只剩 1 条）。正确语义是先全量重建再 upsert——索引是会话文件的缓存，
+      // 磁盘才是事实源。rebuildIndex 内部已写一次盘，随后 upsert 再写一次，双写只
+      // 发生在 null 分支，可接受。
+      index = { version: INDEX_VERSION, rebuiltAt: new Date().toISOString(), sessions: this.rebuildIndex(cwd) };
+    }
     const idx = index.sessions.findIndex((s) => s.id === entry.id);
     if (idx >= 0) {
       index.sessions[idx] = entry;

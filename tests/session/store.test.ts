@@ -612,6 +612,29 @@ describe('SessionStore 索引缓存（_index.json）', () => {
     expect(JSON.parse(raw).version).toBeGreaterThanOrEqual(2);
   });
 
+  it('版本不符的索引 + save：upsert 前先全量重建，整桶不塌成一条', () => {
+    // 回归：2026-10-10 现场。混合运行期旧构建（旧 INDEX_VERSION）仍在写索引，
+    // 新构建 updateIndexEntry 读到 mismatch 返回 null，旧实现从空索引起步 upsert，
+    // 1504 文件的桶索引只剩 1 条，/resume 列表瞬间消失。
+    const a = store.create(cwd, 'm');
+    store.save(a);
+    const b = store.create(cwd, 'm');
+    store.save(b);
+    const indexFile = join(base, workdirKey(cwd), '_index.json');
+    // 模拟旧构建的 clobber：旧版本号 + 只剩它自己认识的一条
+    writeFileSync(
+      indexFile,
+      JSON.stringify({ version: 1, rebuiltAt: new Date().toISOString(), sessions: [{ id: a.id, updatedAt: a.updatedAt }] }),
+      'utf8',
+    );
+
+    const c = store.create(cwd, 'm');
+    store.save(c);
+
+    const metas = store.list(cwd);
+    expect(metas.map((m) => m.id).sort()).toEqual([a.id, b.id, c.id].sort());
+  });
+
   it('索引不存在时全量重建', () => {
     const s = store.create(cwd, 'm');
     store.save(s);
