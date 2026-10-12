@@ -460,6 +460,35 @@ key = "sp-xxxxxxxx"
 
 配了 `[search]` 后改动即改即生效（`/reload` 热重载），主会话用什么模型渠道都不再影响搜索可用性。
 
+#### 多提供商路由（内容搜索）
+
+`web_search` 不是单端点：它按一条提供商链依次尝试，失败自动降级，连续失败自动冷却（冷却状态存 `~/.step-code/search-health.json`）。**Step plan 过期不再意味着搜索整体失效**——免 key 的 bing/duckduckgo 始终在链尾兜底。可选提供商：`stepfun`（阶跃官方，复用上述三层 endpoint 解析）、`tavily`、`bocha`、`brave`（三家 key 制）、`bing`、`duckduckgo`（两家免 key HTML 抓取）。
+
+缺省链：`stepfun → tavily → bocha → brave → bing → duckduckgo`（未配 key 的 key 制提供商自动跳过，不算失败）。
+
+```toml
+[search]
+# 自定义链与顺序（在列即启用，缺省用上文默认链）
+providers = ["stepfun", "bocha", "bing"]
+# 显式禁用（优先级高于链）
+disabled_providers = ["duckduckgo"]
+
+# 各家 key / 自定义端点 / 开关；key 也可走环境变量
+[search.tavily]
+key = "tvly-xxxxxxxx"        # 或环境变量 TAVILY_API_KEY
+
+[search.bocha]
+key = "sk-xxxxxxxx"          # 或 BOCHA_API_KEY
+
+[search.brave]
+key = "bsa-xxxxxxxx"         # 或 BRAVE_API_KEY
+
+[search.duckduckgo]
+enabled = false              # 等价于加进 disabled_providers
+```
+
+降级行为：每家独立 12s 超时；配额/订阅类失败（401/403/429、plan 过期）冷却 6 小时，HTTP/解析类 1 小时，网络类 5 分钟；全部失败时返回聚合错误（逐家列原因）。搜索结果带 `[via 提供商名]` 标注，降级后命中会注明降级了几家。文搜图（`web_image_search`）不参与多提供商路由，仍仅阶跃渠道。
+
 ### `[tools.web]` 网页结果缓存
 
 `web_search`（内容搜索）与 `web_fetch`（正文提取）共享一个进程级缓存，避免同一 URL 重复抓取。

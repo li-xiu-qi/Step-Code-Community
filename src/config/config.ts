@@ -122,6 +122,33 @@ export interface SearchConfig {
   web?: SearchEndpointConfig;
   /** 文搜图专用段 [search.image]，覆盖通用段。 */
   image?: SearchEndpointConfig;
+  /**
+   * 搜索提供商链（顺序即优先级，在列即启用）。
+   * 可选值：stepfun / tavily / bocha / brave / bing / duckduckgo。
+   * 缺省链：stepfun → tavily → bocha → brave → bing → duckduckgo
+   * （无 key 的 key 制提供商自动跳过；bing/duckduckgo 免 key 兜底，
+   * Step plan 过期后 web_search 仍可用，2026-10-12 事故背景）。
+   */
+  providers?: string[];
+  /** 显式禁用的提供商（优先级高于 providers 链）。 */
+  disabledProviders?: string[];
+  /** 各提供商的 key/自定义端点/开关（[search.tavily] 等子段）。 */
+  stepfun?: SearchProviderConfig;
+  tavily?: SearchProviderConfig;
+  bocha?: SearchProviderConfig;
+  brave?: SearchProviderConfig;
+  bing?: SearchProviderConfig;
+  duckduckgo?: SearchProviderConfig;
+}
+
+/** 单个搜索提供商的配置段。 */
+export interface SearchProviderConfig {
+  /** API key；缺省读对应环境变量（TAVILY_API_KEY / BOCHA_API_KEY / BRAVE_API_KEY）。 */
+  key?: string;
+  /** 自定义端点覆盖。 */
+  url?: string;
+  /** false 则禁用（等价于加进 disabledProviders）。 */
+  enabled?: boolean;
 }
 
 /**
@@ -906,6 +933,28 @@ export function resolveSearchConfig(raw: unknown): SearchConfig {
     const subKey = asString(st['key']);
     if (subKey !== undefined) endpoint.key = subKey;
     if (endpoint.url !== undefined || endpoint.key !== undefined) cfg[sub] = endpoint;
+  }
+  // 提供商链与开关：providers = ["stepfun","bing",...]，disabled_providers = [...]
+  const asStringArray = (v: unknown): string[] | undefined => {
+    if (!Array.isArray(v)) return undefined;
+    const out = v.filter((x): x is string => typeof x === 'string' && x !== '');
+    return out.length > 0 ? out : undefined;
+  };
+  const providers = asStringArray(t['providers']);
+  if (providers !== undefined) cfg.providers = providers;
+  const disabledProviders = asStringArray(t['disabled_providers']);
+  if (disabledProviders !== undefined) cfg.disabledProviders = disabledProviders;
+  for (const name of ['stepfun', 'tavily', 'bocha', 'brave', 'bing', 'duckduckgo'] as const) {
+    const s = t[name];
+    if (typeof s !== 'object' || s === null) continue;
+    const st = s as Record<string, unknown>;
+    const entry: SearchProviderConfig = {};
+    const k = asString(st['key']);
+    if (k !== undefined) entry.key = k;
+    const u = asString(st['url']);
+    if (u !== undefined) entry.url = u;
+    if (typeof st['enabled'] === 'boolean') entry.enabled = st['enabled'];
+    if (entry.key !== undefined || entry.url !== undefined || entry.enabled !== undefined) cfg[name] = entry;
   }
   return cfg;
 }

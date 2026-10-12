@@ -453,6 +453,35 @@ key = "sp-xxxxxxxx"
 
 Once `[search]` is configured, changes take effect immediately (`/reload` hot-reloads it), and search availability no longer depends on the main session's model channel.
 
+#### Multi-provider routing (content search)
+
+`web_search` is not a single endpoint: it walks a provider chain, falling back on failure and cooling down providers that fail repeatedly (cooldown state lives in `~/.step-code/search-health.json`). **An expired Step Plan no longer takes search down entirely** — the key-free bing/duckduckgo providers always sit at the tail of the chain as a safety net. Available providers: `stepfun` (StepFun official, uses the three-level endpoint resolution above), `tavily`, `bocha`, `brave` (key-based), `bing`, `duckduckgo` (key-free HTML scraping).
+
+Default chain: `stepfun → tavily → bocha → brave → bing → duckduckgo` (key-based providers without a configured key are skipped silently, not counted as failures).
+
+```toml
+[search]
+# Custom chain and order (listed = enabled; omit to use the default chain)
+providers = ["stepfun", "bocha", "bing"]
+# Explicitly disable (wins over the chain)
+disabled_providers = ["duckduckgo"]
+
+# Per-provider key / custom endpoint / toggle; keys can also come from env vars
+[search.tavily]
+key = "tvly-xxxxxxxx"        # or TAVILY_API_KEY
+
+[search.bocha]
+key = "sk-xxxxxxxx"          # or BOCHA_API_KEY
+
+[search.brave]
+key = "bsa-xxxxxxxx"         # or BRAVE_API_KEY
+
+[search.duckduckgo]
+enabled = false              # same as listing it in disabled_providers
+```
+
+Fallback behavior: each provider gets an independent 12s timeout; quota/subscription failures (401/403/429, expired plan) cool down for 6 hours, HTTP/parse failures 1 hour, network failures 5 minutes; if every provider fails the tool returns an aggregate error listing each provider's reason. Results carry a `[via <provider>]` marker, and a fallback hit notes how many providers were skipped. Image search (`web_image_search`) is not part of multi-provider routing and stays StepFun-only.
+
 ### `[tools.web]`: web result cache
 
 `web_search` (content search) and `web_fetch` (full-text extraction) share a process-level cache to avoid fetching the same URL repeatedly.
