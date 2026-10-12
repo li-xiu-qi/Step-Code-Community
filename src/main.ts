@@ -34,18 +34,22 @@
 process.env.NODE_ENV ??= 'production';
 
 // 堆内存保障：长会话（50+ 轮、大 transcript、并发 sub agent 大上下文）下 Node.js 默认
-// 堆上限不够，会导致 FATAL ERROR: Ineffective mark-compacts near heap limit（fail-fast
-// 0xC0000409，WER 直接收尸，JS handler 零机会——2026-10-06 pid 51996 实证）。
-// 检测当前堆上限，若低于目标值则用 execPath 重新拉起进程并附加 --max-old-space-size。
-// 无静态 import，走动态 import node:v8 和 node:child_process。
+// 堆上限不够，撞限会 FATAL ERROR。检测当前堆上限，若低于目标值则用 execPath 重新拉起
+// 进程并附加 --max-old-space-size。无静态 import，走动态 import node:v8 和
+// node:child_process。
+//
+// 归因勘误（2026-10-12 实测）：本注释此前把 0xC0000409 fail-fast 归到堆 OOM 头上，
+// 是错的——堆 OOM 在这台机器实测退出码 134、有 FATAL ERROR 文本、有 report 文件；
+// 0xC0000409 是更低层的 __fastfail（V8 CHECK / libuv 断言 / /GS 栈金丝雀），零输出。
+// 堆保障仍然必要（防的是 134 那种死法），两类死因不要混。详见
+// step-code-product-design/参考资料/TUI与渲染/20261012-0xC0000409闪退取证进展.md。
 //
 // 目标值策略（2026-10-06 二次修订）：默认 = 物理内存 1/4，钳在 [4096, 8192]MB。
 // gemini-cli 的做法是 totalmem×0.5（packages/cli/index.ts getMemoryNodeArgs），
 // 但堆上限是「允许涨到的天花板」而非实际占用，64GB 机器给 32GB 天花板会掩盖
 // 真泄漏；1/4 在 64GB 机器落 8192（与当天第一次修订的固定值一致），16GB 机器
 // 落 4096（贴着 Node 默认 4.3GB 下沿，跳过 re-exec 不折腾）。Node 24 x64 默认堆
-// 约 4.3GB，在「主会话 + 并发子会话大上下文 + 图片 base64」压力下就是 fail-fast
-// （0xC0000409，WER 收尸，JS handler 零机会——2026-10-06 pid 51996 实证）的死因。
+// 约 4.3GB，长会话高负载下不够用，撞限是 134 号死法（有 FATAL 文本与 report）。
 // STEP_CODE_MAX_HEAP_MB 显式覆盖一切。
 const HEAP_ENV_MB = Number(process.env.STEP_CODE_MAX_HEAP_MB);
 
@@ -53,8 +57,10 @@ Promise.all([
   import('node:v8'),
   import('node:child_process'),
   import('node:os'),
+  import('node:path'),
   import('./lifecycle.js'),
-]).then(async ([v8, cp, osMod, life]) => {
+  import('./stderrRecorder.js'),
+]).then(async ([v8, cp, osMod, pathMod, life, stderrRec]) => {
   const totalMB = Math.floor(osMod.default.totalmem() / 1048576);
   const TARGET_HEAP_MB =
     HEAP_ENV_MB > 0 ? HEAP_ENV_MB : Math.min(8192, Math.max(4096, Math.floor(totalMB / 4)));
@@ -85,7 +91,12 @@ Promise.all([
     loadCli();
     return;
   }
-  if (process.env.STEP_CODE_HEAP_REEXEC) {
+  // 标记读完即删：它只是 re-exec 防循环的一次性凭证，留在环境里会随工具调用
+  // 遗传给孙进程（bash 工具里再跑 step 会误判「已 re-exec」而跳过堆保障，
+  // 2026-10-12 冒烟测试实测中招）。
+  const isReexecChild = process.env.STEP_CODE_HEAP_REEXEC !== undefined;
+  delete process.env.STEP_CODE_HEAP_REEXEC;
+  if (isReexecChild) {
     // 已是 re-exec 进程但仍不够（系统/容器内存限制压低了 --max-old-space-size）：告警一次，
     // 不静默裸跑、不无限重试。带着现有堆上限继续，让用户在 FATAL ERROR 前有线索。
     console.error(
@@ -100,29 +111,41 @@ Promise.all([
   // --max-old-space-size 避免重复冲突——调试与 source-map 不因 re-exec 静默失效。
   const forwarded = process.execArgv.filter((a) => !a.startsWith('--max-old-space-size'));
   life.beginLifecycle(diagDir, 'reexec-parent');
-  try {
-    cp.execFileSync(
-      process.execPath,
-      [
-        `--max-old-space-size=${TARGET_HEAP_MB}`,
-        // 致命错误取证：report 是 compact 现场（JS/native 栈、堆统计），快照是完整证据。
-        // 1 份就够——4GB 堆的快照近 1GB，多份只会把磁盘写穿。
-        '--report-on-fatalerror',
-        '--heapsnapshot-near-heap-limit=1',
-        `--diagnostic-dir=${diagDir}`,
-        ...forwarded,
-        ...process.argv.slice(1),
-      ],
-      { stdio: 'inherit', env: { ...process.env, STEP_CODE_HEAP_REEXEC: '1' } },
-    );
-    // 父进程是子进程终态的唯一见证者：子进程被信号杀死/异常退出时 status/signal
-    // 都在这里。这一行必须在 process.exit 之前落盘。
-    life.recordChildExit(diagDir, 0, null);
-    process.exit(0);
-  } catch (e: any) {
-    life.recordChildExit(diagDir, e?.status ?? null, e?.signal ?? null);
-    if (e?.status != null) process.exit(e.status);
+  // execFileSync 改 spawn + stderr 管道：fail-fast（0xC0000409）死法下 JS 层一个
+  // handler 都跑不了，libuv 断言 / V8 fatal 文本只经 fd2 落终端、随进程一起消失
+  // （2026-10-12 取证：堆 OOM 实测退出码 134 ≠ 崩溃码 0xC0000409，10-06 的归因有误，
+  // 真正死因需要 C 层文本证据）。父进程 tee 一份到 crash-stderr.log 是唯一通道。
+  // 行为对价不变：stdin/stdout 仍 inherit，stderr 透传终端；退出码经 'close' 透传。
+  const child = cp.spawn(
+    process.execPath,
+    [
+      `--max-old-space-size=${TARGET_HEAP_MB}`,
+      // 致命错误取证：report 是 compact 现场（JS/native 栈、堆统计），快照是完整证据。
+      // 1 份就够——4GB 堆的快照近 1GB，多份只会把磁盘写穿。
+      '--report-on-fatalerror',
+      '--heapsnapshot-near-heap-limit=1',
+      `--diagnostic-dir=${diagDir}`,
+      ...forwarded,
+      ...process.argv.slice(1),
+    ],
+    { stdio: ['inherit', 'inherit', 'pipe'], env: { ...process.env, STEP_CODE_HEAP_REEXEC: '1' } },
+  );
+  stderrRec.attachStderrRecorder(child, pathMod.join(diagDir, 'crash-stderr.log'));
+  let spawnFailed = false;
+  child.on('error', (e) => {
+    // 拉起失败（ENOENT 等）：不会有 'close' 之外的可靠退出事件，直接按失败收尾
+    spawnFailed = true;
+    life.recordChildExit(diagDir, null, null);
     console.error('heap re-exec failed:', e);
     process.exit(1);
-  }
+  });
+  // 用 'close' 而非 'exit'：'exit' 时 stdio 可能还有未排空的缓冲（fail-fast 前的
+  // 断言文本恰好在其中），'close' 等管道排空后才触发，记录与透传都完整。
+  child.on('close', (code, signal) => {
+    if (spawnFailed) return;
+    // 父进程是子进程终态的唯一见证者：子进程被信号杀死/异常退出时 status/signal
+    // 都在这里。这一行必须在 process.exit 之前落盘。
+    life.recordChildExit(diagDir, code, signal);
+    process.exit(code ?? 1);
+  });
 });
