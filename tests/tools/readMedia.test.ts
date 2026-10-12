@@ -1,5 +1,5 @@
 import { randomFillSync } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Jimp } from 'jimp';
@@ -12,6 +12,7 @@ import {
   classifyJimpError,
 } from '../../src/tools/readMedia.js';
 import type { ToolContext } from '../../src/tools/types.js';
+import { AttachmentStore } from '../../src/session/attachments.js';
 
 let dir: string;
 let ctx: ToolContext;
@@ -397,5 +398,76 @@ describe('read_media · classifyJimpError 错误分类', () => {
 
   it('ERR_MODULE_NOT_FOUND 变体也归到依赖缺失', () => {
     expect(classifyJimpError("Cannot find module 'jimp'")).toContain('环境问题');
+  });
+});
+
+describe('read_media · 媒体登记与去重（VISTA 式无损视觉记忆，2026-10-12）', () => {
+  let sessBase: string;
+
+  beforeEach(() => {
+    sessBase = mkdtempSync(join(tmpdir(), 'stepcode-media-sess-'));
+    ctx = { cwd: dir, capabilities: ['image_in'], attachments: new AttachmentStore(sessBase) };
+  });
+
+  afterEach(() => {
+    rmSync(sessBase, { recursive: true, force: true });
+  });
+
+  it('首次读取：正常交付，文案带 media #N 登记句柄，索引文件落盘', async () => {
+    const bytes = await pngBytes(100, 80);
+    writePng('a.png', bytes);
+    const r = await executeTool('read_media', { path: 'a.png' }, ctx);
+    expect(r.isError).toBe(false);
+    expect(r.images).toHaveLength(1);
+    expect(r.content).toContain('media #1');
+    // workdirKey 分桶规则由 store.ts 决定，直接从会话目录里找 media-log.md
+    const { readdirSync } = await import('node:fs');
+    const buckets = readdirSync(sessBase);
+    expect(buckets.length).toBeGreaterThan(0);
+    const log = readFileSync(join(sessBase, buckets[0]!, 'media-log.md'), 'utf-8');
+    expect(log).toContain('a.png');
+    expect(log).toContain('100×80');
+  });
+
+  it('重复读同一文件：第二次只回引用、不重复交付图片', async () => {
+    const bytes = await pngBytes(100, 80);
+    writePng('b.png', bytes);
+    const first = await executeTool('read_media', { path: 'b.png' }, ctx);
+    expect(first.images).toHaveLength(1);
+    const second = await executeTool('read_media', { path: 'b.png' }, ctx);
+    expect(second.isError).toBe(false);
+    expect(second.images).toBeUndefined();
+    expect(second.content).toContain('media #1');
+    expect(second.content).toContain('逐字节相同');
+    expect(second.content).toContain('force:true');
+  });
+
+  it('force:true 跳过去重检查，重复交付', async () => {
+    const bytes = await pngBytes(100, 80);
+    writePng('c.png', bytes);
+    await executeTool('read_media', { path: 'c.png' }, ctx);
+    const forced = await executeTool('read_media', { path: 'c.png', force: true }, ctx);
+    expect(forced.isError).toBe(false);
+    expect(forced.images).toHaveLength(1);
+  });
+
+  it('不同文件不互相拦截', async () => {
+    writePng('d1.png', await pngBytes(100, 80));
+    writePng('d2.png', await noisePngBytes(64, 64));
+    const r1 = await executeTool('read_media', { path: 'd1.png' }, ctx);
+    const r2 = await executeTool('read_media', { path: 'd2.png' }, ctx);
+    expect(r1.images).toHaveLength(1);
+    expect(r2.images).toHaveLength(1);
+  });
+
+  it('无 attachments 上下文（如裸 ctx）不拦截也不登记，行为与旧版一致', async () => {
+    const bytes = await pngBytes(100, 80);
+    writePng('e.png', bytes);
+    const bare: ToolContext = { cwd: dir, capabilities: ['image_in'] };
+    const first = await executeTool('read_media', { path: 'e.png' }, bare);
+    const second = await executeTool('read_media', { path: 'e.png' }, bare);
+    expect(first.images).toHaveLength(1);
+    expect(second.images).toHaveLength(1);
+    expect(second.content).not.toContain('media #');
   });
 });

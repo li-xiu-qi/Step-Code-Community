@@ -363,6 +363,12 @@ export function replaceMediaPartsWithMarkers(messages: readonly StoredMessage[])
     const mapped = mapBlocksDeep(sm.message.content, (block) => {
       const marker = MEDIA_PART_MARKERS[block.type];
       if (marker === undefined) return block;
+      // image 块带 stepref 指针时，占位符附上找回句柄（内容寻址，按 hash 可从附件存储
+      // 找回原图）。压缩降级后模型至少知道这里有过什么、去哪取回；裸 '[image]' 则无法。
+      // 注意匹配头保持 '[image ' 不变：RECITATION_MARKERS 的复述密度判定靠这个头。
+      if (block.type === 'image' && block.source.type === 'base64' && isStepref(block.source.data)) {
+        return { type: 'text', text: `[image ${block.source.data}]` } as Anthropic.TextBlockParam;
+      }
       return { type: 'text', text: marker } as Anthropic.TextBlockParam;
     });
     if (!mapped.changed) return sm;

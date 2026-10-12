@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
 import { z } from 'zod';
 import { videoLimitFromCapabilities } from '../provider/capability-registry.js';
@@ -47,6 +48,13 @@ const schema = z.object({
     .boolean()
     .optional()
     .describe('true = 只探测元数据（格式/尺寸/字节数/建议分块），不交付图片。用于分块读大图前获取精确尺寸，避免盲目猜 region。'),
+  force: z
+    .boolean()
+    .optional()
+    .describe(
+      'true = 跳过重复检查：即使该文件与会话中已读过的图片逐字节相同，也重新交付图片。' +
+        '默认命中重复只回文字引用不重复交付（省 vision token），压缩后遗忘等确需再看时传本参数。',
+    ),
 });
 
 type Input = z.infer<typeof schema>;
@@ -142,6 +150,24 @@ export function classifyJimpError(msg: string): string {
   return `图片解码失败（文件损坏或格式不支持）：${msg}`;
 }
 
+/**
+ * 交付成功后登记媒体索引（VISTA 式「无损视觉记忆」的 read_media 落地，2026-10-12）。
+ * 返回 media #id 用于交付文案里的句柄；无 attachments 上下文或登记失败时不阻塞交付。
+ */
+function recordDeliveredMedia(ctx: ToolContext, abs: string, meta: ImageMeta, buf: Buffer): number | undefined {
+  if (ctx.attachments === undefined) return undefined;
+  try {
+    return ctx.attachments.recordMedia(ctx.cwd, {
+      path: abs,
+      width: meta.width,
+      height: meta.height,
+      sha256: createHash('sha256').update(buf).digest('hex'),
+    });
+  } catch {
+    return undefined;
+  }
+}
+
 /** 组装 <system> 旁注：格式/原始字节/原始宽高/交付方式 + 两条固定提醒。 */
 function buildNote(meta: ImageMeta, rawBytes: number, delivery: string): string {
   return (
@@ -234,7 +260,7 @@ function buildProbeNote(meta: ImageMeta, rawBytes: number, maxEdge: number, byte
 export const readMediaTool: ToolDef<Input> = {
   name: 'read_media',
   description:
-    '读取本地图片或视频文件，把媒体内容回传给模型看。图片支持 png/jpeg/gif/bmp/webp；超预算（>4MB 或长边 >1568px）会自动等比降采样，可用 region 只看原图某个区域。读大图/长图前先用 probe:true 拿精确尺寸与建议分块，避免盲目猜 region 报错。视频（mp4/mov/webm 等）要求当前模型声明 video_in 能力，按原始字节 inline 交付，默认预算 32MB；音频 v1 暂不支持。',
+    '读取本地图片或视频文件，把媒体内容回传给模型看。图片支持 png/jpeg/gif/bmp/webp；超预算（>4MB 或长边 >1568px）会自动等比降采样，可用 region 只看原图某个区域。读大图/长图前先用 probe:true 拿精确尺寸与建议分块，避免盲目猜 region 报错。同一张图片文件重复读取会自动识别（按源文件 sha256 比对）并只回文字引用、不重复交付，确需重新看请传 force:true。每张交付的图会登记进会话的 media-log.md（编号 media #N），模型可 grep 该文件回看读过哪些图；看过的重要图片请在后续回复里记一句结论（内容、关键信息），上下文压缩后凭结论接续。视频（mp4/mov/webm 等）要求当前模型声明 video_in 能力，按原始字节 inline 交付，默认预算 32MB；音频 v1 暂不支持。',
   schema,
   access: (input, ctx) => ({ kind: 'read', path: resolvePath(ctx.cwd, input.path) }),
   async execute(input, ctx) {
@@ -329,14 +355,32 @@ export const readMediaTool: ToolDef<Input> = {
       };
     }
 
+    // 源文件级 SHA 去重：同一张图重复读只回引用，不重复交付视觉块。
+    // 判断基于源文件字节（不是交付副本——副本经降采样重编码，hash 没有判别力）。
+    // force 是逃生门：压缩后模型可能真的忘了图的内容，此时重读是合理消费。
+    if (input.force !== true && ctx.attachments !== undefined) {
+      const sha = createHash('sha256').update(buf).digest('hex');
+      const hit = ctx.attachments.lookupMedia(ctx.cwd, sha);
+      if (hit !== undefined) {
+        return {
+          content:
+            `<system>该文件（${abs}）与会话已读过的 media #${hit.id}（${hit.path}，${hit.width}×${hit.height}）逐字节相同（sha256 ${sha.slice(0, 12)}…），未重复交付图片。</system>` +
+            '该图此前已交付过，视觉内容仍在下方历史中；如已因上下文压缩遗忘、或需核对局部细节，' +
+            '可用 region 参数读局部，或传 force:true 重新交付整图。看过的重要图片请在后续文字里记一句结论（内容、关键信息），压缩后凭结论接续。',
+          isError: false,
+        };
+      }
+    }
+
     const longEdge = Math.max(meta.width, meta.height);
     const withinBudget = buf.length <= byteBudget && longEdge <= maxEdge;
 
     // 直通：无裁剪、不超预算 → 原始字节直接交付，不重新编码（webp 也只能走这条，jimp 不支持 webp）
     if (input.region === undefined && (withinBudget || (input.full_resolution === true && buf.length <= byteBudget))) {
       const base64 = buf.toString('base64');
+      const mediaId = recordDeliveredMedia(ctx, abs, meta, buf);
       return offloadMedia({
-        content: buildNote(meta, buf.length, '原图未改动交付。'),
+        content: buildNote(meta, buf.length, `原图未改动交付。${mediaId === undefined ? '' : `已登记为 media #${mediaId}。`}`),
         isError: false,
         images: [{ mediaType: meta.mime, base64 }],
       }, ctx);
@@ -446,8 +490,9 @@ export const readMediaTool: ToolDef<Input> = {
       } else {
         delivery = resized ? `已降采样到 ${dw}×${dh} 交付。${advice}` : '原图未改动交付。';
       }
+      const mediaId = recordDeliveredMedia(ctx, abs, meta, buf);
       return offloadMedia({
-        content: buildNote(meta, buf.length, delivery),
+        content: buildNote(meta, buf.length, delivery + (mediaId === undefined ? '' : `已登记为 media #${mediaId}。`)),
         isError: false,
         images: [{ mediaType: mime, base64: out.toString('base64') }],
       }, ctx);
@@ -460,8 +505,9 @@ export const readMediaTool: ToolDef<Input> = {
         `裁剪后仍有 ${out.length} 字节，超过 ${byteBudget} 预算，full_resolution 下无法交付。请缩小 region。`,
       );
     }
+    const mediaIdFr = recordDeliveredMedia(ctx, abs, meta, buf);
     return offloadMedia({
-      content: buildNote(meta, buf.length, delivery),
+      content: buildNote(meta, buf.length, delivery + (mediaIdFr === undefined ? '' : `已登记为 media #${mediaIdFr}。`)),
       isError: false,
       images: [{ mediaType: mime, base64: out.toString('base64') }],
     }, ctx);

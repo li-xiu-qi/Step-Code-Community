@@ -100,6 +100,20 @@ describe('ToolResult.images → tool_result 内嵌图片', () => {
     expect(inner.some((b) => b.type === 'text' && b.text === '看图')).toBe(true);
   });
 
+  it('replaceMediaPartsWithMarkers：stepref 图片的 marker 带找回句柄（内容寻址，2026-10-12）', () => {
+    const steprefData = 'stepref:'.concat('ab12cd34'.repeat(8));
+    const { messages, changed } = replaceMediaPartsWithMarkers([toolResultMsg(steprefData)]);
+    expect(changed).toBe(true);
+    const block = (messages[0]!.message.content as Anthropic.ToolResultBlockParam[])[0]!;
+    const inner = block.content as Anthropic.ContentBlockParam[];
+    // 占位符附 stepref 句柄：压缩降级后仍可按 hash 从附件存储找回原图
+    const marker = inner.find((b) => b.type === 'text' && b.text.startsWith('[image '));
+    expect(marker).toBeDefined();
+    expect((marker as { text: string }).text).toContain(steprefData);
+    // 匹配头保持 '[image '：RECITATION_MARKERS 的复述密度判定靠这个头
+    expect((marker as { text: string }).text.startsWith('[image ')).toBe(true);
+  });
+
   it('serializeContent：tool_result 内嵌 image 序列化为 [image ...] 文本，不泄漏 base64', () => {
     const out = serializeContent(toolResultMsg(PNG_B64).message.content);
     expect(out).toContain('[工具结果]');

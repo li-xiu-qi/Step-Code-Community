@@ -186,10 +186,13 @@ Reads a local image file and passes its content back to the model as an inline i
 | `region` | object, optional | View only a rectangle of the original image: `{x, y, width, height}`, in original-image pixel coordinates. Cropped first, then delivered within the budget |
 | `full_resolution` | boolean, optional | `true` = skip downsampling and deliver the original image; if the raw bytes exceed 4MB it errors out explicitly and suggests using `region` to read in chunks |
 | `probe` | boolean, optional | `true` = return metadata only (format / dimensions / byte size / suggested chunks), without delivering the image. Probe a large or long image first to get its exact dimensions and a ready-made chunking plan, instead of guessing `region` values and hitting errors |
+| `force` | boolean, optional | `true` = skip the duplicate check and deliver again even if the file is byte-identical to an image already read this session. By default a duplicate hit only returns a text reference without re-delivering (saves vision tokens); pass this when you really need to see it again, e.g. after context compaction forgot it |
 
 **Capability gating**: when the model's `capabilities` does not declare `image_in`, this tool is unloaded from the tool table entirely, so the model cannot see it and will not try to call it, saving a round trip that was bound to fail. A runtime capability check remains as a fallback.
 
 Behavioral limits:
+
+- **Automatic dedup on repeat reads**: when the same image file is read again, the tool compares the source file's sha256 against the session's read index. On a hit it returns only a text reference ("byte-identical to media #N already read") and does not re-deliver the visual block. Every delivered image is recorded in the session's `media-log.md` (`~/.step-code/sessions/<workdir>/media-log.md`) as `media #N`, and the model can grep that file to see which images this session has read. After viewing an important image, note a one-line conclusion (what it shows, key information) in your following reply, so you can continue from that conclusion after context compaction.
 
 - **Hard read limit of 100 MB**: anything larger is rejected outright and never read into memory.
 - **Delivery budget of 4 MB**: beyond that the image is downsampled proportionally before delivery.

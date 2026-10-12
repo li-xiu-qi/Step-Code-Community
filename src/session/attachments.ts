@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { workdirKey } from './store.js';
 
 /** 附件引用哨兵前缀：StoredMessage 里图片 `source.data` 存 `stepref:<sha256>` 而非 base64。 */
@@ -16,6 +16,18 @@ export const OFFLOAD_THRESHOLD = 4096;
 /** 是否为附件引用哨兵串。 */
 export function isStepref(data: string): boolean {
   return data.startsWith(STEPREF_PREFIX);
+}
+
+/** media-log.md 单行条目：已交付图片的源文件级登记。 */
+export interface MediaLogEntry {
+  /** 单调递增序号，模型与文案里称「media #N」。 */
+  id: number;
+  /** 源文件绝对路径（交付时的路径，模型可凭它再读或做 region 局部读）。 */
+  path: string;
+  width: number;
+  height: number;
+  /** 源文件 sha256。与附件文件名同口径（内容寻址）。 */
+  sha256: string;
 }
 
 /** 从 mediaType 推文件后缀（如 image/png→png）；无从判断时用 bin。 */
@@ -81,6 +93,65 @@ export class AttachmentStore {
   /** 缓存字节预算：超出就淘汰最旧，避免缓存本身变成新的内存大户。 */
   private static readonly REHYDRATE_CACHE_MAX_BYTES = 32 * 1024 * 1024;
   private rehydrateCacheBytes = 0;
+
+  /**
+   * 已读媒体索引（设计出处：VISTA 视觉 harness 的「无损视觉记忆 + 主动回看」，
+   * 2026-10-12 立项）。read_media 每交付一张图就登记一行，模型可 grep media-log.md
+   * 回看「本会话读过哪些图」，read_media 内部用它做源文件级 SHA 去重（重复读同一张
+   * 图只回引用、不重复交付视觉块，省 vision token 与上下文体积）。
+   *
+   * 索引内容：源文件路径 + 源文件 sha256（不是交付副本的 hash——交付会降采样，
+   * 副本 hash 对「同一文件重复读」的去重没有判别力）。附件存储本身就是内容寻址的，
+   * 这里登记的 sha 与附件文件名同口径，命中时占位符可按 hash 找回交付副本。
+   *
+   * 布局：<baseDir>/<workdirKey>/media-log.md，与附件分桶同目录，行式 markdown 表，
+   * 模型可直接读。内存 Map 懒加载自该文件，进程内追加即写，重启/resume 后索引仍在。
+   */
+  private readonly mediaLogs = new Map<string, Map<string, MediaLogEntry>>();
+
+  /** media-log 懒加载：workdirKey → sha256 → 条目。文件缺失时返回空 Map 并在首次登记时建文件。 */
+  private mediaLogFor(cwd: string): Map<string, MediaLogEntry> {
+    const key = workdirKey(cwd);
+    const cached = this.mediaLogs.get(key);
+    if (cached !== undefined) return cached;
+    const map = new Map<string, MediaLogEntry>();
+    const file = join(this.baseDir, key, 'media-log.md');
+    if (existsSync(file)) {
+      for (const line of readFileSync(file, 'utf-8').split(/\r?\n/)) {
+        const m = /^\| (\d+) \| ([^|]+) \| (\d+)×(\d+) \| ([0-9a-f]{64}) \|$/.exec(line.trim());
+        if (m === null) continue;
+        map.set(m[5]!, { id: Number(m[1]), path: m[2]!.trim(), width: Number(m[3]), height: Number(m[4]), sha256: m[5]! });
+      }
+    }
+    this.mediaLogs.set(key, map);
+    return map;
+  }
+
+  /** 查已读媒体：命中返回条目（含登记时的 media #id 与路径），未命中 undefined。 */
+  lookupMedia(cwd: string, sha256: string): MediaLogEntry | undefined {
+    return this.mediaLogFor(cwd).get(sha256);
+  }
+
+  /**
+   * 登记一张已交付的图：内存去重（同 sha 只登一次，重复读走 lookupMedia 拦截），
+   * 追加写 media-log.md。id 取当前最大 id + 1，进程重启后从文件续号。
+   */
+  recordMedia(cwd: string, entry: { path: string; width: number; height: number; sha256: string }): number {
+    const map = this.mediaLogFor(cwd);
+    const existing = map.get(entry.sha256);
+    if (existing !== undefined) return existing.id;
+    let maxId = 0;
+    for (const e of map.values()) maxId = Math.max(maxId, e.id);
+    const id = maxId + 1;
+    map.set(entry.sha256, { id, ...entry });
+    const file = join(this.baseDir, workdirKey(cwd), 'media-log.md');
+    mkdirSync(dirname(file), { recursive: true });
+    if (!existsSync(file)) {
+      writeFileSync(file, '# 已读媒体索引（read_media 自动登记，模型可 grep 回看）\n\n| # | 源路径 | 尺寸 | sha256 |\n|---|---|---|---|\n', 'utf-8');
+    }
+    appendFileSync(file, `| ${id} | ${entry.path} | ${entry.width}×${entry.height} | ${entry.sha256} |\n`, 'utf-8');
+    return id;
+  }
 
   /**
    * 把 `stepref:<sha256>` 还原成 base64：按 hash 在 attachments/ 下找到附件文件（文件名带 ext，按 hash 前缀匹配）。
