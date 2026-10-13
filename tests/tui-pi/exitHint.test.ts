@@ -107,4 +107,18 @@ describe('退出恢复提示的打印条件（sawContent 粘滞位）', () => {
     const info = await infoP;
     expect(info.hasContent).toBe(false);
   }, 15000);
+
+  it('/new 后退出：恢复提示的 sessionId 必须是新会话的 id（2026-10-13 用户报告）', async () => {
+    const { chat } = h!;
+    const initialId = (chat as unknown as { session: { id: string } }).session.id;
+    const infoP = (chat as unknown as { start: () => Promise<{ sessionId: string; hasContent: boolean }> }).start();
+    await new Promise<void>((r) => setTimeout(r, 50));
+    (chat as unknown as { newSession: () => void }).newSession();
+    const newId = (chat as unknown as { session: { id: string } }).session.id;
+    expect(newId).not.toBe(initialId);
+    (chat as unknown as { exit: () => void }).exit();
+    const info = await infoP;
+    expect(info.sessionId).toBe(newId);
+    expect(info.sessionId).not.toBe(initialId);
+  }, 15000);
 });
