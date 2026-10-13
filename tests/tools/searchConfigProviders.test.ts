@@ -10,10 +10,14 @@ describe('resolveSearchConfig 多提供商段', () => {
       resolveSearchConfig({
         providers: ['stepfun', 'tavily', 'anysearch'],
         disabled_providers: ['tavily'],
+        image_providers: ['doubao', 'stepfun'],
+        image_disabled_providers: ['stepfun'],
       }),
     ).toEqual({
       providers: ['stepfun', 'tavily', 'anysearch'],
       disabledProviders: ['tavily'],
+      imageProviders: ['doubao', 'stepfun'],
+      imageDisabledProviders: ['stepfun'],
     });
   });
 

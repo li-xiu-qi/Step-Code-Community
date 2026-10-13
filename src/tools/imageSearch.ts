@@ -183,16 +183,31 @@ export const imageSearchTool: ToolDef<z.infer<typeof schema>> = {
   timeoutMs: 30_000,
   async execute(input, ctx) {
     const topk = input.topk ?? 5;
-    const attempts: { name: string; run: () => Promise<{ ok: true; text: string; via: string } | { ok: false; error: string }> }[] = [
-      { name: 'stepfun', run: () => searchStepfun(input.query, topk, ctx) },
-    ];
-    const doubaoKey = ctx.searchConfig?.doubao?.key ?? process.env['DOUBAO_SEARCH_API_KEY'];
-    if (doubaoKey !== undefined && doubaoKey !== '') {
-      attempts.push({ name: 'doubao', run: () => searchDoubao(input.query, topk, doubaoKey, ctx) });
-    }
-    const tavilyKey = ctx.searchConfig?.tavily?.key ?? process.env['TAVILY_API_KEY'];
-    if (tavilyKey !== undefined && tavilyKey !== '') {
-      attempts.push({ name: 'tavily', run: () => searchTavily(input.query, topk, tavilyKey, ctx) });
+    // 文搜图链：image_providers 覆盖缺省顺序；image_disabled_providers 与
+    // [search.<name>] enabled=false 摘除（enabled 与内容链共用同一段配置）。
+    const DEFAULT_IMAGE_CHAIN = ['stepfun', 'doubao', 'tavily'] as const;
+    const sc = ctx.searchConfig;
+    const disabled = new Set(sc?.imageDisabledProviders ?? []);
+    const order = sc?.imageProviders ?? [...DEFAULT_IMAGE_CHAIN];
+    const keyOf = (name: 'doubao' | 'tavily'): string | undefined => {
+      const entry = sc?.[name];
+      if (entry?.enabled === false) return undefined;
+      const envKey = name === 'doubao' ? 'DOUBAO_SEARCH_API_KEY' : 'TAVILY_API_KEY';
+      return entry?.key ?? process.env[envKey];
+    };
+    const attempts: { name: string; run: () => Promise<{ ok: true; text: string; via: string } | { ok: false; error: string }> }[] = [];
+    for (const name of order) {
+      if (disabled.has(name)) continue;
+      if (name === 'stepfun') {
+        attempts.push({ name, run: () => searchStepfun(input.query, topk, ctx) });
+      } else if (name === 'doubao') {
+        const key = keyOf('doubao');
+        if (key !== undefined && key !== '') attempts.push({ name, run: () => searchDoubao(input.query, topk, key, ctx) });
+      } else if (name === 'tavily') {
+        const key = keyOf('tavily');
+        if (key !== undefined && key !== '') attempts.push({ name, run: () => searchTavily(input.query, topk, key, ctx) });
+      }
+      // 未知名字忽略（拼错不至于崩配置）
     }
 
     const errors: string[] = [];

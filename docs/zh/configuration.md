@@ -492,7 +492,7 @@ key = "xxxxxxxx"             # 或 DOUBAO_SEARCH_API_KEY；免费 500 次/月
 enabled = false              # 等价于加进 disabled_providers
 ```
 
-降级行为：每家独立 12s 超时；配额/订阅类失败（401/403/429、plan 过期）冷却 6 小时，HTTP/解析类 1 小时，网络类 5 分钟；全部失败时返回聚合错误（逐家列原因）。搜索结果带 `[via 提供商名]` 标注，降级后命中会注明降级了几家。文搜图（`web_image_search`）走独立三级回退：stepfun → 豆包（SearchType=image，与内容搜索共用 500 次/月额度）→ tavily（include_images，与内容搜索共用 1000 credits/月），后两级自动复用对应 [search.<name>] 的 key。
+降级行为：每家独立 12s 超时；配额/订阅类失败（401/403/429、plan 过期）冷却 6 小时，HTTP/解析类 1 小时，网络类 5 分钟；全部失败时返回聚合错误（逐家列原因）。搜索结果带 `[via 提供商名]` 标注，降级后命中会注明降级了几家。文搜图（`web_image_search`）走独立三级回退：stepfun → 豆包（SearchType=image，与内容搜索共用 500 次/月额度）→ tavily（include_images，与内容搜索共用 1000 credits/月），后两级自动复用对应 [search.<name>] 的 key。链可用 `image_providers = ["doubao", "stepfun"]`（顺序即优先级）覆盖，用 `image_disabled_providers = ["tavily"]` 摘除；`[search.<name>] enabled = false` 对内容链与文搜图链同时生效。
 
 ### `[tools.web]` 网页结果缓存
 

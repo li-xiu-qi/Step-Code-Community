@@ -1,11 +1,26 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { imageSearchTool } from '../../src/tools/imageSearch.js';
 import type { ToolContext } from '../../src/tools/types.js';
 
 const ctx: ToolContext = { cwd: process.cwd(), apiKey: 'k-test', baseUrl: 'https://api.stepfun.com' };
 
+// 本机用户环境变量持久存在 DOUBAO/TAVILY key，不隔离会漏进链里真发网络请求。
+const ENV_KEYS = ['DOUBAO_SEARCH_API_KEY', 'TAVILY_API_KEY'] as const;
+const savedEnv: Record<string, string | undefined> = {};
+
+beforeEach(() => {
+  for (const k of ENV_KEYS) {
+    savedEnv[k] = process.env[k];
+    delete process.env[k];
+  }
+});
+
 afterEach(() => {
   vi.unstubAllGlobals();
+  for (const k of ENV_KEYS) {
+    if (savedEnv[k] === undefined) delete process.env[k];
+    else process.env[k] = savedEnv[k];
+  }
 });
 
 function stubJson(payload: unknown, ok = true, status = 200): void {
@@ -98,5 +113,44 @@ describe('web_image_search 工具', () => {
     stubJson({ code: 0, msg: '', data: { result: { block: false, search_results: [] } } });
     const r = await imageSearchTool.execute({ query: 'x' }, ctx);
     expect(r.content).toContain('无图片结果');
+  });
+
+  it('image_providers 链：doubao 优先时跳过 stepfun 直打 feedcoopapi，标注 [via doubao]', async () => {
+    const captured: { url?: string; body?: any; auth?: string } = {};
+    vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
+      captured.url = url;
+      captured.body = JSON.parse(init.body as string);
+      captured.auth = (init.headers as Record<string, string>).Authorization;
+      return {
+        ok: true, status: 200,
+        json: async () => ({
+          ResponseMetadata: { RequestId: 'r' },
+          Result: { ImageResults: [{ Title: '图一', Url: 'https://page.example/x', SiteName: 'P站', Image: { Url: 'https://img.example/x.jpg', Width: 640, Height: 480 } }] },
+        }),
+      } as unknown as Response;
+    });
+    const searchConfig = { imageProviders: ['doubao'], doubao: { key: 'db-test' } };
+    const r = await imageSearchTool.execute({ query: '猫', topk: 3 }, { ...ctx, searchConfig: searchConfig as never });
+    expect(r.isError).toBe(false);
+    expect(captured.url).toBe('https://open.feedcoopapi.com/search_api/web_search');
+    expect(captured.auth).toBe('Bearer db-test');
+    expect(captured.body).toMatchObject({ Query: '猫', SearchType: 'image', Count: 3 });
+    expect(r.content).toContain('https://img.example/x.jpg');
+    expect(r.content).toContain('(640x480)');
+    expect(r.content).toContain('[via doubao]');
+  });
+
+  it('imageDisabledProviders 与 [search.doubao] enabled=false 都摘除对应提供商', async () => {
+    // stepfun 无 key 不进链；doubao 被 enabled=false 摘掉；tavily 被 image_disabled_providers 摘掉
+    const seen: string[] = [];
+    vi.stubGlobal('fetch', async (url: string) => {
+      seen.push(String(url));
+      return { ok: false, status: 401, json: async () => ({}) } as unknown as Response;
+    });
+    const searchConfig = { doubao: { key: 'db-test', enabled: false }, tavily: { key: 'tv-test' }, imageDisabledProviders: ['tavily'] };
+    const r = await imageSearchTool.execute({ query: 'x' }, { cwd: process.cwd(), searchConfig: searchConfig as never });
+    expect(r.isError).toBe(true);
+    expect(seen).toHaveLength(0); // 三家全被摘掉，一个请求都没发
+    expect(r.content).toContain('全部失败');
   });
 });

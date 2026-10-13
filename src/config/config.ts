@@ -134,6 +134,14 @@ export interface SearchConfig {
   providers?: string[];
   /** 显式禁用的提供商（优先级高于 providers 链）。 */
   disabledProviders?: string[];
+  /**
+   * 文搜图提供商链（顺序即优先级，在列即启用）。可选值：stepfun / doubao / tavily，
+   * 缺省 stepfun → doubao → tavily；key 复用 [search.<name>] 段或其环境变量，
+   * [search.<name>] enabled=false 同时作用于内容链与文搜图链。
+   */
+  imageProviders?: string[];
+  /** 显式禁用的文搜图提供商（优先级高于 imageProviders 链）。 */
+  imageDisabledProviders?: string[];
   /** 各提供商的 key/自定义端点/开关（[search.tavily] 等子段）。 */
   stepfun?: SearchProviderConfig;
   kimi?: SearchProviderConfig;
@@ -945,6 +953,10 @@ export function resolveSearchConfig(raw: unknown): SearchConfig {
   if (providers !== undefined) cfg.providers = providers;
   const disabledProviders = asStringArray(t['disabled_providers']);
   if (disabledProviders !== undefined) cfg.disabledProviders = disabledProviders;
+  const imageProviders = asStringArray(t['image_providers']);
+  if (imageProviders !== undefined) cfg.imageProviders = imageProviders;
+  const imageDisabledProviders = asStringArray(t['image_disabled_providers']);
+  if (imageDisabledProviders !== undefined) cfg.imageDisabledProviders = imageDisabledProviders;
   for (const name of ['stepfun', 'kimi', 'tavily', 'anysearch', 'doubao'] as const) {
     const s = t[name];
     if (typeof s !== 'object' || s === null) continue;

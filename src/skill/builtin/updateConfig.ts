@@ -152,6 +152,8 @@ STEP_CODE_BASE_URL。
 | key | string | 无 | 通用段：默认搜索鉴权 key |
 | providers | string[] | 内置默认链 | 内容搜索提供商链（顺序即优先级），key 制四家：stepfun / kimi / tavily / anysearch；未配 key 的自动跳过。HTML 抓取类提供商（bing/duckduckgo 等）已移除（2026-10-13），无免 key 兜底 |
 | disabled_providers | string[] | 无 | 显式禁用的提供商（优先级高于 providers 链） |
+| image_providers | string[] | ["stepfun", "doubao", "tavily"] | 文搜图提供商链（顺序即优先级）；key 复用 [search.<name>] 段 |
+| image_disabled_providers | string[] | 无 | 显式禁用的文搜图提供商（优先级高于 image_providers 链）；[search.<name>] enabled=false 对内容链与文搜图链同时生效 |
 | [search.web] | table | 无 | 内容搜索专用段（url / key），覆盖通用段 |
 | [search.image] | table | 无 | 文搜图专用段（url / key），覆盖通用段 |
 | [search.stepfun] | table | 无 | stepfun 提供商段（url / enabled）：step plan 通道 |
