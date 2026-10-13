@@ -1955,7 +1955,13 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
       (s.name !== undefined && s.name.trim() !== '' ? s.name.trim() : undefined) ??
       (s.title !== undefined && s.title.trim() !== '' ? s.title.trim() : undefined) ??
       basename(s.cwd);
+    const before = this.termTitle.current();
     this.termTitle.set(display);
+    // set 只在文本变化时写（去重）；但终端标题是控制台级共享属性，外部进程
+    // （前台继承 tty 的 CLI、shell 提示符钩子、崩溃后残留）改过之后，文本没变
+    // 不等于终端显示的还是我们的——内容未变时补一次 reassert 夺回，已变化时
+    // set 刚写过不需要重复。用户实证：标题时不时跳成 C 盘路径后不再恢复。
+    if (this.termTitle.current() === before) this.termTitle.reassert();
   }
 
   /**
