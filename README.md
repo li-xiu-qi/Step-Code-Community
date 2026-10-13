@@ -8,7 +8,7 @@
 
 # Step Code Pi
 
-[![CI](https://github.com/stepfun-ai/Step-Realtime-CLI/actions/workflows/test.yml/badge.svg?branch=step-code-pi-explore)](https://github.com/stepfun-ai/Step-Realtime-CLI/actions/workflows/test.yml)
+[![CI](https://github.com/stepfun-ai/Step-Realtime-CLI/actions/workflows/test.yml/badge.svg?branch=step-code-community-explore)](https://github.com/stepfun-ai/Step-Realtime-CLI/actions/workflows/test.yml)
 
 A terminal coding agent CLI, with StepFun's **Step model family** as the primary target and **pi-tui** for the UI. The model layer speaks three protocols—Anthropic Messages, OpenAI Chat Completions, and OpenAI Responses—so any compatible provider works out of the box; Step is the best-tested and default path.
 

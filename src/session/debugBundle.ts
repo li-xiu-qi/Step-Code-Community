@@ -59,7 +59,7 @@ export interface ExportDebugBundleResult {
 }
 
 /** 版本号取自 src/version.ts 单一来源（曾按 package.json 的 name==='step-code' 匹配，
- *  仓库改名 step-code-pi 后永远落空退回 'unknown'）。 */
+ *  仓库改名 step-code-community 后永远落空退回 'unknown'）。 */
 
 /** 时间戳 YYYYMMDDHHMMSS（本地时间），用于产物命名。 */
 function stamp(d: Date): string {

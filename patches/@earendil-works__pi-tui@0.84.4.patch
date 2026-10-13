@@ -233,7 +233,7 @@ index 4558ce23e3e073da2f17337d2cff810c590dfca5..129940c04706964c8138309c11208c57
  }
  const KITTY_PREFIX = "\x1b_G";
  const ITERM2_PREFIX = "\x1b]1337;File=";
-+// step-code-pi patch: sixel DCS prefix. Windows Terminal supports sixel only (kitty APC
++// step-code-community patch: sixel DCS prefix. Windows Terminal supports sixel only (kitty APC
 +// and iTerm2 OSC 1337 are silently swallowed), so sixel lines must join the image-line
 +// exemption: otherwise a 400KB sixel sequence hits the width guard in tui-main-screen.js
 +// and crashes the process (incremental path writes crash log then throws) or gets sliced
