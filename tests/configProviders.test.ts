@@ -305,3 +305,43 @@ describe('loadConfig 多渠道密钥（无顶层 key 场景）', () => {
     expect(cfg.model).toBe('step-3.7-flash');
   });
 });
+
+describe('loadConfig 搜索配置：kimi key 自动借用 [providers.kimi-code]', () => {
+  it('[search.kimi] 未配 key 时借渠道 api_key；显式配置时不覆盖', () => {
+    writeToml(
+      [
+        '[providers.kimi-code]',
+        'type = "openai"',
+        'base_url = "https://api.kimi.com/coding/v1"',
+        'api_key = "sk-kimi-borrowed"',
+        '',
+        '[search]',
+        'providers = ["anysearch", "kimi"]',
+      ].join('\n'),
+    );
+    const cfg = loadConfig(dir);
+    expect(cfg.search?.kimi?.key).toBe('sk-kimi-borrowed');
+  });
+
+  it('[search.kimi] 显式 key 优先于渠道借用', () => {
+    writeToml(
+      [
+        '[providers.kimi-code]',
+        'type = "openai"',
+        'base_url = "https://api.kimi.com/coding/v1"',
+        'api_key = "sk-kimi-borrowed"',
+        '',
+        '[search.kimi]',
+        'key = "sk-kimi-explicit"',
+      ].join('\n'),
+    );
+    const cfg = loadConfig(dir);
+    expect(cfg.search?.kimi?.key).toBe('sk-kimi-explicit');
+  });
+
+  it('无 kimi-code 渠道时 kimi 段保持空（进链前被跳过）', () => {
+    writeToml(['[search]', 'providers = ["kimi"]'].join('\n'));
+    const cfg = loadConfig(dir);
+    expect(cfg.search?.kimi).toBeUndefined();
+  });
+});

@@ -462,18 +462,22 @@ key = "sp-xxxxxxxx"
 
 #### 多提供商路由（内容搜索）
 
-`web_search` 不是单端点：它按一条提供商链依次尝试，失败自动降级，连续失败自动冷却（冷却状态存 `~/.step-code/search-health.json`）。**Step plan 过期不再意味着搜索整体失效**——链里备有独立的 key 制服务。可选提供商只有三家，全为 key 制（2026-10-13 起 HTML 抓取类提供商已移除，逆向维护成本高且风控不稳定）：`stepfun`（阶跃官方 step plan 通道，复用上述三层 endpoint 解析）、`tavily`（免费档 1000 credits/月）、`anysearch`（聚合搜索，额度与阶跃侧独立）。
+`web_search` 不是单端点：它按一条提供商链依次尝试，失败自动降级，连续失败自动冷却（冷却状态存 `~/.step-code/search-health.json`）。**Step plan 过期不再意味着搜索整体失效**——链里备有独立的 key 制服务。可选提供商为四家 key 制服务（2026-10-13 起 HTML 抓取类提供商已移除，逆向维护成本高且风控不稳定）：`stepfun`（阶跃官方 step plan 通道，复用上述三层 endpoint 解析）、`kimi`（Kimi plan 通道，接口形态对齐 Kimi Code 的 WebSearch；**key 缺省时自动借用 `[providers.kimi-code]` 渠道的同一把 key**，也可配 `[search.kimi]` key 或 `KIMI_API_KEY`）、`tavily`（免费档 1000 credits/月）、`anysearch`（聚合搜索，额度与阶跃侧独立）。
 
-缺省链：`stepfun → tavily → anysearch`（未配 key 的提供商自动跳过，不算失败）。
+缺省链：`stepfun → kimi → tavily → anysearch`（未配 key 的提供商自动跳过，不算失败）。
 
 ```toml
 [search]
 # 自定义链与顺序（在列即启用，缺省用上文默认链）
-providers = ["anysearch", "stepfun", "tavily"]
+providers = ["anysearch", "kimi", "stepfun", "tavily"]
 # 显式禁用（优先级高于链）
 disabled_providers = ["stepfun"]
 
 # 各家 key / 自定义端点 / 开关；key 也可走环境变量
+[search.kimi]
+# 缺省自动借用 [providers.kimi-code] 的 key，一般不用配
+key = "sk-kimi-xxxxxxxx"
+
 [search.tavily]
 key = "tvly-xxxxxxxx"        # 或环境变量 TAVILY_API_KEY
 

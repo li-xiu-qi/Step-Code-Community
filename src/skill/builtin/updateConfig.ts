@@ -150,11 +150,12 @@ STEP_CODE_BASE_URL。
 |---|---|---|---|
 | url | string | 无 | 通用段：内容搜索与文搜图默认的 Base URL |
 | key | string | 无 | 通用段：默认搜索鉴权 key |
-| providers | string[] | 内置默认链 | 内容搜索提供商链（顺序即优先级），仅三家 key 制：stepfun / tavily / anysearch；未配 key 的自动跳过。HTML 抓取类提供商（bing/duckduckgo 等）已移除（2026-10-13），无免 key 兜底 |
+| providers | string[] | 内置默认链 | 内容搜索提供商链（顺序即优先级），key 制四家：stepfun / kimi / tavily / anysearch；未配 key 的自动跳过。HTML 抓取类提供商（bing/duckduckgo 等）已移除（2026-10-13），无免 key 兜底 |
 | disabled_providers | string[] | 无 | 显式禁用的提供商（优先级高于 providers 链） |
 | [search.web] | table | 无 | 内容搜索专用段（url / key），覆盖通用段 |
 | [search.image] | table | 无 | 文搜图专用段（url / key），覆盖通用段 |
 | [search.stepfun] | table | 无 | stepfun 提供商段（url / enabled）：step plan 通道 |
+| [search.kimi] | table | 无 | Kimi 搜索提供商段（key / url / enabled）；key 缺省时自动借用 [providers.kimi-code] 渠道的同一把 plan key，也可走 KIMI_API_KEY |
 | [search.tavily] | table | 无 | tavily 提供商段（key / url / enabled），key 也可走 TAVILY_API_KEY；免费档 1000 credits/月 |
 | [search.anysearch] | table | 无 | anysearch 提供商段（key / url / enabled），key 也可走 ANYSEARCH_API_KEY；额度与阶跃侧独立 |
 

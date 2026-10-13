@@ -124,17 +124,19 @@ export interface SearchConfig {
   image?: SearchEndpointConfig;
   /**
    * 搜索提供商链（顺序即优先级，在列即启用）。
-   * 可选值：stepfun / tavily / anysearch（全为 key 制；2026-10-13 起只保留
-   * 这三家，HTML 抓取类提供商已移除）。
-   * 缺省链：stepfun → tavily → anysearch
-   * （无 key 的 key 制提供商自动跳过；Step plan 过期后请在 [search.tavily] /
-   * [search.anysearch] 配 key，2026-10-12 事故背景）。
+   * 可选值：stepfun / kimi / tavily / anysearch（全为 key 制；2026-10-13 起只保留
+   * key 制服务，HTML 抓取类提供商已移除）。
+   * 缺省链：stepfun → kimi → tavily → anysearch
+   * （无 key 的 key 制提供商自动跳过；kimi 的 key 缺省时自动借用 [providers.kimi-code]
+   * 渠道的 key；Step plan 过期后请在 [search.tavily] / [search.anysearch] 配 key，
+   * 2026-10-12 事故背景）。
    */
   providers?: string[];
   /** 显式禁用的提供商（优先级高于 providers 链）。 */
   disabledProviders?: string[];
   /** 各提供商的 key/自定义端点/开关（[search.tavily] 等子段）。 */
   stepfun?: SearchProviderConfig;
+  kimi?: SearchProviderConfig;
   tavily?: SearchProviderConfig;
   anysearch?: SearchProviderConfig;
 }
@@ -942,7 +944,7 @@ export function resolveSearchConfig(raw: unknown): SearchConfig {
   if (providers !== undefined) cfg.providers = providers;
   const disabledProviders = asStringArray(t['disabled_providers']);
   if (disabledProviders !== undefined) cfg.disabledProviders = disabledProviders;
-  for (const name of ['stepfun', 'tavily', 'anysearch'] as const) {
+  for (const name of ['stepfun', 'kimi', 'tavily', 'anysearch'] as const) {
     const s = t[name];
     if (typeof s !== 'object' || s === null) continue;
     const st = s as Record<string, unknown>;
@@ -1503,6 +1505,16 @@ export function loadConfig(
   // 渠道表：未配置或全部无效时键不进结果对象（下游 toEqual 精确断言依赖此形态）
   const providers = resolveProviders(toml.providers);
   if (providers !== undefined) cfg.providers = providers;
+  // Kimi 搜索的 key 借用：[search.kimi] 未配 key 时，自动借 [providers.kimi-code] 渠道
+  // 的同一把 Kimi plan key（Kimi Code 的搜索服务与编码服务共用会员凭据，逆向出处见
+  // providers/kimi.ts 头注释）。显式配 [search.kimi] key 或 KIMI_API_KEY 时不覆盖。
+  if (cfg.providers !== undefined && (cfg.search?.kimi?.key === undefined || cfg.search.kimi.key === '')) {
+    const kimiChannel = cfg.providers['kimi-code'];
+    const borrowed = kimiChannel?.apiKey ?? (kimiChannel?.apiKeyEnv !== undefined ? process.env[kimiChannel.apiKeyEnv] : undefined);
+    if (borrowed !== undefined && borrowed !== '') {
+      cfg.search = { ...cfg.search, kimi: { ...cfg.search?.kimi, key: borrowed } };
+    }
+  }
   // 用户可配置 hooks：未配置或全部无效时键不进结果对象（下游 toEqual 精确断言依赖此形态）
   const hooks = resolveHooks(toml.hooks);
   if (hooks !== undefined) cfg.hooks = hooks;

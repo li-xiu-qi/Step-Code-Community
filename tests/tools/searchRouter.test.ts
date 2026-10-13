@@ -39,9 +39,9 @@ describe('buildChain', () => {
   it('默认链：无 key 的 key 制提供商跳过', () => {
     const chain = buildChain(undefined, SESSION);
     const names = chain.map((c) => c.provider.name);
-    expect(names).toEqual(['stepfun']); // tavily/anysearch 无 key 自动跳过
+    expect(names).toEqual(['stepfun']); // kimi/tavily/anysearch 无 key 自动跳过
     // 默认顺序常量与文档承诺一致
-    expect(DEFAULT_PROVIDER_ORDER).toEqual(['stepfun', 'tavily', 'anysearch']);
+    expect(DEFAULT_PROVIDER_ORDER).toEqual(['stepfun', 'kimi', 'tavily', 'anysearch']);
   });
 
   it('providers 配置覆盖链与顺序', () => {
@@ -127,6 +127,41 @@ describe('routedWebSearch 降级', () => {
     const second = await routedWebSearch(args);
     expect(stepfunCalls).toBe(1); // 冷却中，没再发请求
     expect(second.attempts[0]!.error).toContain('冷却中');
+  });
+
+  it('stepfun 配额失败 → 自动降级 kimi 命中（text_query 请求体 + search_results 解析）', async () => {
+    let kimiBody: unknown;
+    vi.stubGlobal('fetch', async (url: unknown, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes('stepfun.com')) return new Response('you have no active step plan subscription', { status: 400 });
+      if (u.includes('kimi.com')) {
+        expect(u).toBe('https://api.kimi.com/coding/v1/search');
+        kimiBody = JSON.parse(init!.body as string);
+        return new Response(JSON.stringify({
+          search_results: [
+            { title: '甲', url: 'https://a.com', snippet: '摘甲', date: '2026-10-01', site_name: 'A站' },
+            { title: '乙', url: 'https://b.com', content: '正文乙' },
+          ],
+        }), { status: 200 });
+      }
+      throw new Error(u);
+    });
+    const outcome = await routedWebSearch({ query: '测试', n: 5, searchCfg: { providers: ['stepfun', 'kimi'], kimi: { key: 'sk-kimi-x' } }, session: SESSION, healthPath });
+    expect(outcome.provider).toBe('kimi');
+    expect(kimiBody).toEqual({ text_query: '测试' });
+    expect(outcome.hits).toHaveLength(2);
+    expect(outcome.hits[0]).toMatchObject({ title: '甲', url: 'https://a.com', snippet: '摘甲', time: '2026-10-01' });
+    expect(outcome.hits[1]!.snippet).toBe('正文乙'); // snippet 缺省回退 content
+  });
+
+  it('kimi 命中按 n 截断', async () => {
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({
+      search_results: [
+        { title: '1', url: 'https://1.com' }, { title: '2', url: 'https://2.com' }, { title: '3', url: 'https://3.com' },
+      ],
+    }), { status: 200 }));
+    const outcome = await routedWebSearch({ query: 'x', n: 2, searchCfg: { providers: ['kimi'], kimi: { key: 'sk-kimi-x' } }, session: SESSION, healthPath });
+    expect(outcome.hits).toHaveLength(2);
   });
 
   it('用户中断（父 signal）不降级，直接上抛', async () => {

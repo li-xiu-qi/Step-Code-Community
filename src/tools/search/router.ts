@@ -2,9 +2,11 @@
  * 联网搜索路由器：多提供商链 + 失败降级 + 冷却。
  *
  * 链的构成（SearchConfig.providers 覆盖默认链；disabledProviders 与 enabled=false 摘除）：
- *   stepfun → tavily → anysearch
- * 只保留三家 key 制服务（step plan 通道 / tavily 免费档 / anysearch 聚合搜索），
+ *   stepfun → kimi → tavily → anysearch
+ * 只保留 key 制服务（step plan 通道 / Kimi plan 通道 / tavily 免费档 / anysearch），
  * 不维护 HTML 抓取类提供商（2026-10-13 决策：逆向成本高、风控不稳定，不值得）。
+ * kimi 的 key 缺省时由 config 加载器从 [providers.kimi-code] 渠道自动借用（同一把
+ * Kimi plan key，见 config.ts 的借用逻辑）。
  * key 制提供商未配 key（config 或环境变量）时直接跳过；stepfun 的 key 解析沿用
  * searchBase 的三级规则。每个提供商独立 12s 超时，失败按归类记冷却（health.ts），
  * 全部失败时返回聚合错误（每家的失败原因都列出，便于判断该补 key 还是换链）。
@@ -12,15 +14,17 @@
 import { diagDir } from '../../lifecycle.js';
 import type { SearchConfig } from '../../config/config.js';
 import { anysearchProvider } from './providers/anysearch.js';
+import { kimiProvider } from './providers/kimi.js';
 import { createStepfunProvider, type StepfunSession } from './providers/stepfun.js';
 import { tavilyProvider } from './providers/tavily.js';
 import { SearchProviderError, type SearchHit, type SearchProvider } from './providers/types.js';
 import { SearchHealth } from './health.js';
 import { join } from 'node:path';
 
-export const DEFAULT_PROVIDER_ORDER = ['stepfun', 'tavily', 'anysearch'] as const;
+export const DEFAULT_PROVIDER_ORDER = ['stepfun', 'kimi', 'tavily', 'anysearch'] as const;
 
 const STATIC_PROVIDERS: Record<string, SearchProvider> = {
+  kimi: kimiProvider,
   tavily: tavilyProvider,
   anysearch: anysearchProvider,
 };
