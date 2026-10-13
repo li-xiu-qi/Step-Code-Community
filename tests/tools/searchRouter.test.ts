@@ -35,7 +35,7 @@ describe('buildChain', () => {
     expect(names).not.toContain('bocha');
     expect(names).not.toContain('brave');
     // 默认顺序常量与文档承诺一致
-    expect(DEFAULT_PROVIDER_ORDER).toEqual(['stepfun', 'tavily', 'bocha', 'brave', 'bing', 'duckduckgo']);
+    expect(DEFAULT_PROVIDER_ORDER).toEqual(['stepfun', 'tavily', 'anysearch', 'brave', 'bing', 'duckduckgo']);
   });
 
   it('providers 配置覆盖链与顺序', () => {

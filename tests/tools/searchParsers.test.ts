@@ -4,6 +4,32 @@
 import { describe, expect, it } from 'vitest';
 import { parseBingHtml } from '../../src/tools/search/providers/bing.js';
 import { parseDdgHtml } from '../../src/tools/search/providers/duckduckgo.js';
+import { anysearchProvider } from '../../src/tools/search/providers/anysearch.js';
+
+describe('anysearchProvider', () => {
+  it('data.results 与顶层 results 两种包装都能解析', async () => {
+    const payload = { data: { results: [{ title: '甲', url: 'https://a.com', snippet: '摘', content: '正文', date: '2026-01-01' }] } };
+    const original = globalThis.fetch;
+    globalThis.fetch = (async () => ({ ok: true, status: 200, json: async () => payload }) as Response) as typeof fetch;
+    try {
+      const hits = await anysearchProvider.search({ query: 'q', n: 5, key: 'k' });
+      expect(hits).toHaveLength(1);
+      expect(hits[0]).toMatchObject({ title: '甲', url: 'https://a.com', snippet: '摘', content: '正文', time: '2026-01-01' });
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  it('429 归类为 quota（驱动长冷却）', async () => {
+    const original = globalThis.fetch;
+    globalThis.fetch = (async () => ({ ok: false, status: 429 }) as Response) as typeof fetch;
+    try {
+      await expect(anysearchProvider.search({ query: 'q', n: 5, key: 'k' })).rejects.toMatchObject({ kind: 'quota' });
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+});
 
 describe('parseBingHtml', () => {
   it('提取标题/链接/摘要，去标签与实体解码', () => {

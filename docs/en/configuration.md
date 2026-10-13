@@ -455,9 +455,9 @@ Once `[search]` is configured, changes take effect immediately (`/reload` hot-re
 
 #### Multi-provider routing (content search)
 
-`web_search` is not a single endpoint: it walks a provider chain, falling back on failure and cooling down providers that fail repeatedly (cooldown state lives in `~/.step-code/search-health.json`). **An expired Step Plan no longer takes search down entirely** — the key-free bing/duckduckgo providers always sit at the tail of the chain as a safety net. Available providers: `stepfun` (StepFun official, uses the three-level endpoint resolution above), `tavily`, `bocha`, `brave` (key-based), `bing`, `duckduckgo` (key-free HTML scraping).
+`web_search` is not a single endpoint: it walks a provider chain, falling back on failure and cooling down providers that fail repeatedly (cooldown state lives in `~/.step-code/search-health.json`). **An expired Step Plan no longer takes search down entirely** — the key-free bing/duckduckgo providers always sit at the tail of the chain as a safety net. Available providers: `stepfun` (StepFun official, uses the three-level endpoint resolution above), `tavily` (key-based, free tier 1000 credits/month), `anysearch` (key-based, aggregated search with a quota independent of StepFun), `bocha` (key-based, paid only), `brave` (key-based), `bing`, `duckduckgo` (key-free HTML scraping).
 
-Default chain: `stepfun → tavily → bocha → brave → bing → duckduckgo` (key-based providers without a configured key are skipped silently, not counted as failures).
+Default chain: `stepfun → tavily → anysearch → brave → bing → duckduckgo` (key-based providers without a configured key are skipped silently, not counted as failures; bocha is excluded from the default chain — list it explicitly in `providers` if you want it).
 
 ```toml
 [search]

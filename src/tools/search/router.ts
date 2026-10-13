@@ -2,13 +2,15 @@
  * 联网搜索路由器：多提供商链 + 失败降级 + 冷却。
  *
  * 链的构成（SearchConfig.providers 覆盖默认链；disabledProviders 与 enabled=false 摘除）：
- *   stepfun → tavily → bocha → brave → bing → duckduckgo
+ *   stepfun → tavily → anysearch → brave → bing → duckduckgo
+ * （bocha 已实现但不在缺省链——纯付费、无常驻免费额度；要用显式写进 providers。）
  * key 制提供商未配 key（config 或环境变量）时直接跳过；stepfun 的 key 解析沿用
  * searchBase 的三级规则。每个提供商独立 12s 超时，失败按归类记冷却（health.ts），
  * 全部失败时返回聚合错误（每家的失败原因都列出，便于判断该补 key 还是换链）。
  */
 import { diagDir } from '../../lifecycle.js';
 import type { SearchConfig } from '../../config/config.js';
+import { anysearchProvider } from './providers/anysearch.js';
 import { bingProvider } from './providers/bing.js';
 import { bochaProvider } from './providers/bocha.js';
 import { braveProvider } from './providers/brave.js';
@@ -19,10 +21,11 @@ import { SearchProviderError, type SearchHit, type SearchProvider } from './prov
 import { SearchHealth } from './health.js';
 import { join } from 'node:path';
 
-export const DEFAULT_PROVIDER_ORDER = ['stepfun', 'tavily', 'bocha', 'brave', 'bing', 'duckduckgo'] as const;
+export const DEFAULT_PROVIDER_ORDER = ['stepfun', 'tavily', 'anysearch', 'brave', 'bing', 'duckduckgo'] as const;
 
 const STATIC_PROVIDERS: Record<string, SearchProvider> = {
   tavily: tavilyProvider,
+  anysearch: anysearchProvider,
   bocha: bochaProvider,
   brave: braveProvider,
   bing: bingProvider,

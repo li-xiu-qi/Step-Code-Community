@@ -124,8 +124,8 @@ export interface SearchConfig {
   image?: SearchEndpointConfig;
   /**
    * 搜索提供商链（顺序即优先级，在列即启用）。
-   * 可选值：stepfun / tavily / bocha / brave / bing / duckduckgo。
-   * 缺省链：stepfun → tavily → bocha → brave → bing → duckduckgo
+   * 可选值：stepfun / tavily / anysearch / bocha / brave / bing / duckduckgo。
+   * 缺省链：stepfun → tavily → anysearch → brave → bing → duckduckgo
    * （无 key 的 key 制提供商自动跳过；bing/duckduckgo 免 key 兜底，
    * Step plan 过期后 web_search 仍可用，2026-10-12 事故背景）。
    */
@@ -135,6 +135,7 @@ export interface SearchConfig {
   /** 各提供商的 key/自定义端点/开关（[search.tavily] 等子段）。 */
   stepfun?: SearchProviderConfig;
   tavily?: SearchProviderConfig;
+  anysearch?: SearchProviderConfig;
   bocha?: SearchProviderConfig;
   brave?: SearchProviderConfig;
   bing?: SearchProviderConfig;
@@ -944,7 +945,7 @@ export function resolveSearchConfig(raw: unknown): SearchConfig {
   if (providers !== undefined) cfg.providers = providers;
   const disabledProviders = asStringArray(t['disabled_providers']);
   if (disabledProviders !== undefined) cfg.disabledProviders = disabledProviders;
-  for (const name of ['stepfun', 'tavily', 'bocha', 'brave', 'bing', 'duckduckgo'] as const) {
+  for (const name of ['stepfun', 'tavily', 'anysearch', 'bocha', 'brave', 'bing', 'duckduckgo'] as const) {
     const s = t[name];
     if (typeof s !== 'object' || s === null) continue;
     const st = s as Record<string, unknown>;
