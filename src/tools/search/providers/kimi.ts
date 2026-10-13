@@ -5,7 +5,7 @@
  *   agent-core-v2/src/app/auth/webSearch/webSearchService.ts（baseUrl = 渠道 baseUrl + /search）
  * 响应：{ search_results: [{ title, url, snippet, content?, date?, site_name?, icon?, mime? }] }。
  * 接口不接受条数参数，客户端按 n 截断。Kimi Code 会员 plan 自带该服务，
- * key 与 [providers.kimi-code] 渠道同源（config 加载时自动借用，见 config.ts）。
+ * key 与 [providers.kimi-code] 渠道同源，但搜索侧需显式配置、不读渠道表。
  */
 import { SearchProviderError, type SearchHit, type SearchProvider, type ProviderSearchArgs } from './types.js';
 
@@ -23,7 +23,7 @@ export const kimiProvider: SearchProvider = {
   needsKey: true,
   keyEnv: 'KIMI_API_KEY',
   async search({ query, n, key, baseUrl, signal }: ProviderSearchArgs): Promise<SearchHit[]> {
-    if (key === undefined || key === '') throw new SearchProviderError('config', '未配置 Kimi key（[search.kimi] key、KIMI_API_KEY，或配置 [providers.kimi-code] 渠道自动借用）');
+    if (key === undefined || key === '') throw new SearchProviderError('config', '未配置 Kimi key（[search.kimi] key 或 KIMI_API_KEY）');
     const url = `${(baseUrl ?? 'https://api.kimi.com/coding/v1').replace(/\/+$/, '')}/search`;
     let res: Response;
     try {

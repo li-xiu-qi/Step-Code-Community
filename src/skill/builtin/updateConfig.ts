@@ -155,9 +155,10 @@ STEP_CODE_BASE_URL。
 | [search.web] | table | 无 | 内容搜索专用段（url / key），覆盖通用段 |
 | [search.image] | table | 无 | 文搜图专用段（url / key），覆盖通用段 |
 | [search.stepfun] | table | 无 | stepfun 提供商段（url / enabled）：step plan 通道 |
-| [search.kimi] | table | 无 | Kimi 搜索提供商段（key / url / enabled）；key 缺省时自动借用 [providers.kimi-code] 渠道的同一把 plan key，也可走 KIMI_API_KEY |
+| [search.kimi] | table | 无 | Kimi 搜索提供商段（key / url / enabled）；key 走 [search.kimi] key 或 KIMI_API_KEY，与渠道表隔离不做借用 |
 | [search.tavily] | table | 无 | tavily 提供商段（key / url / enabled），key 也可走 TAVILY_API_KEY；免费档 1000 credits/月 |
 | [search.anysearch] | table | 无 | anysearch 提供商段（key / url / enabled），key 也可走 ANYSEARCH_API_KEY；额度与阶跃侧独立 |
+| [search.doubao] | table | 无 | 豆包搜索（火山引擎）提供商段（key / url / enabled），key 也可走 DOUBAO_SEARCH_API_KEY；免费额度每账号每月 500 次，默认在链尾 |
 
 endpoint 解析优先级：[search.web]/[search.image] → [search] → 主会话渠道。未配置时回退主会话渠道 base_url + api_key（零配置默认策略：缺省回退主会话渠道）。内容搜索为多提供商路由（失败降级 + 连续失败冷却，冷却态在 ~/.step-code/search-health.json）；文搜图不参与路由，仅阶跃渠道。
 
