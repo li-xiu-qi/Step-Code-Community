@@ -15,7 +15,7 @@ import { appendFileSync, existsSync, readFileSync, renameSync, statSync, writeFi
 import os from 'node:os';
 import path from 'node:path';
 
-export type LifecycleEvent = 'start' | 'exit' | 'child-exit' | 'prev-ungraceful';
+export type LifecycleEvent = 'start' | 'exit' | 'child-exit' | 'prev-ungraceful' | 'mem';
 
 export interface LifecycleRecord {
   readonly ts: string;
@@ -28,6 +28,13 @@ export interface LifecycleRecord {
   /** child-exit 的信号名（Windows 上少见）。 */
   readonly signal?: string | null;
   readonly uptimeS?: number;
+  /** prev-ungraceful：死掉的那个进程。 */
+  readonly deadPid?: number;
+  readonly deadTs?: string;
+  /** mem 采样：崩溃前内存曲线的取证字段。 */
+  readonly rssMB?: number;
+  readonly heapUsedMB?: number;
+  readonly heapTotalMB?: number;
 }
 
 const MAX_BYTES = 5 * 1024 * 1024;
@@ -132,9 +139,10 @@ export function beginLifecycle(dir: string, role: 'app' | 'reexec-parent'): { pi
   appendRecord(dir, { ts: new Date().toISOString(), ev: 'start', pid: process.pid, role });
   const prev = detectPrevUngraceful(dir, process.pid);
   if (prev !== null) {
-    appendRecord(dir, { ts: new Date().toISOString(), ev: 'prev-ungraceful', pid: process.pid, code: prev.pid });
+    appendRecord(dir, { ts: new Date().toISOString(), ev: 'prev-ungraceful', pid: process.pid, deadPid: prev.pid, deadTs: prev.ts });
     writeUngracefulMarker(dir, prev);
   }
+  if (role === 'app') startMemorySampling(dir);
   process.on('exit', (code) => {
     appendRecord(dir, {
       ts: new Date().toISOString(),
@@ -159,6 +167,29 @@ export function recordChildExit(dir: string, status: number | null, signal: stri
     signal,
     uptimeS: Math.round(process.uptime()),
   });
+}
+
+// ---------- 内存采样：闪退取证的最后一条曲线 ----------
+// 硬杀死（OOM/外部终止）不走 exit handler，errors.log 与 exit 记录都缺席；
+// 每分钟把 RSS/堆用量追加进 lifecycle.jsonl，崩溃后看最后几条 mem 记录即可判断
+// 是堆耗尽爬升还是瞬杀。unref 不挡退出，写盘频率对体积影响可忽略。
+
+const MEM_SAMPLE_INTERVAL_MS = 60_000;
+
+function startMemorySampling(dir: string): void {
+  const sample = (): void => {
+    const m = process.memoryUsage();
+    appendRecord(dir, {
+      ts: new Date().toISOString(),
+      ev: 'mem',
+      pid: process.pid,
+      rssMB: Math.round(m.rss / 1048576),
+      heapUsedMB: Math.round(m.heapUsed / 1048576),
+      heapTotalMB: Math.round(m.heapTotal / 1048576),
+    });
+  };
+  const timer = setInterval(sample, MEM_SAMPLE_INTERVAL_MS);
+  timer.unref();
 }
 
 // ---------- 活跃会话心跳：被外部杀死时给下次启动留「恢复谁」的指针 ----------
