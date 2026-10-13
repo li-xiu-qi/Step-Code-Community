@@ -28,11 +28,13 @@ describe('resolveSearchConfig 多提供商段', () => {
       resolveSearchConfig({
         tavily: { key: 'tvly-x', url: 'https://t.example' },
         anysearch: { enabled: false },
+        doubao: { key: 'db-x' },
         stepfun: {},
       }),
     ).toEqual({
       tavily: { key: 'tvly-x', url: 'https://t.example' },
       anysearch: { enabled: false },
+      doubao: { key: 'db-x' },
     });
   });
 

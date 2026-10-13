@@ -12,7 +12,7 @@ import { SearchProviderError } from '../../src/tools/search/providers/types.js';
 let base: string;
 let healthPath: string;
 // 本机用户环境变量持久存在 ANYSEARCH_API_KEY，会漏进测试改变链构成——隔离之。
-const ENV_KEYS = ['ANYSEARCH_API_KEY', 'TAVILY_API_KEY'] as const;
+const ENV_KEYS = ['ANYSEARCH_API_KEY', 'TAVILY_API_KEY', 'DOUBAO_SEARCH_API_KEY'] as const;
 const savedEnv: Record<string, string | undefined> = {};
 
 beforeEach(() => {
@@ -39,9 +39,9 @@ describe('buildChain', () => {
   it('默认链：无 key 的 key 制提供商跳过', () => {
     const chain = buildChain(undefined, SESSION);
     const names = chain.map((c) => c.provider.name);
-    expect(names).toEqual(['stepfun']); // kimi/tavily/anysearch 无 key 自动跳过
+    expect(names).toEqual(['stepfun']); // kimi/tavily/anysearch/doubao 无 key 自动跳过
     // 默认顺序常量与文档承诺一致
-    expect(DEFAULT_PROVIDER_ORDER).toEqual(['stepfun', 'kimi', 'tavily', 'anysearch']);
+    expect(DEFAULT_PROVIDER_ORDER).toEqual(['stepfun', 'kimi', 'tavily', 'anysearch', 'doubao']);
   });
 
   it('providers 配置覆盖链与顺序', () => {
@@ -127,6 +127,46 @@ describe('routedWebSearch 降级', () => {
     const second = await routedWebSearch(args);
     expect(stepfunCalls).toBe(1); // 冷却中，没再发请求
     expect(second.attempts[0]!.error).toContain('冷却中');
+  });
+
+  it('doubao 命中：Query/Count 请求体 + WebResults 解析 + 权威度标签前缀', async () => {
+    let doubaoBody: unknown;
+    let authHeader: string | undefined;
+    vi.stubGlobal('fetch', async (url: unknown, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes('stepfun.com')) return new Response('you have no active step plan subscription', { status: 400 });
+      if (u.includes('feedcoopapi.com')) {
+        expect(u).toBe('https://open.feedcoopapi.com/search_api/web_search');
+        authHeader = (init!.headers as Record<string, string>).Authorization;
+        doubaoBody = JSON.parse(init!.body as string);
+        return new Response(JSON.stringify({
+          ResponseMetadata: { RequestId: 'r1' },
+          Result: {
+            WebResults: [
+              { Title: '甲', Url: 'https://a.com', Summary: '甲的摘要'.repeat(50), AuthInfoDes: '非常权威', PublishTime: '2026-10-01' },
+              { Title: '乙', Url: 'https://b.com', Snippet: '乙的片段' },
+            ],
+          },
+        }), { status: 200 });
+      }
+      throw new Error(u);
+    });
+    const outcome = await routedWebSearch({ query: '测试', n: 5, searchCfg: { providers: ['stepfun', 'doubao'], doubao: { key: 'db-x' } }, session: SESSION, healthPath });
+    expect(outcome.provider).toBe('doubao');
+    expect(authHeader).toBe('Bearer db-x');
+    expect(doubaoBody).toMatchObject({ Query: '测试', SearchType: 'web', Count: 5 });
+    expect(outcome.hits[0]).toMatchObject({ title: '甲', url: 'https://a.com', time: '2026-10-01' });
+    expect(outcome.hits[0]!.snippet!.startsWith('[非常权威] ')).toBe(true);
+    expect(outcome.hits[1]!.snippet).toBe('乙的片段');
+  });
+
+  it('doubao 10406 免费额度用尽归类 quota，HTTP 200 也带业务错误码', async () => {
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({
+      ResponseMetadata: { Error: { CodeN: 10406, Message: '免费额度已用尽' } },
+    }), { status: 200 }));
+    await expect(
+      routedWebSearch({ query: 'x', n: 5, searchCfg: { providers: ['doubao'], doubao: { key: 'db-x' } }, session: SESSION, healthPath }),
+    ).rejects.toThrow(/quota/);
   });
 
   it('stepfun 配额失败 → 自动降级 kimi 命中（text_query 请求体 + search_results 解析）', async () => {

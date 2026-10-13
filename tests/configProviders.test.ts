@@ -306,30 +306,30 @@ describe('loadConfig 多渠道密钥（无顶层 key 场景）', () => {
   });
 });
 
-describe('loadConfig 搜索配置：kimi key 自动借用 [providers.kimi-code]', () => {
-  it('[search.kimi] 未配 key 时借渠道 api_key；显式配置时不覆盖', () => {
+describe('loadConfig 搜索配置：kimi key 与渠道表隔离（不做借用）', () => {
+  it('渠道表配了 kimi-code key，搜索段不借用、保持空', () => {
     writeToml(
       [
         '[providers.kimi-code]',
         'type = "openai"',
         'base_url = "https://api.kimi.com/coding/v1"',
-        'api_key = "sk-kimi-borrowed"',
+        'api_key = "sk-kimi-channel"',
         '',
         '[search]',
         'providers = ["anysearch", "kimi"]',
       ].join('\n'),
     );
     const cfg = loadConfig(dir);
-    expect(cfg.search?.kimi?.key).toBe('sk-kimi-borrowed');
+    expect(cfg.search?.kimi?.key).toBeUndefined();
   });
 
-  it('[search.kimi] 显式 key 优先于渠道借用', () => {
+  it('[search.kimi] 显式 key 正常解析', () => {
     writeToml(
       [
         '[providers.kimi-code]',
         'type = "openai"',
         'base_url = "https://api.kimi.com/coding/v1"',
-        'api_key = "sk-kimi-borrowed"',
+        'api_key = "sk-kimi-channel"',
         '',
         '[search.kimi]',
         'key = "sk-kimi-explicit"',
