@@ -455,9 +455,9 @@ Once `[search]` is configured, changes take effect immediately (`/reload` hot-re
 
 #### Multi-provider routing (content search)
 
-`web_search` is not a single endpoint: it walks a provider chain, falling back on failure and cooling down providers that fail repeatedly (cooldown state lives in `~/.step-code/search-health.json`). **An expired Step Plan no longer takes search down entirely** — independent key-based services sit behind it in the chain. Four key-based providers are available (HTML-scraping providers were removed on 2026-10-13: high reverse-engineering cost and unstable anti-bot behavior): `stepfun` (StepFun official, Step Plan channel, uses the three-level endpoint resolution above), `kimi` (Kimi Plan channel, same shape as Kimi Code's WebSearch; **when no key is configured it automatically borrows the `[providers.kimi-code]` channel key**, or set `[search.kimi]` key / `KIMI_API_KEY`), `tavily` (free tier 1000 credits/month), `anysearch` (aggregated search with a quota independent of StepFun).
+`web_search` is not a single endpoint: it walks a provider chain, falling back on failure and cooling down providers that fail repeatedly (cooldown state lives in `~/.step-code/search-health.json`). **An expired Step Plan no longer takes search down entirely** — independent key-based services sit behind it in the chain. Five key-based providers are available (HTML-scraping providers were removed: high reverse-engineering cost and unstable anti-bot behavior): `stepfun` (StepFun official, Step Plan channel, uses the three-level endpoint resolution above), `kimi` (Kimi Plan channel, same shape as Kimi Code's WebSearch; key from `[search.kimi]` or `KIMI_API_KEY`, isolated from the channel table), `tavily` (free tier 1000 credits/month), `anysearch` (aggregated search with a quota independent of StepFun), `doubao` (Volcengine Doubao Search, 500 free queries/month/account, 1 QPS default, results carry authority-level labels; pinned to the end of the chain to protect the small quota).
 
-Default chain: `stepfun → kimi → tavily → anysearch` (providers without a configured key are skipped silently, not counted as failures).
+Default chain: `stepfun → kimi → tavily → anysearch → doubao` (providers without a configured key are skipped silently, not counted as failures).
 
 ```toml
 [search]
@@ -468,7 +468,7 @@ disabled_providers = ["stepfun"]
 
 # Per-provider key / custom endpoint / toggle; keys can also come from env vars
 [search.kimi]
-# borrows the [providers.kimi-code] key by default; usually nothing to set
+# explicit key (isolated from the channel table; no auto-borrow); or KIMI_API_KEY env var
 key = "sk-kimi-xxxxxxxx"
 
 [search.tavily]
@@ -476,6 +476,9 @@ key = "tvly-xxxxxxxx"        # or TAVILY_API_KEY
 
 [search.anysearch]
 key = "as_xxxxxxxx"          # or ANYSEARCH_API_KEY
+
+[search.doubao]
+key = "xxxxxxxx"             # or DOUBAO_SEARCH_API_KEY; 500 free queries/month
 
 [search.stepfun]
 enabled = false              # same as listing it in disabled_providers
