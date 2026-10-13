@@ -6,11 +6,14 @@
  * - 打包当前会话的 `<id>.json` + `<id>.wire.jsonl`（会话本身就是 bug 复现脚本）。
  * - config.toml / mcp.json 按 key 名确定性脱敏后纳入（provider/model/MCP 列表对排查关键）。
  * - errors.log 取自 logger 的内存环形缓冲 dump。
+ * - runtime/ 进程现场：lifecycle.jsonl（start/exit/prev-ungraceful/mem 采样，闪退
+ *   时间线与内存曲线的唯一来源——硬杀死不走 exit handler，errors.log 必然为空）、
+ *   crash-stderr.log（re-exec 结构的 stderr 飞行记录器）、crash-*.log（历史崩溃栈）。
  * - manifest.json 只放元数据（OS/node/app 版本/model/时间线/文件清单/脱敏标记）。
  * - 附件目录与 input-history 默认不打包（体积 + 隐私）。
  * - 正文脱敏是 best-effort，不保证完全——所以命令回显要提示"请勿公开分享"。
  */
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir, arch, platform, release } from 'node:os';
 import { join } from 'node:path';
 import AdmZip from 'adm-zip';
@@ -170,7 +173,37 @@ export async function exportDebugBundle(opts: ExportDebugBundleOptions): Promise
   zip.addFile('errors.log', Buffer.from(isVendor ? redactPaths(logContent) : logContent, 'utf8'));
   included.push('errors.log');
 
-  // 4) manifest：环境自描述，只放元数据、不放敏感值。
+  // 4) 进程现场：闪退取证的硬证据。硬杀死（OOM/外部终止/V8 fatal）不走 JS exit
+  // handler，errors.log 与 lifecycle 的 exit 记录都缺席，这三样是还原死因的
+  // 主要材料。生命周期全量（体积小，43KB 攒了数周），飞行记录器与历史崩溃栈截尾。
+  const addRuntimeFile = (diskName: string, entryName: string, maxBytes: number): void => {
+    const p = join(dataDir, diskName);
+    if (!existsSync(p)) return;
+    let content = readFileSync(p, 'utf8');
+    if (Buffer.byteLength(content, 'utf8') > maxBytes) {
+      content = content.slice(Math.max(0, content.length - Math.floor(maxBytes / 4))); // 字符截断近似，下取整到行
+      const nl = content.indexOf('\n');
+      if (nl >= 0) content = content.slice(nl + 1);
+      content = `…（截尾，仅保留最后约 ${Math.round(maxBytes / 1024)}KB）\n` + content;
+    }
+    if (isVendor) content = redactPaths(content);
+    zip.addFile(`runtime/${entryName}`, Buffer.from(content, 'utf8'));
+    included.push(`runtime/${entryName}`);
+  };
+  addRuntimeFile('lifecycle.jsonl', 'lifecycle.jsonl', 512 * 1024);
+  addRuntimeFile('crash-stderr.log', 'crash-stderr.log', 256 * 1024);
+  try {
+    const crashLogs = readdirSync(dataDir)
+      .filter((n) => /^crash-.*\.log$/u.test(n) && n !== 'crash-stderr.log')
+      .map((n) => ({ n, t: statSync(join(dataDir, n)).mtimeMs }))
+      .sort((a, b) => b.t - a.t)
+      .slice(0, 5);
+    for (const c of crashLogs) addRuntimeFile(c.n, c.n, 64 * 1024);
+  } catch {
+    // 目录不可读就不带
+  }
+
+  // 5) manifest：环境自描述，只放元数据、不放敏感值。
   const now = new Date();
   included.push('manifest.json');
   const manifest: Record<string, unknown> = {

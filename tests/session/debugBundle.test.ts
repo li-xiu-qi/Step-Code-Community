@@ -239,6 +239,41 @@ describe('exportDebugBundle', () => {
     // 子 agent 日志内容被纳入
     expect(read(subEntries[0]!)).toContain('子 agent 测试内容');
   });
+
+  it('runtime/ 进程现场：lifecycle、飞行记录器、历史崩溃栈进包，缺失可容忍', async () => {
+    const id = seedSession();
+    writeFileSync(
+      join(dataDir, 'lifecycle.jsonl'),
+      [
+        JSON.stringify({ ts: '2026-10-13T09:30:44Z', ev: 'prev-ungraceful', pid: 1, deadPid: 65896 }),
+        JSON.stringify({ ts: '2026-10-13T09:31:30Z', ev: 'start', pid: 2, role: 'app' }),
+        JSON.stringify({ ts: '2026-10-13T09:32:30Z', ev: 'mem', pid: 2, rssMB: 3123, heapUsedMB: 2100 }),
+      ].join('\n') + '\n',
+      'utf8',
+    );
+    writeFileSync(join(dataDir, 'crash-stderr.log'), 'FATAL ERROR: Reached heap limit\n', 'utf8');
+    writeFileSync(join(dataDir, 'crash-old1.log'), 'older crash stack', 'utf8');
+
+    const { zipPath, files } = await exportDebugBundle({ store, cwd, sessionId: id, dataDir });
+    const { names, read } = entriesOf(zipPath);
+    expect(names).toContain('runtime/lifecycle.jsonl');
+    expect(names).toContain('runtime/crash-stderr.log');
+    expect(names).toContain('runtime/crash-old1.log');
+    // 内存采样曲线与未优雅退出记录是闪退时间线的关键证据
+    expect(read('runtime/lifecycle.jsonl')).toContain('"ev":"mem"');
+    expect(read('runtime/lifecycle.jsonl')).toContain('prev-ungraceful');
+    expect(read('runtime/crash-stderr.log')).toContain('heap limit');
+    // files 清单与实际条目一致
+    expect(files.sort()).toEqual(names.sort());
+
+    // 缺文件时不报错、不带对应条目
+    const dataDir2 = mkdtempSync(join(tmpdir(), 'stepcode-dbg2-'));
+    store = new SessionStore(join(dataDir2, 'sessions'));
+    const id2 = seedSession();
+    const { zipPath: zip2 } = await exportDebugBundle({ store, cwd, sessionId: id2, dataDir: dataDir2 });
+    expect(entriesOf(zip2).names.some((n) => n.startsWith('runtime/'))).toBe(false);
+    rmSync(dataDir2, { recursive: true, force: true });
+  });
 });
 
 /** 造一个含条目的 SubagentStore mock（list + loadFull）。 */
