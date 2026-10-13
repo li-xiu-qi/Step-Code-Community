@@ -1,13 +1,12 @@
 /**
- * Bing / DuckDuckGo HTML 解析器测试：钉住卡片结构与实体解码，改版即红。
+ * AnySearch 响应解析测试：钉住 data.results / 顶层 results 两种包装与失败归类。
+ * （bing/duckduckgo 的 HTML 解析器随抓取类提供商一并移除，2026-10-13。）
  */
 import { describe, expect, it } from 'vitest';
-import { parseBingHtml } from '../../src/tools/search/providers/bing.js';
-import { parseDdgHtml } from '../../src/tools/search/providers/duckduckgo.js';
 import { anysearchProvider } from '../../src/tools/search/providers/anysearch.js';
 
 describe('anysearchProvider', () => {
-  it('data.results 与顶层 results 两种包装都能解析', async () => {
+  it('data.results 包装解析', async () => {
     const payload = { data: { results: [{ title: '甲', url: 'https://a.com', snippet: '摘', content: '正文', date: '2026-01-01' }] } };
     const original = globalThis.fetch;
     globalThis.fetch = (async () => ({ ok: true, status: 200, json: async () => payload }) as Response) as typeof fetch;
@@ -15,6 +14,19 @@ describe('anysearchProvider', () => {
       const hits = await anysearchProvider.search({ query: 'q', n: 5, key: 'k' });
       expect(hits).toHaveLength(1);
       expect(hits[0]).toMatchObject({ title: '甲', url: 'https://a.com', snippet: '摘', content: '正文', time: '2026-01-01' });
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  it('顶层 results 包装兜底', async () => {
+    const payload = { results: [{ title: '乙', url: 'https://b.com', content: '正文乙' }] };
+    const original = globalThis.fetch;
+    globalThis.fetch = (async () => ({ ok: true, status: 200, json: async () => payload }) as Response) as typeof fetch;
+    try {
+      const hits = await anysearchProvider.search({ query: 'q', n: 5, key: 'k' });
+      expect(hits).toHaveLength(1);
+      expect(hits[0]!.title).toBe('乙');
     } finally {
       globalThis.fetch = original;
     }
@@ -28,50 +40,5 @@ describe('anysearchProvider', () => {
     } finally {
       globalThis.fetch = original;
     }
-  });
-});
-
-describe('parseBingHtml', () => {
-  it('提取标题/链接/摘要，去标签与实体解码', () => {
-    const html = `
-      <li class="b_algo"><h2><a href="https://a.com/x">标题 &amp; 甲</a></h2>
-        <div class="b_caption"><p>摘要 <strong>加粗</strong> 内容</p></div></li>
-      <li class="b_algo"><h2><a href="https://b.com/y">标题乙</a></h2></li>`;
-    const hits = parseBingHtml(html, 10);
-    expect(hits).toHaveLength(2);
-    expect(hits[0]).toMatchObject({ title: '标题 & 甲', url: 'https://a.com/x' });
-    expect(hits[0]!.snippet).toContain('加粗');
-    expect(hits[1]!.snippet).toBeUndefined();
-  });
-
-  it('非 http 链接跳过、max 生效', () => {
-    const html = `
-      <li class="b_algo"><h2><a href="javascript:void(0)">坏</a></h2></li>
-      <li class="b_algo"><h2><a href="https://a.com">一</a></h2></li>
-      <li class="b_algo"><h2><a href="https://b.com">二</a></h2></li>`;
-    const hits = parseBingHtml(html, 1);
-    expect(hits).toHaveLength(1);
-    expect(hits[0]!.url).toBe('https://a.com');
-  });
-});
-
-describe('parseDdgHtml', () => {
-  it('uddg 跳转链接解码', () => {
-    const html = `
-      <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Freal.com%2Fpage&amp;rut=abc">真实标题</a>
-      <a class="result__snippet" href="#">真实摘要 &lt;em&gt;</a>`;
-    const hits = parseDdgHtml(html, 10);
-    expect(hits).toHaveLength(1);
-    expect(hits[0]!.url).toBe('https://real.com/page');
-    expect(hits[0]!.title).toBe('真实标题');
-    expect(hits[0]!.snippet).toContain('真实摘要');
-  });
-
-  it('直链与跳转链混合', () => {
-    const html = `
-      <a class="result__a" href="https://direct.com/">直连</a>
-      <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fvia.com%2F">跳转</a>`;
-    const hits = parseDdgHtml(html, 10);
-    expect(hits.map((h) => h.url)).toEqual(['https://direct.com/', 'https://via.com/']);
   });
 });

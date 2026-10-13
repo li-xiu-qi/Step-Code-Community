@@ -11,43 +11,49 @@ import { SearchProviderError } from '../../src/tools/search/providers/types.js';
 
 let base: string;
 let healthPath: string;
+// 本机用户环境变量持久存在 ANYSEARCH_API_KEY，会漏进测试改变链构成——隔离之。
+const ENV_KEYS = ['ANYSEARCH_API_KEY', 'TAVILY_API_KEY'] as const;
+const savedEnv: Record<string, string | undefined> = {};
 
 beforeEach(() => {
   base = mkdtempSync(join(tmpdir(), 'search-router-'));
   healthPath = join(base, 'search-health.json');
+  for (const k of ENV_KEYS) {
+    savedEnv[k] = process.env[k];
+    delete process.env[k];
+  }
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  for (const k of ENV_KEYS) {
+    if (savedEnv[k] === undefined) delete process.env[k];
+    else process.env[k] = savedEnv[k];
+  }
   rmSync(base, { recursive: true, force: true });
 });
 
 const SESSION = { apiKey: 'sk-test', baseUrl: 'https://api.stepfun.com' };
 
 describe('buildChain', () => {
-  it('默认链：无 key 的 key 制提供商跳过，免 key 兜底保留', () => {
+  it('默认链：无 key 的 key 制提供商跳过', () => {
     const chain = buildChain(undefined, SESSION);
     const names = chain.map((c) => c.provider.name);
-    expect(names[0]).toBe('stepfun');
-    expect(names).toContain('bing');
-    expect(names).toContain('duckduckgo');
-    expect(names).not.toContain('tavily'); // 无 key
-    expect(names).not.toContain('bocha');
-    expect(names).not.toContain('brave');
+    expect(names).toEqual(['stepfun']); // tavily/anysearch 无 key 自动跳过
     // 默认顺序常量与文档承诺一致
-    expect(DEFAULT_PROVIDER_ORDER).toEqual(['stepfun', 'tavily', 'anysearch', 'brave', 'bing', 'duckduckgo']);
+    expect(DEFAULT_PROVIDER_ORDER).toEqual(['stepfun', 'tavily', 'anysearch']);
   });
 
   it('providers 配置覆盖链与顺序', () => {
-    const chain = buildChain({ providers: ['bing', 'stepfun'] }, SESSION);
-    expect(chain.map((c) => c.provider.name)).toEqual(['bing', 'stepfun']);
+    const chain = buildChain({ providers: ['anysearch', 'stepfun'], anysearch: { key: 'as-x' } }, SESSION);
+    expect(chain.map((c) => c.provider.name)).toEqual(['anysearch', 'stepfun']);
   });
 
   it('disabledProviders 与 enabled=false 都摘除', () => {
-    const chain = buildChain({ disabledProviders: ['bing'], duckduckgo: { enabled: false } }, SESSION);
+    const chain = buildChain({ disabledProviders: ['anysearch'], tavily: { enabled: false } }, SESSION);
     const names = chain.map((c) => c.provider.name);
-    expect(names).not.toContain('bing');
-    expect(names).not.toContain('duckduckgo');
+    expect(names).not.toContain('anysearch');
+    expect(names).not.toContain('tavily');
   });
 
   it('key 制提供商：config 子段给 key 即入链', () => {
@@ -63,11 +69,13 @@ describe('buildChain', () => {
 });
 
 describe('routedWebSearch 降级', () => {
-  const BING_HTML = `
-    <html><body><ol id="b_results">
-      <li class="b_algo"><h2><a href="https://example.com/a">结果甲</a></h2><p>摘要甲</p></li>
-      <li class="b_algo"><h2><a href="https://example.com/b">结果乙</a></h2><p>摘要乙</p></li>
-    </ol></body></html>`;
+  const TAVILY_JSON = JSON.stringify({
+    results: [
+      { title: '结果甲', url: 'https://example.com/a', content: '摘要甲' },
+      { title: '结果乙', url: 'https://example.com/b', content: '摘要乙' },
+    ],
+  });
+  const TAVILY_CFG = { key: 'tvly-x' } as const;
 
   function stubFetchSequence(handlers: Record<string, (url: string) => Response>): void {
     vi.stubGlobal('fetch', async (url: unknown) => {
@@ -79,13 +87,13 @@ describe('routedWebSearch 降级', () => {
     });
   }
 
-  it('stepfun 配额失败 → 自动降级 bing 命中，并标注来源与降级数', async () => {
+  it('stepfun 配额失败 → 自动降级 tavily 命中，并标注来源与降级数', async () => {
     stubFetchSequence({
       'stepfun.com': () => new Response('you have no active step plan subscription', { status: 400 }),
-      'bing.com': () => new Response(BING_HTML, { status: 200 }),
+      'tavily.com': () => new Response(TAVILY_JSON, { status: 200 }),
     });
-    const outcome = await routedWebSearch({ query: '测试', n: 5, searchCfg: { providers: ['stepfun', 'bing'] }, session: SESSION, healthPath });
-    expect(outcome.provider).toBe('bing');
+    const outcome = await routedWebSearch({ query: '测试', n: 5, searchCfg: { providers: ['stepfun', 'tavily'], tavily: TAVILY_CFG }, session: SESSION, healthPath });
+    expect(outcome.provider).toBe('tavily');
     expect(outcome.hits).toHaveLength(2);
     expect(outcome.attempts).toHaveLength(1);
     expect(outcome.attempts[0]!.provider).toBe('stepfun');
@@ -95,11 +103,11 @@ describe('routedWebSearch 降级', () => {
   it('全部失败 → 聚合错误列出每家原因', async () => {
     stubFetchSequence({
       'stepfun.com': () => new Response('bad key', { status: 401 }),
-      'bing.com': () => new Response('<html>无卡片</html>', { status: 200 }),
+      'tavily.com': () => new Response('oops', { status: 500 }),
     });
     await expect(
-      routedWebSearch({ query: 'x', n: 5, searchCfg: { providers: ['stepfun', 'bing'] }, session: SESSION, healthPath }),
-    ).rejects.toThrow(/stepfun.*bing/s);
+      routedWebSearch({ query: 'x', n: 5, searchCfg: { providers: ['stepfun', 'tavily'], tavily: TAVILY_CFG }, session: SESSION, healthPath }),
+    ).rejects.toThrow(/stepfun.*tavily/s);
   });
 
   it('配额失败的提供商进入冷却：下一次直接跳过不再请求', async () => {
@@ -110,10 +118,10 @@ describe('routedWebSearch 降级', () => {
         stepfunCalls += 1;
         return new Response('you have no active step plan subscription', { status: 400 });
       }
-      if (u.includes('bing.com')) return new Response(BING_HTML, { status: 200 });
+      if (u.includes('tavily.com')) return new Response(TAVILY_JSON, { status: 200 });
       throw new Error(u);
     });
-    const args = { query: 'x', n: 5, searchCfg: { providers: ['stepfun', 'bing'] } as const, session: SESSION, healthPath };
+    const args = { query: 'x', n: 5, searchCfg: { providers: ['stepfun', 'tavily'], tavily: TAVILY_CFG } as const, session: SESSION, healthPath };
     await routedWebSearch(args);
     expect(stepfunCalls).toBe(1);
     const second = await routedWebSearch(args);
@@ -130,7 +138,7 @@ describe('routedWebSearch 降级', () => {
       throw err;
     });
     await expect(
-      routedWebSearch({ query: 'x', n: 5, searchCfg: { providers: ['stepfun', 'bing'] }, session: SESSION, healthPath, signal: parent.signal }),
+      routedWebSearch({ query: 'x', n: 5, searchCfg: { providers: ['stepfun', 'tavily'] }, session: SESSION, healthPath, signal: parent.signal }),
     ).rejects.toThrow(/abort/i);
   });
 

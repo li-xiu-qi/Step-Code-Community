@@ -124,10 +124,11 @@ export interface SearchConfig {
   image?: SearchEndpointConfig;
   /**
    * 搜索提供商链（顺序即优先级，在列即启用）。
-   * 可选值：stepfun / tavily / anysearch / bocha / brave / bing / duckduckgo。
-   * 缺省链：stepfun → tavily → anysearch → brave → bing → duckduckgo
-   * （无 key 的 key 制提供商自动跳过；bing/duckduckgo 免 key 兜底，
-   * Step plan 过期后 web_search 仍可用，2026-10-12 事故背景）。
+   * 可选值：stepfun / tavily / anysearch（全为 key 制；2026-10-13 起只保留
+   * 这三家，HTML 抓取类提供商已移除）。
+   * 缺省链：stepfun → tavily → anysearch
+   * （无 key 的 key 制提供商自动跳过；Step plan 过期后请在 [search.tavily] /
+   * [search.anysearch] 配 key，2026-10-12 事故背景）。
    */
   providers?: string[];
   /** 显式禁用的提供商（优先级高于 providers 链）。 */
@@ -136,15 +137,11 @@ export interface SearchConfig {
   stepfun?: SearchProviderConfig;
   tavily?: SearchProviderConfig;
   anysearch?: SearchProviderConfig;
-  bocha?: SearchProviderConfig;
-  brave?: SearchProviderConfig;
-  bing?: SearchProviderConfig;
-  duckduckgo?: SearchProviderConfig;
 }
 
 /** 单个搜索提供商的配置段。 */
 export interface SearchProviderConfig {
-  /** API key；缺省读对应环境变量（TAVILY_API_KEY / BOCHA_API_KEY / BRAVE_API_KEY）。 */
+  /** API key；缺省读对应环境变量（TAVILY_API_KEY / ANYSEARCH_API_KEY）。 */
   key?: string;
   /** 自定义端点覆盖。 */
   url?: string;
@@ -935,7 +932,7 @@ export function resolveSearchConfig(raw: unknown): SearchConfig {
     if (subKey !== undefined) endpoint.key = subKey;
     if (endpoint.url !== undefined || endpoint.key !== undefined) cfg[sub] = endpoint;
   }
-  // 提供商链与开关：providers = ["stepfun","bing",...]，disabled_providers = [...]
+  // 提供商链与开关：providers = ["stepfun","anysearch",...]，disabled_providers = [...]
   const asStringArray = (v: unknown): string[] | undefined => {
     if (!Array.isArray(v)) return undefined;
     const out = v.filter((x): x is string => typeof x === 'string' && x !== '');
@@ -945,7 +942,7 @@ export function resolveSearchConfig(raw: unknown): SearchConfig {
   if (providers !== undefined) cfg.providers = providers;
   const disabledProviders = asStringArray(t['disabled_providers']);
   if (disabledProviders !== undefined) cfg.disabledProviders = disabledProviders;
-  for (const name of ['stepfun', 'tavily', 'anysearch', 'bocha', 'brave', 'bing', 'duckduckgo'] as const) {
+  for (const name of ['stepfun', 'tavily', 'anysearch'] as const) {
     const s = t[name];
     if (typeof s !== 'object' || s === null) continue;
     const st = s as Record<string, unknown>;

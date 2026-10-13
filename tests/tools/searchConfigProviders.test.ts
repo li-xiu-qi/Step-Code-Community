@@ -8,36 +8,36 @@ describe('resolveSearchConfig 多提供商段', () => {
   it('providers 与 disabled_providers 字符串数组解析', () => {
     expect(
       resolveSearchConfig({
-        providers: ['stepfun', 'bocha', 'bing'],
-        disabled_providers: ['duckduckgo'],
+        providers: ['stepfun', 'tavily', 'anysearch'],
+        disabled_providers: ['tavily'],
       }),
     ).toEqual({
-      providers: ['stepfun', 'bocha', 'bing'],
-      disabledProviders: ['duckduckgo'],
+      providers: ['stepfun', 'tavily', 'anysearch'],
+      disabledProviders: ['tavily'],
     });
   });
 
   it('非数组/空数组/含非字符串 → 不进结果对象', () => {
-    expect(resolveSearchConfig({ providers: 'bing' })).toEqual({});
+    expect(resolveSearchConfig({ providers: 'tavily' })).toEqual({});
     expect(resolveSearchConfig({ providers: [] })).toEqual({});
-    expect(resolveSearchConfig({ providers: ['bing', 1, null] })).toEqual({ providers: ['bing'] });
+    expect(resolveSearchConfig({ providers: ['anysearch', 1, null] })).toEqual({ providers: ['anysearch'] });
   });
 
   it('提供商子段 key/url/enabled 解析，空子段不进结果', () => {
     expect(
       resolveSearchConfig({
         tavily: { key: 'tvly-x', url: 'https://t.example' },
-        duckduckgo: { enabled: false },
-        bing: {},
+        anysearch: { enabled: false },
+        stepfun: {},
       }),
     ).toEqual({
       tavily: { key: 'tvly-x', url: 'https://t.example' },
-      duckduckgo: { enabled: false },
+      anysearch: { enabled: false },
     });
   });
 
   it('enabled 非布尔不进结果', () => {
-    expect(resolveSearchConfig({ bing: { enabled: 'yes' } })).toEqual({});
+    expect(resolveSearchConfig({ anysearch: { enabled: 'yes' } })).toEqual({});
   });
 
   it('与既有 url/key/web/image 段共存', () => {
@@ -46,13 +46,13 @@ describe('resolveSearchConfig 多提供商段', () => {
         url: 'https://s.com/v1',
         key: 'K',
         providers: ['stepfun'],
-        bocha: { key: 'B' },
+        anysearch: { key: 'A' },
       }),
     ).toEqual({
       url: 'https://s.com/v1',
       key: 'K',
       providers: ['stepfun'],
-      bocha: { key: 'B' },
+      anysearch: { key: 'A' },
     });
   });
 });

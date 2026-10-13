@@ -2,8 +2,9 @@
  * 联网搜索路由器：多提供商链 + 失败降级 + 冷却。
  *
  * 链的构成（SearchConfig.providers 覆盖默认链；disabledProviders 与 enabled=false 摘除）：
- *   stepfun → tavily → anysearch → brave → bing → duckduckgo
- * （bocha 已实现但不在缺省链——纯付费、无常驻免费额度；要用显式写进 providers。）
+ *   stepfun → tavily → anysearch
+ * 只保留三家 key 制服务（step plan 通道 / tavily 免费档 / anysearch 聚合搜索），
+ * 不维护 HTML 抓取类提供商（2026-10-13 决策：逆向成本高、风控不稳定，不值得）。
  * key 制提供商未配 key（config 或环境变量）时直接跳过；stepfun 的 key 解析沿用
  * searchBase 的三级规则。每个提供商独立 12s 超时，失败按归类记冷却（health.ts），
  * 全部失败时返回聚合错误（每家的失败原因都列出，便于判断该补 key 还是换链）。
@@ -11,25 +12,17 @@
 import { diagDir } from '../../lifecycle.js';
 import type { SearchConfig } from '../../config/config.js';
 import { anysearchProvider } from './providers/anysearch.js';
-import { bingProvider } from './providers/bing.js';
-import { bochaProvider } from './providers/bocha.js';
-import { braveProvider } from './providers/brave.js';
-import { duckduckgoProvider } from './providers/duckduckgo.js';
 import { createStepfunProvider, type StepfunSession } from './providers/stepfun.js';
 import { tavilyProvider } from './providers/tavily.js';
 import { SearchProviderError, type SearchHit, type SearchProvider } from './providers/types.js';
 import { SearchHealth } from './health.js';
 import { join } from 'node:path';
 
-export const DEFAULT_PROVIDER_ORDER = ['stepfun', 'tavily', 'anysearch', 'brave', 'bing', 'duckduckgo'] as const;
+export const DEFAULT_PROVIDER_ORDER = ['stepfun', 'tavily', 'anysearch'] as const;
 
 const STATIC_PROVIDERS: Record<string, SearchProvider> = {
   tavily: tavilyProvider,
   anysearch: anysearchProvider,
-  bocha: bochaProvider,
-  brave: braveProvider,
-  bing: bingProvider,
-  duckduckgo: duckduckgoProvider,
 };
 
 const PER_PROVIDER_TIMEOUT_MS = 12_000;
@@ -93,7 +86,7 @@ export async function routedWebSearch(args: RoutedSearchArgs): Promise<RoutedSea
   if (chain.length === 0) {
     throw new SearchProviderError(
       'config',
-      '搜索提供商链为空：未配置任何可用渠道。可在 config.toml 的 [search] 段配置 providers 与各家 key（bing/duckduckgo 免 key 可直接启用）。',
+      '搜索提供商链为空：未配置任何可用渠道。step plan 过期时请在 config.toml 的 [search] 段配置 providers，并为 [search.tavily] 或 [search.anysearch] 提供 key（TAVILY_API_KEY / ANYSEARCH_API_KEY 环境变量亦可）。',
     );
   }
   const health = new SearchHealth(args.healthPath ?? join(diagDir(), 'search-health.json'));

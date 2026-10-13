@@ -455,28 +455,25 @@ Once `[search]` is configured, changes take effect immediately (`/reload` hot-re
 
 #### Multi-provider routing (content search)
 
-`web_search` is not a single endpoint: it walks a provider chain, falling back on failure and cooling down providers that fail repeatedly (cooldown state lives in `~/.step-code/search-health.json`). **An expired Step Plan no longer takes search down entirely** — the key-free bing/duckduckgo providers always sit at the tail of the chain as a safety net. Available providers: `stepfun` (StepFun official, uses the three-level endpoint resolution above), `tavily` (key-based, free tier 1000 credits/month), `anysearch` (key-based, aggregated search with a quota independent of StepFun), `bocha` (key-based, paid only), `brave` (key-based), `bing`, `duckduckgo` (key-free HTML scraping).
+`web_search` is not a single endpoint: it walks a provider chain, falling back on failure and cooling down providers that fail repeatedly (cooldown state lives in `~/.step-code/search-health.json`). **An expired Step Plan no longer takes search down entirely** — independent key-based services sit behind it in the chain. Only three providers remain, all key-based (HTML-scraping providers were removed on 2026-10-13: high reverse-engineering cost and unstable anti-bot behavior): `stepfun` (StepFun official, Step Plan channel, uses the three-level endpoint resolution above), `tavily` (free tier 1000 credits/month), `anysearch` (aggregated search with a quota independent of StepFun).
 
-Default chain: `stepfun → tavily → anysearch → brave → bing → duckduckgo` (key-based providers without a configured key are skipped silently, not counted as failures; bocha is excluded from the default chain — list it explicitly in `providers` if you want it).
+Default chain: `stepfun → tavily → anysearch` (providers without a configured key are skipped silently, not counted as failures).
 
 ```toml
 [search]
 # Custom chain and order (listed = enabled; omit to use the default chain)
-providers = ["stepfun", "bocha", "bing"]
+providers = ["anysearch", "stepfun", "tavily"]
 # Explicitly disable (wins over the chain)
-disabled_providers = ["duckduckgo"]
+disabled_providers = ["stepfun"]
 
 # Per-provider key / custom endpoint / toggle; keys can also come from env vars
 [search.tavily]
 key = "tvly-xxxxxxxx"        # or TAVILY_API_KEY
 
-[search.bocha]
-key = "sk-xxxxxxxx"          # or BOCHA_API_KEY
+[search.anysearch]
+key = "as_xxxxxxxx"          # or ANYSEARCH_API_KEY
 
-[search.brave]
-key = "bsa-xxxxxxxx"         # or BRAVE_API_KEY
-
-[search.duckduckgo]
+[search.stepfun]
 enabled = false              # same as listing it in disabled_providers
 ```
 

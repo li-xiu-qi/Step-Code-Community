@@ -1,4 +1,7 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { searchHttpError } from '../../src/tools/searchError.js';
 import { webSearchTool } from '../../src/tools/webSearch.js';
 import { imageSearchTool } from '../../src/tools/imageSearch.js';
@@ -6,8 +9,29 @@ import type { ToolContext } from '../../src/tools/types.js';
 
 const ctx: ToolContext = { cwd: process.cwd(), apiKey: 'k-test', baseUrl: 'https://api.stepfun.com' };
 
+// 隔离冷却健康文件与 key 环境变量：默认路径在真实 ~/.step-code，线上记录会漏进
+// 测试（冷却态直接改写链行为），测试也会污染线上（2026-10-13 实测双向串扰）。
+let diagTmp: string;
+const ENV_KEYS = ['ANYSEARCH_API_KEY', 'TAVILY_API_KEY'] as const;
+const savedEnv: Record<string, string | undefined> = {};
+
+beforeEach(() => {
+  diagTmp = mkdtempSync(join(tmpdir(), 'search-error-'));
+  process.env.STEP_CODE_DIAG_DIR = diagTmp;
+  for (const k of ENV_KEYS) {
+    savedEnv[k] = process.env[k];
+    delete process.env[k];
+  }
+});
+
 afterEach(() => {
   vi.unstubAllGlobals();
+  delete process.env.STEP_CODE_DIAG_DIR;
+  for (const k of ENV_KEYS) {
+    if (savedEnv[k] === undefined) delete process.env[k];
+    else process.env[k] = savedEnv[k];
+  }
+  rmSync(diagTmp, { recursive: true, force: true });
 });
 
 describe('searchHttpError 状态码分流', () => {

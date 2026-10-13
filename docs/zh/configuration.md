@@ -462,28 +462,25 @@ key = "sp-xxxxxxxx"
 
 #### 多提供商路由（内容搜索）
 
-`web_search` 不是单端点：它按一条提供商链依次尝试，失败自动降级，连续失败自动冷却（冷却状态存 `~/.step-code/search-health.json`）。**Step plan 过期不再意味着搜索整体失效**——免 key 的 bing/duckduckgo 始终在链尾兜底。可选提供商：`stepfun`（阶跃官方，复用上述三层 endpoint 解析）、`tavily`（key 制，免费档 1000 credits/月）、`anysearch`（key 制，聚合搜索，额度与阶跃侧独立）、`bocha`（key 制，纯付费）、`brave`（key 制）、`bing`、`duckduckgo`（两家免 key HTML 抓取）。
+`web_search` 不是单端点：它按一条提供商链依次尝试，失败自动降级，连续失败自动冷却（冷却状态存 `~/.step-code/search-health.json`）。**Step plan 过期不再意味着搜索整体失效**——链里备有独立的 key 制服务。可选提供商只有三家，全为 key 制（2026-10-13 起 HTML 抓取类提供商已移除，逆向维护成本高且风控不稳定）：`stepfun`（阶跃官方 step plan 通道，复用上述三层 endpoint 解析）、`tavily`（免费档 1000 credits/月）、`anysearch`（聚合搜索，额度与阶跃侧独立）。
 
-缺省链：`stepfun → tavily → anysearch → brave → bing → duckduckgo`（未配 key 的 key 制提供商自动跳过，不算失败；bocha 不在缺省链，要用请在 providers 里显式列入）。
+缺省链：`stepfun → tavily → anysearch`（未配 key 的提供商自动跳过，不算失败）。
 
 ```toml
 [search]
 # 自定义链与顺序（在列即启用，缺省用上文默认链）
-providers = ["stepfun", "bocha", "bing"]
+providers = ["anysearch", "stepfun", "tavily"]
 # 显式禁用（优先级高于链）
-disabled_providers = ["duckduckgo"]
+disabled_providers = ["stepfun"]
 
 # 各家 key / 自定义端点 / 开关；key 也可走环境变量
 [search.tavily]
 key = "tvly-xxxxxxxx"        # 或环境变量 TAVILY_API_KEY
 
-[search.bocha]
-key = "sk-xxxxxxxx"          # 或 BOCHA_API_KEY
+[search.anysearch]
+key = "as_xxxxxxxx"          # 或 ANYSEARCH_API_KEY
 
-[search.brave]
-key = "bsa-xxxxxxxx"         # 或 BRAVE_API_KEY
-
-[search.duckduckgo]
+[search.stepfun]
 enabled = false              # 等价于加进 disabled_providers
 ```
 

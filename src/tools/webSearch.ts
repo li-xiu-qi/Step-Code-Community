@@ -22,9 +22,10 @@ const schema = z.object({
 const MAX_SNIPPET = 500;
 
 /**
- * 联网搜索工具：多提供商路由（stepfun → tavily → bocha → brave → bing → duckduckgo），
- * 失败自动降级，连续失败自动冷却。Step plan 过期后免 key 的 bing/duckduckgo 兜底，
- * web_search 不再随订阅状态整体失效（2026-10-12 事故背景）。
+ * 联网搜索工具：多提供商路由（stepfun → tavily → anysearch，全为 key 制），
+ * 失败自动降级，连续失败自动冷却。Step plan 过期后由独立的 key 制服务接管，
+ * web_search 不再随订阅状态整体失效（2026-10-12 事故背景；HTML 抓取类提供商
+ * 已于 2026-10-13 移除）。
  * 链与开关在 config.toml 的 [search] 段：providers / disabled_providers / [search.<name>] key。
  */
 export const webSearchTool: ToolDef<z.infer<typeof schema>> = {

@@ -9,28 +9,39 @@ const ctx: ToolContext = { cwd: process.cwd(), apiKey: 'k-test', baseUrl: 'https
 
 // 健康冷却文件必须隔离：默认路径在真实 ~/.step-code，线上失败记录会污染测试，
 // 测试失败记录也会污染线上（2026-10-12 实测双向串扰）。
+// 同理隔离 ANYSEARCH_API_KEY：本机用户环境变量持久存在，会让 anysearch 无配置也进链。
 let diagTmp: string;
+const ENV_KEYS = ['ANYSEARCH_API_KEY', 'TAVILY_API_KEY'] as const;
+const savedEnv: Record<string, string | undefined> = {};
 
 beforeEach(() => {
   diagTmp = mkdtempSync(join(tmpdir(), 'websearch-test-'));
   process.env.STEP_CODE_DIAG_DIR = diagTmp;
+  for (const k of ENV_KEYS) {
+    savedEnv[k] = process.env[k];
+    delete process.env[k];
+  }
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
   delete process.env.STEP_CODE_DIAG_DIR;
+  for (const k of ENV_KEYS) {
+    if (savedEnv[k] === undefined) delete process.env[k];
+    else process.env[k] = savedEnv[k];
+  }
   rmSync(diagTmp, { recursive: true, force: true });
 });
 
 describe('web_search 工具', () => {
-  it('无任何 key 且免 key 渠道也失败时：聚合错误逐家列出（新契约：无 key 不再直接判死，会尝试免 key 兜底）', async () => {
+  it('无任何 key 时：stepfun 进链后以 config 失败，聚合错误如实列出（三家全为 key 制，2026-10-13 起无免 key 兜底）', async () => {
     vi.stubGlobal('fetch', async () => {
       throw new Error('network down');
     });
     const r = await webSearchTool.execute({ query: 'x' }, { cwd: process.cwd() });
     expect(r.isError).toBe(true);
     expect(r.content).toContain('stepfun');
-    expect(r.content).toContain('bing');
+    expect(r.content).toContain('全部搜索提供商失败');
   });
 
   it('正常返回时格式化 results（标题/链接/摘要），并标注来源提供商', async () => {
