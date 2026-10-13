@@ -442,7 +442,8 @@ key = "sk-xxxxxxxx"
 url = "https://api.stepfun.com/v1"
 key = "sk-xxxxxxxx"
 
-# 文搜图专用段（文搜图仅 Step Plan 通道提供，建议显式配置）
+# 文搜图专用段（stepfun 通道；stepfun 不可用时自动降级到豆包/tavily 图片搜索，
+# key 复用 [search.doubao] / [search.tavily]，无需重复配置）
 [search.image]
 url = "https://api.stepfun.com/step_plan/v1"
 key = "sp-xxxxxxxx"
@@ -491,7 +492,7 @@ key = "xxxxxxxx"             # 或 DOUBAO_SEARCH_API_KEY；免费 500 次/月
 enabled = false              # 等价于加进 disabled_providers
 ```
 
-降级行为：每家独立 12s 超时；配额/订阅类失败（401/403/429、plan 过期）冷却 6 小时，HTTP/解析类 1 小时，网络类 5 分钟；全部失败时返回聚合错误（逐家列原因）。搜索结果带 `[via 提供商名]` 标注，降级后命中会注明降级了几家。文搜图（`web_image_search`）不参与多提供商路由，仍仅阶跃渠道。
+降级行为：每家独立 12s 超时；配额/订阅类失败（401/403/429、plan 过期）冷却 6 小时，HTTP/解析类 1 小时，网络类 5 分钟；全部失败时返回聚合错误（逐家列原因）。搜索结果带 `[via 提供商名]` 标注，降级后命中会注明降级了几家。文搜图（`web_image_search`）走独立三级回退：stepfun → 豆包（SearchType=image，与内容搜索共用 500 次/月额度）→ tavily（include_images，与内容搜索共用 1000 credits/月），后两级自动复用对应 [search.<name>] 的 key。
 
 ### `[tools.web]` 网页结果缓存
 

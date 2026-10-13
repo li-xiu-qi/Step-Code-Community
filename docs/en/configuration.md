@@ -435,7 +435,8 @@ key = "sk-xxxxxxxx"
 url = "https://api.stepfun.com/v1"
 key = "sk-xxxxxxxx"
 
-# Image-search-specific section (image search is only offered on the Step Plan channel, so configure it explicitly)
+# Image-search-specific section (stepfun channel; when stepfun is unavailable it falls back
+# to doubao/tavily image search, reusing [search.doubao] / [search.tavily] keys)
 [search.image]
 url = "https://api.stepfun.com/step_plan/v1"
 key = "sp-xxxxxxxx"
@@ -484,7 +485,7 @@ key = "xxxxxxxx"             # or DOUBAO_SEARCH_API_KEY; 500 free queries/month
 enabled = false              # same as listing it in disabled_providers
 ```
 
-Fallback behavior: each provider gets an independent 12s timeout; quota/subscription failures (401/403/429, expired plan) cool down for 6 hours, HTTP/parse failures 1 hour, network failures 5 minutes; if every provider fails the tool returns an aggregate error listing each provider's reason. Results carry a `[via <provider>]` marker, and a fallback hit notes how many providers were skipped. Image search (`web_image_search`) is not part of multi-provider routing and stays StepFun-only.
+Fallback behavior: each provider gets an independent 12s timeout; quota/subscription failures (401/403/429, expired plan) cool down for 6 hours, HTTP/parse failures 1 hour, network failures 5 minutes; if every provider fails the tool returns an aggregate error listing each provider's reason. Results carry a `[via <provider>]` marker, and a fallback hit notes how many providers were skipped. Image search (`web_image_search`) has its own three-level fallback: stepfun → doubao (SearchType=image, sharing the 500 queries/month content quota) → tavily (include_images, sharing the 1000 credits/month content quota); the latter two reuse the matching [search.<name>] keys automatically.
 
 ### `[tools.web]`: web result cache
 
