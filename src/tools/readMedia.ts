@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { videoLimitFromCapabilities } from '../provider/capability-registry.js';
 import { resolvePath } from './fsutil.js';
@@ -143,8 +144,23 @@ function offloadMedia<
  * 分类懒加载解码依赖的报错：依赖缺失（环境故障，如改名/装包时 node_modules 受损）与
  * 图片真正损坏要分开报。否则模型会把「解析不到 jimp」误判成文件坏、对同一张图反复重试。
  */
-export function classifyJimpError(msg: string): string {
+export function classifyJimpError(msg: string, exists: (p: string) => boolean = existsSync): string {
   if (/cannot find package|cannot find module|err_module_not_found/i.test(msg)) {
+    // 目录更名/迁移后的旧进程：动态 import 按调用时的文件路径向上解析 node_modules，
+    // 路径已悬空时即便新位置装好了包也解析不到（2026-10-14 实证：step-code-pi →
+    // step-code-community 更名后，旧进程的 read_media 全部报 jimp 缺失）。
+    // 判别：本模块文件自己在磁盘上已经不存在 = 进程跑在迁移前的旧路径上。
+    // exists 依赖注入仅为可测（ESM 下 vi.spyOn node:fs 不可行）。
+    let staleProc = false;
+    try {
+      staleProc = !exists(fileURLToPath(import.meta.url));
+    } catch {
+      staleProc = false;
+    }
+    if (staleProc) {
+      return `图像解码依赖（jimp）解析失败：本进程启动后程序目录被更名/移动（模块路径已悬空），运行中无法修复。` +
+        `请退出后以 step -r <会话id> 恢复会话，新进程从新路径启动即恢复正常。`;
+    }
     return `图像解码依赖（jimp）缺失：${msg}。这是环境问题而非图片损坏，请在所用 step 变体目录执行 pnpm install 修复。`;
   }
   return `图片解码失败（文件损坏或格式不支持）：${msg}`;

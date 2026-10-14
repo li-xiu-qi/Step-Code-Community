@@ -399,6 +399,13 @@ describe('read_media · classifyJimpError 错误分类', () => {
   it('ERR_MODULE_NOT_FOUND 变体也归到依赖缺失', () => {
     expect(classifyJimpError("Cannot find module 'jimp'")).toContain('环境问题');
   });
+
+  it('本模块文件在磁盘上已不存在（目录更名后的旧进程）→ 提示重启恢复会话，而非 pnpm install', () => {
+    const msg = classifyJimpError("Cannot find package 'jimp'", () => false);
+    expect(msg).toContain('模块路径已悬空');
+    expect(msg).toContain('step -r');
+    expect(msg).not.toContain('pnpm install');
+  });
 });
 
 describe('read_media · 媒体登记与去重（VISTA 式无损视觉记忆，2026-10-12）', () => {
