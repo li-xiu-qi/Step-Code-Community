@@ -3039,17 +3039,17 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
    * 会话级状态（模型、权限模式）不被覆盖，配置级绑定（能力标记、图片限额、搜索配置、
    * 压缩绑定）按新值刷新。
    */
-  private runReload(): void {
+  private runReload(): boolean {
     const reload = this.deps.reloadConfig;
     if (reload === undefined) {
       this.push({ kind: 'note', text: '当前进程没有注入配置重载入口' });
-      return;
+      return false;
     }
     const prev = this.deps.config;
     const result = reload();
     if ('error' in result) {
       this.push({ kind: 'error', text: `重载失败：${result.error}（旧配置保持生效）` });
-      return;
+      return false;
     }
     const next = result.config;
     this.deps.config = next;
@@ -3104,6 +3104,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
     }
     this.syncStatus();
     this.tui.requestRender();
+    return true;
   }
 
   /**
@@ -3843,6 +3844,11 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
    */
   private newSession(): void {
     this.persist();
+    // /new 的产品语义是「热启动开新会话」：等价于重启进程再开会话，所以新会话必须吃
+    // 磁盘上的最新配置，而不是进程启动时的旧快照。重载放在 persist 之后、清 history 之前：
+    // 旧会话的落盘内容不受新配置影响，runReload 自己 push 的 note 会随下方 history 清空
+    // 一起抹掉（成功即静默），失败时旧配置原子保留，错误在末尾补一条，不静默吞。
+    const reloadOk = this.runReload();
     this.history.length = 0;
     // 快照栈跨会话无意义（historyLen 对不上新会话），换会话即清
     clearUndoSnapshots(this.undoStack);
@@ -3886,6 +3892,9 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
           ]
         : [{ kind: 'note', text: `已开始新会话 ${this.session.id}` }];
     this.transcript.reset(items);
+    if (!reloadOk) {
+      this.push({ kind: 'error', text: '配置重载失败，新会话沿用旧配置（详情见上方重载报错）' });
+    }
     this.syncStatus();
     this.syncTerminalTitle();
     // 与 /clear、resumeSession 对齐：newSession 也走 invalidate + renderNow，
