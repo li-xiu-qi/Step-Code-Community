@@ -4,15 +4,15 @@
 </p>
 
 > [!IMPORTANT]
-> **Unofficial — a community-driven exploration.** Step Code Pi is a CLI explored independently by community contributors.
+> **Unofficial — a community-driven exploration.** Step Code Community is a CLI explored independently by community contributors.
 
-# Step Code Pi
+# Step Code Community
 
 [![CI](https://github.com/stepfun-ai/Step-Realtime-CLI/actions/workflows/test.yml/badge.svg?branch=step-code-community-explore)](https://github.com/stepfun-ai/Step-Realtime-CLI/actions/workflows/test.yml)
 
 A terminal coding agent CLI, with StepFun's **Step model family** as the primary target and **pi-tui** for the UI. The model layer speaks three protocols—Anthropic Messages, OpenAI Chat Completions, and OpenAI Responses—so any compatible provider works out of the box; Step is the best-tested and default path.
 
-> This repository is the `step-code-explore-pi` exploration branch of [stepfun-ai/Step-Realtime-CLI](https://github.com/stepfun-ai/Step-Realtime-CLI).
+> This repository is the `step-code-community` exploration branch of [stepfun-ai/Step-Realtime-CLI](https://github.com/stepfun-ai/Step-Realtime-CLI).
 
 ## What it is
 
@@ -36,12 +36,12 @@ Key capabilities:
 Requires Node.js >= 22 (not needed if you use the standalone executable).
 
 ```bash
-npm i -g https://github.com/li-xiu-qi/Step-Realtime-CLI/releases/latest/download/step-code.tgz
+npm i -g https://github.com/li-xiu-qi/Step-Code-Community/releases/latest/download/step-code.tgz
 export STEP_CODE_API_KEY=<your-key>
 step
 ```
 
-That installs a pre-built package: nothing is compiled locally and no dependencies are fetched, and the link always points to the latest Release. Without Node, grab the standalone executable for your platform (Windows / macOS / Linux) from [Releases](https://github.com/li-xiu-qi/Step-Realtime-CLI/releases/latest); to modify the code, install from source instead.
+That installs a pre-built package: nothing is compiled locally and no dependencies are fetched, and the link always points to the latest Release. Without Node, grab the standalone executable for your platform (Windows / macOS / Linux) from [Releases](https://github.com/li-xiu-qi/Step-Code-Community/releases/latest); to modify the code, install from source instead.
 
 See [Quick start](./docs/en/quickstart.md) for installation and configuration details, and [Installation](./docs/en/installation.md) for the trade-offs between the four installation methods.
 

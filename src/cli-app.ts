@@ -1375,6 +1375,18 @@ if (opts.reflect === true) {
       emergencyExit(1);
     });
   }
+  // 自更新启动检查：SEA 形态下发现新版本打一行提示（fail-open，绝不拖累启动）。
+  // 低频：同一版本只提示一次（state 文件记忆 suppressedVersion）；STEPCODE_DISABLE_UPDATE_CHECK 可关。
+  // 必须在 chat.start() 之前完成：进入 alt-screen 后 stderr 会被吞掉或行列错位。
+  // （ACP 模式在前置分支已 return，此处只可能是交互 TUI。）
+  if (opts.print === undefined) {
+    try {
+      const { maybeNotifyUpdateOnStart } = await import('./update.js');
+      await maybeNotifyUpdateOnStart({});
+    } catch {
+      // fail-open：更新检查任何异常都不影响进入交互会话
+    }
+  }
   const info = await chat.start();
   await mcpManager.closeAll();
   if (info.hasContent) {

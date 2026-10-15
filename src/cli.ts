@@ -76,6 +76,44 @@ if (args0 === 'doctor') {
   process.exit(res.code);
 }
 
+// step update：SEA 自更新（GitHub Release 下载 + sha256 校验 + 冒烟 + 替换重启）。
+// --check 只查不装；--force 绕过禁用环境变量。动态 import：--help 路径不加载本模块。
+if (args0 === 'update') {
+  const { configureLogger } = await import('./utils/logger.js');
+  const { runUpdateCommand, checkForUpdate } = await import('./update.js');
+  configureLogger({ mode: 'headless' });
+  const rest = program.args.slice(1);
+  if (rest.includes('--check')) {
+    const res = await checkForUpdate({ force: true });
+    switch (res.status) {
+      case 'available':
+        process.stdout.write(`发现新版本 ${res.latestVersion}（当前 ${res.currentVersion}）。运行 step update 升级。\n`);
+        process.exit(0);
+        break;
+      case 'up-to-date':
+        process.stdout.write(`已是最新版本 ${res.currentVersion}。\n`);
+        process.exit(0);
+        break;
+      case 'source-install':
+        process.stderr.write(`${res.message}\n`);
+        process.exit(2);
+        break;
+      case 'disabled':
+        process.stdout.write('更新检查已被环境变量禁用。\n');
+        process.exit(0);
+        break;
+      default:
+        process.stderr.write(`${res.message ?? '检查失败'}\n`);
+        process.exit(1);
+    }
+  }
+  // 透传给重启进程的 argv：剥掉 update 与 --check/--force，避免重启后重入更新逻辑
+  const relaunchArgv = rest.filter((a) => a !== '--check' && a !== '--force');
+  const res = await runUpdateCommand({ argv: relaunchArgv, force: rest.includes('--force') });
+  process.stdout.write(`${res.message}\n`);
+  process.exit(res.status === 'error' ? 1 : res.status === 'source-install' ? 2 : 0);
+}
+
 // 其余所有命令（-p / -r / -c / sessions / subagents / 交互 TUI / ACP）→ 动态加载完整应用
 const { runApp } = await import('./cli-app.js');
 await runApp(program);
