@@ -33,8 +33,20 @@ describe('sendReadReceipts', () => {
     expect(out[0]!.to).toBe(A);
     expect(sink.calls[0]!.kind).toBe('receipt');
     expect(sink.calls[0]!.from).toBe(B);
-    expect(sink.calls[0]!.text).toContain("已收到");
+    expect(sink.calls[0]!.text).toContain("已送达");
     expect(sink.calls[0]!.text).toContain("调研剪贴板产品");
+  });
+
+  it("回执文案只陈述事实，不承诺已读取或已办理", () => {
+    const sink = fakeSink();
+    sendReadReceipts(B, [msg({ id: "m1", text: "调研并给结论" })], sink);
+    const text = sink.calls[0]!.text;
+    expect(text).toContain("已进入该会话历史");
+    // drain 只证明消息搬进了历史，执行与否本机制无从得知；这几个词任何一个出现，
+    // 都是在给投递方「交接完成」的错觉。
+    for (const word of ["已收到", "已读取", "已办理", "已完成"]) {
+      expect(text).not.toContain(word);
+    }
   });
 
   it("回执不再产生回执", () => {

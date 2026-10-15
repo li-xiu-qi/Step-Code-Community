@@ -45,10 +45,13 @@ export function sendReadReceipts(
     // 回执不再产生回执：否则 A→B→A→B 无限递归。回执的语义是「告知」，不需要对方确认已告知。
     if (m.kind === 'receipt') continue;
     const preview = m.text.length > 120 ? `${m.text.slice(0, 120)}…` : m.text;
+    // 文案只陈述已发生的事实：消息已进入目标会话历史。不说「已读取/已办理」——
+    // drain 只证明消息从队列搬进了历史，目标是否执行、执行到哪，本机制无从得知，
+    // 用「已收到」会给投递方「交接完成」的错觉。
     const receiptId = sink.enqueue(
       m.from,
       self,
-      `[已收到] 你投递给会话 ${self.slice(0, 8)} 的消息已被读取：\n${preview}`,
+      `[已送达] 你投递给会话 ${self.slice(0, 8)} 的消息已进入该会话历史：\n${preview}`,
       'receipt',
     );
     out.push({ messageId: m.id, receiptId, to: m.from });

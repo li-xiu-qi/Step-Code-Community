@@ -13,11 +13,15 @@ export const sessionSendTool: ToolDef<z.infer<typeof sendSchema>> = {
   schema: sendSchema,
   async execute(input, ctx) {
     if (ctx.sessionQueue === undefined) return fail('当前上下文不支持跨会话投递。');
+    // 发送方身份由运行时注入（ctx.sessionId），不接受调用方自填。无身份的上下文
+    // （非会话态工具调用）投出去的是一条匿名消息：回执不知道投给谁，来源判定直接
+    // 断链，只配污染队列。宁可拒绝，不放行。
+    const from = ctx.sessionId;
+    if (from === undefined || from === '') return fail('当前会话无身份标识，不能投递跨会话消息。');
     const target = input.targetSessionId.trim();
     if (target === '') return fail('目标会话 id 不能为空。');
     const text = input.message.trim();
     if (text === '') return fail('消息正文不能为空。');
-    const from = ctx.sessionId ?? '';
     const id = ctx.sessionQueue.enqueue(target, from, text);
     return ok(`已投递到会话 ${target}（消息 ${id.slice(0, 8)}）。目标会话在下次启动/续跑时自动取出执行。`);
   },

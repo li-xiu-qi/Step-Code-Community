@@ -49,6 +49,7 @@ import { resolveCompactionBinding } from './provider/compaction.js';
 import type { ChatProvider } from './provider/types.js';
 import { SessionStore, deriveTitle, type SessionData } from './session/store.js';
 import { SessionQueueStore } from './agent/sessionQueue/store.js';
+import { buildQueueInjection } from './agent/sessionQueue/inject.js';
 import { GoalStore } from './agent/goal/store.js';
 import { resumeHintMeta, resumeHintText } from './session/resumeHint.js';
 import { aggregateModelUsage, cacheHitRate, totalInput } from './session/usageReport.js';
@@ -862,8 +863,7 @@ async function runPrint(prompt: string): Promise<void> {
   // 落盘消息先于本次输入进入历史——模型先看到别的会话发来的指令，再处理本条 prompt。
   // injection 类来源：不计入轮次计数、不进 undo 快照，与静默注入一致。
   for (const m of sessionQueue.drain(session.id)) {
-    const body = `[跨会话消息 · 来自会话 ${m.from}]\n${m.text}`;
-    session.messages.push(stored({ role: 'user', content: body }, { kind: 'injection' }));
+    session.messages.push(buildQueueInjection(m));
   }
 
   session.messages.push(stored({ role: 'user', content: prompt }, { kind: 'user' }));

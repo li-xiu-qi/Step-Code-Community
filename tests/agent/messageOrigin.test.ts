@@ -27,3 +27,16 @@ describe('stored 的 origin 落形', () => {
     expect(m.origin.startsPromptTurn).toBeUndefined();
   });
 });
+
+describe('fromSession：跨会话投递的来源标记', () => {
+  it('载荷保留：注入时带 fromSession 能原样落进 origin', () => {
+    const m = stored({ role: 'user', content: 'x' }, { kind: 'injection', fromSession: 'session-aaa' });
+    expect(m.origin.fromSession).toBe('session-aaa');
+  });
+
+  it('旧路径兼容：不填时 fromSession 为 undefined，同条 origin 的其它载荷不受影响', () => {
+    const m = stored({ role: 'user', content: 'x' }, { kind: 'injection', agentId: 'a-1' });
+    expect(m.origin.fromSession).toBeUndefined();
+    expect(m.origin.agentId).toBe('a-1');
+  });
+});

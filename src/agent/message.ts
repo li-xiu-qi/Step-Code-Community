@@ -50,6 +50,13 @@ export interface MessageOrigin {
   notificationId?: string;
   /** 来源 agent id（子 agent 通知路由用）。 */
   agentId?: string;
+  /**
+   * 来源会话 id（跨 session 队列投递的消息填写，见 sessionQueue/store.ts 的 enqueue）。
+   * 与 agentId 的分工：agentId 归属后台任务通知的产出者，本字段归属对等会话间投递的
+   * 发送方。二者都是「这条注入是谁发起的」的结构化答案，供 UI/回放/路由读取，
+   * 判定来源时以本字段为准，不解析正文前缀。可选：旧消息与其它注入路径不填。
+   */
+  fromSession?: string;
   /** true = 唤醒新回合的注入；缺省 = 中途注入。 */
   startsPromptTurn?: boolean;
 }

@@ -67,6 +67,7 @@ import { deriveTitle, type SessionData, type SessionMeta, type SessionStore } fr
 import { resolveSubmitText } from '../chat/submitText.js';
 import { SessionQueueStore } from '../agent/sessionQueue/store.js';
 import { sendReadReceipts } from '../agent/sessionQueue/receipt.js';
+import { buildQueueInjection } from '../agent/sessionQueue/inject.js';
 import { canOverwriteTitle, generateSessionTitle } from '../session/title.js';
 import { TerminalTitleWriter } from '../chat/terminalTitle.js';
 import { aggregateFromCache, loadUsageCache, refreshUsageCache } from '../session/usageCache.js';
@@ -4941,7 +4942,7 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
           });
         }
         const body = `[跨会话消息 · 来自会话 ${m.from}]\n${m.text}`;
-        const qMsg = stored({ role: 'user', content: body }, { kind: 'injection' });
+        const qMsg = buildQueueInjection(m);
         this.history.push(qMsg);
         this.appendWire({ type: 'context.append_message', ts: qMsg.ts, message: qMsg });
         if (opts?.silent !== true) {
