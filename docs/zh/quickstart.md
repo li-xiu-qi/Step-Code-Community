@@ -13,7 +13,7 @@ npm i -g https://github.com/li-xiu-qi/Step-Code-Community/releases/latest/downlo
 装的是预编译好的包，不在本机编译、不拉依赖；链接始终指向最新 Release。没有 Node 环境可从 [Releases](https://github.com/li-xiu-qi/Step-Code-Community/releases/latest) 直接下载对应平台的单文件可执行；要参与开发则克隆仓库自行构建：
 
 ```bash
-git clone https://github.com/stepfun-ai/Step-Realtime-CLI.git
+git clone https://github.com/li-xiu-qi/Step-Code-Community.git
 cd Step-Code-Community
 pnpm install
 pnpm build

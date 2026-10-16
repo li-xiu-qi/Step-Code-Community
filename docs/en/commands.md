@@ -72,35 +72,29 @@ The body (markdown after the frontmatter) is the instruction content: for `promp
 
 The most common type. The body is injected as a prompt into the current turn, and the model acts on it.
 
-Example (project-level builtin/check-license.md):
+Example (project-level builtin/scan-todo.md):
 
 ```yaml
 ---
-name: check-license
-description: Scan code for competitor reference declarations and fix
+name: scan-todo
+description: Scan code for TODO/FIXME comments and list them
 type: prompt
 triggers:
-  - "license check"
-  - "check competitor references"
+  - "todo scan"
+  - "scan todos"
 allowedTools:
   - grep
   - bash
-  - edit_file
 output: inline
 ---
 
-Scan all .ts / .tsx files under src/ for code comments that contain:
-1. Explicit mentions of competitor names or paths
-2. "Reference/modeled after" pointing to a specific competitor
-3. Competitor names in commit messages
-
-For each finding, give the file, line number, original text, and a suggested rewrite.
-Confirm before fixing.
+Scan all .ts / .tsx files under src/ for code comments that contain TODO or FIXME.
+For each finding, give the file, line number, and the original comment text.
 ```
 
 Invocation:
-- Type `/check-license`
-- Or type natural language containing any trigger ("license check", "check competitor references")
+- Type `/scan-todo`
+- Or type natural language containing any trigger ("todo scan", "scan todos")
 
 ### pipeline type
 

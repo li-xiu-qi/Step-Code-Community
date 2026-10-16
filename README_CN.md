@@ -8,11 +8,11 @@
 
 # Step Code
 
-[![CI](https://github.com/stepfun-ai/Step-Realtime-CLI/actions/workflows/test.yml/badge.svg?branch=step-code-community](https://github.com/stepfun-ai/Step-Realtime-CLI/actions/workflows/test.yml)
+[![CI](https://github.com/li-xiu-qi/Step-Code-Community/actions/workflows/test.yml/badge.svg?branch=step-code-community)](https://github.com/li-xiu-qi/Step-Code-Community/actions/workflows/test.yml)
 
 终端里的编码 agent CLI，阶跃星辰 **Step 系列模型**为主要适配目标，UI 层用 **pi-tui**。模型接入层支持三种协议（Anthropic Messages、OpenAI Chat Completions、OpenAI Responses），任何兼容的模型都能直接接入；Step 是默认且经过最充分验证的目标。
 
-> 本仓库是 [stepfun-ai/Step-Realtime-CLI](https://github.com/stepfun-ai/Step-Realtime-CLI) 的 `step-code-community` 探索分支。
+> 本仓库是社区独立维护的 Step Code 版本，源自官方项目 `step-code-explore` 分支的探索。上游：[stepfun-ai/Step-Code](https://github.com/stepfun-ai/Step-Code)。
 
 ## 它是什么
 

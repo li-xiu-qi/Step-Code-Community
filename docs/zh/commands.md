@@ -72,36 +72,29 @@ params:                         # 可选：透传给 handler 的参数
 
 最常见的类型。正文作为 prompt 注入当前回合，模型按正文执行。
 
-示例（项目级 builtin/check-license.md）：
+示例（项目级 builtin/scan-todo.md）：
 
 ```yaml
 ---
-name: check-license
-description: 扫描代码中的竞品参考声明并修复
+name: scan-todo
+description: 扫描代码中的 TODO / FIXME 注释并列出
 type: prompt
 triggers:
-  - "版权检查"
-  - "检查竞品声明"
-  - "license check"
+  - "扫描待办"
+  - "scan todos"
 allowedTools:
   - grep
   - bash
-  - edit_file
 output: inline
 ---
 
-扫描 src/ 目录下所有 .ts / .tsx 文件的代码注释，找出：
-1. 明确提及竞品名称或路径的（如 "设计参考：某项目 path"）
-2. 含 "参考/对标/借鉴" 且指向具体竞品的
-3. commit message 中的竞品名称
-
-对每处给出文件、行号、原文，以及建议的改写方式。
-确认后直接修复。
+扫描 src/ 目录下所有 .ts / .tsx 文件，找出含 TODO 或 FIXME 的代码注释。
+对每处给出文件、行号，以及原始注释内容。
 ```
 
 调用方式：
-- 输入 `/check-license`
-- 或输入包含任一 trigger 的自然语言（"版权检查"、"检查竞品声明"）
+- 输入 `/scan-todo`
+- 或输入包含任一 trigger 的自然语言（"扫描待办"、"scan todos"）
 
 ### pipeline 类型
 

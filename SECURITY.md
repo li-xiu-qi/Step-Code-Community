@@ -6,7 +6,7 @@
 
 请通过 GitHub Security Advisories 私密披露：
 
-- https://github.com/stepfun-ai/Step-Realtime-CLI/security/advisories/new
+- https://github.com/li-xiu-qi/Step-Code-Community/security/advisories/new
 
 我们会尽快确认并跟进修复。在漏洞修复并发布前，请勿公开相关细节。
 

@@ -18,7 +18,7 @@ npm i -g https://github.com/li-xiu-qi/Step-Code-Community/releases/latest/downlo
 This installs a pre-built package: nothing is compiled locally and no dependencies are fetched, and the link always points to the latest Release. Without a Node environment, download the standalone executable for your platform from [Releases](https://github.com/li-xiu-qi/Step-Code-Community/releases/latest). To contribute, clone the repository and build it yourself:
 
 ```bash
-git clone https://github.com/stepfun-ai/Step-Realtime-CLI.git
+git clone https://github.com/li-xiu-qi/Step-Code-Community.git
 cd Step-Code-Community
 pnpm install
 pnpm build

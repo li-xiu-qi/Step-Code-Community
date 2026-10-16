@@ -16,11 +16,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/li-xiu-qi/Step-Realtime-CLI.git"
+    "url": "git+https://github.com/li-xiu-qi/Step-Code-Community.git"
   },
-  "homepage": "https://github.com/li-xiu-qi/Step-Realtime-CLI/tree/step-code-explore#readme",
+  "homepage": "https://github.com/li-xiu-qi/Step-Code-Community/tree/step-code-community#readme",
   "bugs": {
-    "url": "https://github.com/li-xiu-qi/Step-Realtime-CLI/issues"
+    "url": "https://github.com/li-xiu-qi/Step-Code-Community/issues"
   },
   "publishConfig": {
     "access": "public"
