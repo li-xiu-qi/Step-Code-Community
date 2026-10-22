@@ -219,6 +219,35 @@ describe('ItemBlock 渲染', () => {
     }
   });
 
+  it('运行中的工具卡跨帧刷新：已运行时长随时间推进（task_wait 零事件场景）', () => {
+    // 复现 2026-10-22 用户截图：task_wait 阻塞等待 6 分钟，卡片「已运行 0s」不动。
+    // 根因：ItemBlock.render 的缓存只按 width 判有效，而运行中工具卡的时间依赖内容
+    // （spinner 帧、已运行秒数）在 render 时现算、不触发 setItem——task_wait 整个
+    // 执行期零事件，首帧渲染结果被缓存冻结到终态。现有用例都是「新建块渲一次」，
+    // 绕过了跨帧场景，所以这条bug一直没被抓住。
+    const prev = chalk.level;
+    chalk.level = 0;
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-10-22T12:00:00Z'));
+      const block = new ItemBlock({
+        kind: 'tool',
+        id: 't',
+        name: 'task_wait',
+        status: 'running',
+        startedAt: Date.now(),
+        input: { task_id: 'tmvjcq0yp-740' },
+      } as never);
+      expect(block.render(78)[0]!.replace(STRIP_ANSI, '')).toContain('已运行 0s');
+      // 推进 65 秒，期间不调用 setItem：task_wait 等待终态时一个事件都没有
+      vi.setSystemTime(new Date('2026-10-22T12:01:05Z'));
+      expect(block.render(78)[0]!.replace(STRIP_ANSI, '')).toContain('已运行 1m 5s');
+    } finally {
+      vi.useRealTimers();
+      chalk.level = prev;
+    }
+  });
+
   it('thinking 块全灰：无任何非 dim 的着色残留', () => {
     // 半灰半白是老 bug：逐项配 thinkingMarkdownTheme 只覆盖带标记的元素，无标记的普通
     // 段落不经过任何 theme 函数，Markdown 原样输出即默认白——而思考内容大部分是普通段落。

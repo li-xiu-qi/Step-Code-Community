@@ -284,6 +284,16 @@ export interface ImageSeqRow {
   readonly colEnd?: number;
 }
 
+/**
+ * 块内容是否含时间依赖渲染：随墙钟变化、但不随 setItem 变化的部分。
+ * 运行中的工具卡是唯一一种：首列 spinner 帧与「已运行 Xs」都在 renderTool 里
+ * 按 Date.now() 现算，而工具执行期间可能零事件（task_wait 阻塞等待终态即是），
+ * 渲染缓存只按 width 判有效，会把首帧状态冻结到终态。
+ */
+function isTimeVolatileItem(item: DisplayItem): boolean {
+  return item.kind === 'tool' && item.status === 'running';
+}
+
 export class ItemBlock implements Component {
   private item: DisplayItem;
   private cachedWidth = -1;
@@ -339,7 +349,16 @@ export class ItemBlock implements Component {
   }
 
   render(width: number): string[] {
-    if (this.cachedLines !== undefined && this.cachedWidth === width) return this.cachedLines;
+    // 运行中的工具卡不命缓存：卡面含时间依赖内容（首列 spinner 帧、「已运行 Xs」），
+    // 二者都在 render 时按 Date.now() 现算，而工具执行期间可能一个事件都没有
+    // （task_wait 阻塞等待终态、无输出的长命令都是如此）——不走这条判据，
+    // 首帧的「已运行 0s」与静止帧会被缓存冻结到终态。2026-10-22 用户截图实测：
+    // task_wait 等待 6 分钟，卡片计时仍为 0s，而同屏状态线的 6m22s 在走。
+    // 其余块的内容变更都经 setItem 失效缓存，不受影响；前缀块只在结构变化时
+    // 才渲染，volatile 判据多加的一次现算成本限于运行中的工具卡（几行）。
+    if (this.cachedLines !== undefined && this.cachedWidth === width && !isTimeVolatileItem(this.item)) {
+      return this.cachedLines;
+    }
     const lines = this.renderItem(width);
     this.cachedLines = lines;
     this.cachedWidth = width;
@@ -665,7 +684,7 @@ export class ItemBlock implements Component {
     const mark = it.status === 'running' ? c.warn(spinnerFrame()) : it.status === 'ok' ? c.ok('✓') : c.error('✗');
     const elapsed =
       it.status === 'running' && it.startedAt !== undefined
-        ? c.dim(t('toolCall.elapsed', { s: Math.max(0, Math.round((Date.now() - it.startedAt) / 1000)) }))
+        ? c.dim(t('toolCall.elapsed', { dur: formatDuration(Math.max(0, Date.now() - it.startedAt)) }))
         : '';
     // 前台任务运行中才提示可转后台。Ctrl+B 转全部前台任务（bash / spawn_agent / dynamic_workflow），
     // 故提示统一落在卡片上。key 名里的 bash 是历史包袱，文案通用，保留不改以免 i18n 分叉。

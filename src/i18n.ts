@@ -93,7 +93,7 @@ const zh = {
   'welcome.helpHint': '输入 /help 查看命令',
 
   // --- 工具调用行（ToolCall）---
-  'toolCall.elapsed': '  已运行 {s}s',
+  'toolCall.elapsed': '  已运行 {dur}',
   'toolCall.bashBackgroundHint': '  （Ctrl+B 转后台运行）',
   'toolCall.tooLong': '… 输出过长，仅显示前 {shown}/{total} 行',
   'toolCall.moreLines': '… 还有 {count} 行 · Ctrl+O 查看',
@@ -911,7 +911,7 @@ const en: Record<keyof typeof zh, string> = {
   'welcome.title': 'Welcome to Step Code!',
   'welcome.helpHint': 'Type /help to see commands',
 
-  'toolCall.elapsed': '  running {s}s',
+  'toolCall.elapsed': '  running {dur}',
   'toolCall.bashBackgroundHint': '  (Ctrl+B to run in background)',
   'toolCall.tooLong': '… output too long, showing first {shown}/{total} lines',
   'toolCall.moreLines': '… {count} more lines · Ctrl+O to view',
