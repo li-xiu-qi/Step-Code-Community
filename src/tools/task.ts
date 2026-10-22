@@ -30,8 +30,10 @@ export const taskListTool: ToolDef<z.infer<typeof listSchema>> = {
  * 更长的时间应该由终态通知唤醒或显式给 timeout_s。
  */
 const TASK_WAIT_DEFAULT_S = 30;
-/** 单次等待上限（秒）：允许一次等待覆盖完整任务寿命（模型确知任务时长时用）。 */
-const TASK_WAIT_MAX_S = 3600;
+/** 单次等待上限（秒）：允许一次等待覆盖完整任务寿命（模型确知任务时长时用）。
+ * 3600→600：一次等 10 分钟是把「卡死风险」全压在用户手动打断上（日志实测模型曾传 280s）。
+ * 600s 足够覆盖绝大多数真实任务，超长任务应靠终态通知唤醒，而不是单次阻塞等待。 */
+const TASK_WAIT_MAX_S = 600;
 
 const waitSchema = z.object({
   task_id: z.string().describe('后台任务 id。'),
@@ -57,11 +59,18 @@ const waitSchema = z.object({
 export const taskWaitTool: ToolDef<z.infer<typeof waitSchema>> = {
   name: 'task_wait',
   description:
-    `同步等待指定后台任务完成（阻塞到终态或单次等待超时，默认 ${TASK_WAIT_DEFAULT_S}s，可用 timeout_s 调整）。返回任务状态与输出尾部。只在你确实被它的结果卡住、且此刻没有别的有用步骤可做时才用：多数情况下任务终态会自动通知本会话，起了就该先做其他步骤。支持 Esc/Ctrl+C 取消等待。`,
+    `同步等待指定后台任务完成（阻塞到终态或单次等待超时，默认 ${TASK_WAIT_DEFAULT_S}s，可用 timeout_s 调整，上限 ${TASK_WAIT_MAX_S}s）。返回任务状态与输出尾部。只在你确实被它的结果卡住、且此刻没有别的有用步骤可做时才用：多数情况下任务终态会自动通知本会话，起了就该先做其他步骤。支持 Esc/Ctrl+C 取消等待。`,
   schema: waitSchema,
   async execute(input, ctx) {
     if (ctx.background === undefined) return fail('当前上下文不支持后台任务。');
     const waitS = Math.min(input.timeout_s ?? TASK_WAIT_DEFAULT_S, TASK_WAIT_MAX_S);
+    // 记录进入时的输出长度与任务 id：超时路径据此判断「等待期间有没有新输出」。
+    // 整个等待窗口输出零增长，是「任务可能已结束但 settle 没触发」的最强信号，
+    // 比让模型自己猜「是不是还在跑」可靠得多。但零增长不等于僵尸：静默长任务
+    // （尚无输出的进程）与 async 类任务（子 agent 输出在 settle 时一次性给出）
+    // 同样零增长，所以提示只给核对路径，不下结论。
+    const before = ctx.background.get(input.task_id);
+    const beforeLen = before?.output.length ?? 0;
     const task = await ctx.background.waitFor(input.task_id, ctx.signal, waitS * 1000);
     if (task === null) {
       if (ctx.signal?.aborted) return fail('等待被用户取消。');
@@ -71,9 +80,17 @@ export const taskWaitTool: ToolDef<z.infer<typeof waitSchema>> = {
     // running 只有一种来路：单次等待超时。此时任务仍在后台跑，必须与终态分开表述，
     // 否则模型会把进度快照当成完整结果往下推（截断输出与「零命中」在视觉上无法区分）。
     if (task.status === 'running') {
+      const outputGrew = task.output.length > beforeLen;
+      const stuckNote = outputGrew
+        ? ''
+        : `\n\n⚠ 等待期间输出没有任何新增（${waitS}s 内长度无变化）。` +
+          `任务可能仍在静默运行（尚无输出的长任务），也可能已结束但结算未触发（僵尸态），或已挂起不再产出。` +
+          `不要盲目续等：先 task_output ${input.task_id} 核对全文；` +
+          `若输出已含最终结果而状态仍为 running，用 task_stop ${input.task_id} 终止并重新取结果。`;
       return ok(
         `⊘ 等待超时（${waitS}s），任务仍在后台运行，未到达终态。这不是失败。` +
           `继续用 task_output ${input.task_id} 查进度，或再次调用 task_wait 续等；确需终止用 task_stop。` +
+          stuckNote +
           `\n\n[${task.status}] ${task.command}${tail}`,
       );
     }
