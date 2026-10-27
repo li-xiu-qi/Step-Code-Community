@@ -5,6 +5,8 @@ import {
   totalInput,
   TOTAL_ROW_NAME,
   type ModelUsageStats,
+  type SubagentUsageReport,
+  type SubagentUsageStats,
   type TimeBucketUsage,
   type UsageReport,
   type UsageTimeBucket,
@@ -161,6 +163,56 @@ export function lowHitModels(report: UsageReport): ModelUsageStats[] {
     const rate = cacheHitRate(r);
     return rate !== null && totalInput(r) >= LOW_HIT_INPUT_FLOOR && rate < LOW_HIT_RATE_CEIL;
   });
+}
+
+/**
+ * 子 agent 维度的用量区块（`/usage` 主表之后的附表）。
+ *
+ * 无子 agent 用量时返回 null（调用方不追加任何行）——「没跑过子 agent」不是
+ * 需要占一块版面的信息。sessionId 统一截断到前 8 位（合计行的
+ * SUBAGENT-TOTAL 同样截断为 SUBAGENT）：持久 id 是 UUID 形态，全列宽展示会
+ * 把表格挤穿，而复盘时 8 位前缀已足以在 subagents/ 目录下定位对应快照文件。
+ */
+export function formatSubagentUsageSection(report: SubagentUsageReport): string | null {
+  if (report.total.turns === 0) return null;
+
+  const idWidth = 8;
+  const lines: string[] = [
+    t('app.usage.subagentHeader', {
+      sessions: String(report.rows.length),
+      turns: String(report.total.turns),
+      billed: formatCount(report.total.billedTokens),
+    }),
+    '',
+    [
+      '  ',
+      'session'.padEnd(idWidth),
+      '  ',
+      'turns'.padStart(6),
+      '  ',
+      'billed'.padStart(12),
+      '  ',
+      'total'.padStart(12),
+      '  ',
+      'models'.padStart(10),
+    ].join(''),
+  ];
+  const render = (s: SubagentUsageStats): string =>
+    [
+      '  ',
+      s.sessionId.slice(0, 8).padEnd(idWidth),
+      '  ',
+      String(s.turns).padStart(6),
+      '  ',
+      formatCount(s.billedTokens).padStart(12),
+      '  ',
+      formatCount(s.totalTokens).padStart(12),
+      '  ',
+      (s.models.join(',') || '—').padEnd(10),
+    ].join('');
+  for (const row of report.rows) lines.push(render(row));
+  lines.push(render(report.total));
+  return lines.join('\n');
 }
 
 /**

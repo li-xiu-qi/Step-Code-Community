@@ -116,7 +116,114 @@ export function aggregateModelUsage(events: readonly WireEvent[]): UsageReport {
   return { rows, total };
 }
 
-/** 时间分桶粒度：自然日 / 周（周一起）/ 自然月。 */
+/**
+ * 单个 subagent 会话的用量累计（按 `subagentSessionId` 分组）。
+ * 数据源与 {@link aggregateModelUsage} 相同——父会话 wire log 里带了
+ * `subagentSessionId` 标签的 `model.usage` 事件；区别只在分组键。
+ */
+export interface SubagentUsageStats {
+  /** 子 agent 会话持久 id（与 `subagents/<id>.json` 同名，可 join 复盘）。 */
+  sessionId: string;
+  /** 该子会话的 API 往返轮次数。 */
+  turns: number;
+  /** 未命中缓存的输入 token（净值，语义同 {@link ModelUsageStats.input}）。 */
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheCreation: number;
+  /** 服务端口径总量（四字段之和）。 */
+  totalTokens: number;
+  /** 计费口径（input + output），与逐轮 `billedTokens` 字段同口径。 */
+  billedTokens: number;
+  /** 该子会话用过的模型名（去重升序；子会话中途可换模型，保留全部）。 */
+  models: string[];
+}
+
+/** 子 agent 维度聚合结果：逐会话明细 + 合计行。 */
+export interface SubagentUsageReport {
+  /** 按计费量降序，便于一眼看到消耗大头。 */
+  rows: SubagentUsageStats[];
+  /** 合计行，sessionId 为 {@link SUBAGENT_TOTAL_ROW_NAME}。 */
+  total: SubagentUsageStats;
+}
+
+/** 子 agent 合计行的 sessionId 名。 */
+export const SUBAGENT_TOTAL_ROW_NAME = 'SUBAGENT-TOTAL';
+
+function emptySubagentStats(sessionId: string): SubagentUsageStats {
+  return {
+    sessionId,
+    turns: 0,
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheCreation: 0,
+    totalTokens: 0,
+    billedTokens: 0,
+    models: [],
+  };
+}
+
+/**
+ * 从事件流聚合出子 agent 用量（`/usage` 子 agent 维度的数据层）。
+ *
+ * 只消费带 `subagentSessionId` 的 `model.usage` 事件——主 agent 自己的往返
+ * 不带该字段，天然被排除。消费方按「字段在不在」判断归属，这里同理。
+ *
+ * 与子会话快照里 {@link SessionData.tokensUsed} 的关系：那个字段回答
+ * 「这个子会话跑完后一共烧了多少」（交互结束后的唯一来源，因 runner 闭包
+ * 里的累计不落盘）；本函数回答「本次统计窗口内逐轮明细按会话加起来是多少」。
+ * 同一事实两条路径，复盘时对得上即说明采集链路完整。
+ */
+export function aggregateSubagentUsage(events: readonly WireEvent[]): SubagentUsageReport {
+  const bySession = new Map<string, SubagentUsageStats>();
+  const total = emptySubagentStats(SUBAGENT_TOTAL_ROW_NAME);
+
+  for (const ev of events) {
+    if (ev.type !== 'model.usage') continue;
+    if (ev.subagentSessionId === undefined) continue;
+    const key = ev.subagentSessionId;
+    let row = bySession.get(key);
+    if (row === undefined) {
+      row = emptySubagentStats(key);
+      bySession.set(key, row);
+    }
+    const input = ev.inputTokens ?? 0;
+    const output = ev.outputTokens ?? 0;
+    const cacheRead = ev.cacheReadTokens ?? 0;
+    const cacheCreation = ev.cacheCreationTokens ?? 0;
+
+    row.turns += 1;
+    row.input += input;
+    row.output += output;
+    row.cacheRead += cacheRead;
+    row.cacheCreation += cacheCreation;
+    // totalTokens/billedTokens 缺省时按四字段自补：与 aggregateUsageByTime 同一理由，
+    // 旧数据与测试构造事件可能不带，而 NaN/undefined 会让排序与合计失控。
+    row.totalTokens += ev.totalTokens ?? input + output + cacheRead + cacheCreation;
+    row.billedTokens += ev.billedTokens ?? input + output;
+    if (ev.model !== undefined && !row.models.includes(ev.model)) {
+      row.models.push(ev.model);
+      row.models.sort();
+    }
+
+    total.turns += 1;
+    total.input += input;
+    total.output += output;
+    total.cacheRead += cacheRead;
+    total.cacheCreation += cacheCreation;
+    total.totalTokens += ev.totalTokens ?? input + output + cacheRead + cacheCreation;
+    total.billedTokens += ev.billedTokens ?? input + output;
+  }
+
+  const rows = [...bySession.values()].sort((a, b) => {
+    const diff = b.billedTokens - a.billedTokens;
+    // 同量时按 sessionId 稳定排序，避免 Map 插入顺序导致输出抖动。
+    return diff !== 0 ? diff : a.sessionId.localeCompare(b.sessionId);
+  });
+
+  return { rows, total };
+}
 export type UsageTimeBucket = 'day' | 'week' | 'month';
 
 /** 一个时间桶的用量累计。tokens 是服务端口径总量（input + output + cacheRead + cacheCreation）。 */

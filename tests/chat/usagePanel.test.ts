@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { I18N_TABLES, setLocale } from '../../src/i18n.js';
 import { SLASH_COMMANDS, busyRoute } from '../../src/chat/commands.js';
-import type { ModelUsageStats, TimeBucketUsage, UsageReport } from '../../src/session/usageReport.js';
-import { TOTAL_ROW_NAME } from '../../src/session/usageReport.js';
+import type { ModelUsageStats, SubagentUsageReport, SubagentUsageStats, TimeBucketUsage, UsageReport } from '../../src/session/usageReport.js';
+import { SUBAGENT_TOTAL_ROW_NAME, TOTAL_ROW_NAME } from '../../src/session/usageReport.js';
 import {
+  formatSubagentUsageSection,
   formatUsageByTime,
   formatUsageReport,
   lowHitModels,
@@ -196,5 +197,61 @@ describe('formatUsageByTime', () => {
     expect(text).toContain('by week');
     expect(text).toContain('09-28~10-04');
     setLocale('zh');
+  });
+});
+
+describe('formatSubagentUsageSection', () => {
+  function subStats(
+    sessionId: string,
+    turns: number,
+    billedTokens: number,
+    totalTokens: number,
+    models: string[],
+  ): SubagentUsageStats {
+    return {
+      sessionId,
+      turns,
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheCreation: 0,
+      totalTokens,
+      billedTokens,
+      models,
+    };
+  }
+
+  function subReport(rows: SubagentUsageStats[]): SubagentUsageReport {
+    const total = rows.reduce(
+      (acc, r) => ({
+        ...acc,
+        turns: acc.turns + r.turns,
+        billedTokens: acc.billedTokens + r.billedTokens,
+        totalTokens: acc.totalTokens + r.totalTokens,
+      }),
+      subStats(SUBAGENT_TOTAL_ROW_NAME, 0, 0, 0, []),
+    );
+    return { rows, total };
+  }
+
+  it('无子 agent 用量时返回 null（调用方不追加区块）', () => {
+    expect(formatSubagentUsageSection(subReport([]))).toBeNull();
+  });
+
+  it('渲染表头、逐会话行与合计行，sessionId 截断到 8 位', () => {
+    const text = formatSubagentUsageSection(
+      subReport([
+        subStats('3fa2b1c8-1111-2222-3333-444444444444', 5, 88_000, 120_000, ['m1']),
+        subStats('9e8d7c6b-aaaa', 2, 30_000, 41_000, ['m2', 'm3']),
+      ]),
+    )!;
+    expect(text).toContain('2 个会话');
+    expect(text).toContain('7 轮');
+    expect(text).toContain('session');
+    expect(text).toContain('3fa2b1c8');
+    expect(text).not.toContain('3fa2b1c8-1111');
+    expect(text).toContain('m2,m3');
+    expect(text).toContain('SUBAGENT');
+    expect(text).toContain('118k');
   });
 });

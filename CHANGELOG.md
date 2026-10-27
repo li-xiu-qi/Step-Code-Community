@@ -6,6 +6,7 @@
 
 ### Added
 
+- **`/usage` 子 agent 维度与子会话计费落盘**：子 agent 运行时产生的 `model.usage` 事件透传父会话事件日志时打上 `subagentSessionId` 归属标签（取子会话持久 id，resume/fork 后不漂移）；`/usage` 与 `/usage --all` 的主表之外，凡统计窗口内有子 agent 往返，另附一张按子会话分组的附表（轮次、计费量、总量、用过的模型，id 截断 8 位可回 subagents/ 目录定位快照）。子会话的计费总量同时随快照落盘为 `tokensUsed` 字段，resume 从旧值接着累计，交互式跑完事后也能回答「这个子 agent 一共烧了多少」。交互退出时的一行汇总在有子 agent 消耗时追加「（含子 agent N tok）」；无头模式（`-p --output-format json/stream-json`）的 result 事件新增 `subagentBilledTokens` 字段（无子 agent 往返时恒为 0），主循环 `usage.billedTotal` 只反映主会话最后一轮、不含子 agent，这一字段补齐了该盲区。
 - **`/usage` 支持按时间看用量**：新增 `-d` / `-w` / `-m` 三个短参数，分别按日、周、月汇总本工作目录全部会话的 token 消耗。每个时间段一行，给出轮次、token 总量、占比与一条按量归一的横条，趋势一眼可读；缺省回看最近 14 天 / 8 周 / 2 个月，可跟数字自定义（`/usage -m 6` 看 6 个月）。时间按本机日历切分（周从周一起算），与原有的按模型视角互补：一个回答「什么时候烧得多」，一个回答「哪个模型烧得多」。token 累计到十亿后自动换算为 B（如 10.8B），不再用 M 硬撑。统计走桶内增量缓存：首次建立索引需十几秒（有提示），日常查询在百毫秒级。
 - **出站代理支持**：进程启动时若存在 `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` 环境变量，全局 fetch 自动通过对应代理发送请求。此前 Node.js 内置 fetch 默认不读取代理环境变量，在需要代理的网络环境（代理网络、受限容器内的域名白名单代理等）下所有模型 API 请求直连失败（DNS 解析错误），agent 零工具调用即退出。未配置代理环境变量时网络行为不变。
 - **`read_media` 重复读取去重与已读媒体索引**：同一张图片文件被重复读取时，工具按源文件 sha256 与会话已读索引比对，命中只回文字引用（「与已读过的 media #N 逐字节相同」），不再重复交付视觉块，省 vision token 与上下文体积。每次成功交付的图自动登记进会话的 `media-log.md`（`~/.step-code/sessions/<工作目录>/media-log.md`，编号 `media #N`），模型可 grep 回看读过哪些图；压缩降级后的 `[image]` 占位符升级为带 stepref 句柄的形态（`[image stepref:<sha256>]`），可按内容寻址从附件存储找回原图。新增 `force` 参数跳过去重（压缩后遗忘等确需再看场景）。设计出处：何恺明团队 VISTA 论文（视觉 harness：无损视觉记忆 + 主动回看）在 CLI agent 场景的落地，2026-10-12。

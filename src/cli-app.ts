@@ -52,7 +52,7 @@ import { SessionQueueStore } from './agent/sessionQueue/store.js';
 import { buildQueueInjection } from './agent/sessionQueue/inject.js';
 import { GoalStore } from './agent/goal/store.js';
 import { resumeHintMeta, resumeHintText } from './session/resumeHint.js';
-import { aggregateModelUsage, cacheHitRate, totalInput } from './session/usageReport.js';
+import { aggregateModelUsage, aggregateSubagentUsage, cacheHitRate, totalInput } from './session/usageReport.js';
 import {
   subagentTextLine,
   toSubagentStreamEvent,
@@ -1136,6 +1136,15 @@ async function runPrint(prompt: string): Promise<void> {
     // 持久化失败不影响输出
   }
 
+  // 子 agent 计费合计：roundUsage 只反映主循环最后一轮的 usage 事件，子 agent 的量
+  // 不进主循环流，只能从 wire 逐轮重算（与子会话快照 tokensUsed 同口径，互为对账）。
+  let subagentBilledTotal = 0;
+  try {
+    subagentBilledTotal = aggregateSubagentUsage(store.loadWire(cwd, session.id)).total.billedTokens;
+  } catch {
+    // wire 缺失/损坏时按 0 处理，不影响 result 输出
+  }
+
   if (jsonOutput) {
     // json 模式：整轮跑完 stdout 只出单个 JSON 对象（result 结构），中途零 stdout
     const durationMs = Date.now() - roundStart;
@@ -1145,6 +1154,7 @@ async function runPrint(prompt: string): Promise<void> {
       toolUses: roundToolUses,
       totalTokens: roundUsage?.totalTokens ?? 0,
       billedTotal: roundUsage?.billedTotal ?? 0,
+      subagentBilledTokens: subagentBilledTotal,
       sessionId: session.id,
       subtype: hadError ? 'error' : 'success',
     });
@@ -1165,6 +1175,7 @@ async function runPrint(prompt: string): Promise<void> {
       toolUses: roundToolUses,
       totalTokens: roundUsage?.totalTokens ?? 0,
       billedTotal: roundUsage?.billedTotal ?? 0,
+      subagentBilledTokens: subagentBilledTotal,
       sessionId: session.id,
       subtype: hadError ? 'error' : 'success',
     });
@@ -1394,12 +1405,17 @@ if (opts.reflect === true) {
     // 退出时打印本场 token 汇总（一行）：读 wire 事件聚合 model.usage，
     // 不跑 /usage 也能看到本场消耗与缓存命中率。无任何 model.usage 时不打印。
     try {
-      const report = aggregateModelUsage(store.loadWire(cwd, info.sessionId));
+      const events = store.loadWire(cwd, info.sessionId);
+      const report = aggregateModelUsage(events);
       if (report.total.turns > 0) {
         const hit = cacheHitRate(report.total);
         const hitText = hit !== null ? ` · 缓存命中 ${Math.round(hit * 100)}%` : '';
+        // 子 agent 烧的量另起一段说明（runner 里活的累计值不落盘，这里只能读 wire 逐轮重算）。
+        const sub = aggregateSubagentUsage(events);
+        const subText =
+          sub.total.turns > 0 ? `（含子 agent ${sub.total.billedTokens} tok）` : '';
         process.stderr.write(
-          `本次会话：${report.total.turns} 轮 · 输入 ${totalInput(report.total)} tok · 输出 ${report.total.output} tok${hitText}\n`,
+          `本次会话：${report.total.turns} 轮 · 输入 ${totalInput(report.total)} tok · 输出 ${report.total.output} tok${hitText}${subText}\n`,
         );
       }
     } catch {

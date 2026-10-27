@@ -71,7 +71,7 @@ import { buildQueueInjection } from '../agent/sessionQueue/inject.js';
 import { canOverwriteTitle, generateSessionTitle } from '../session/title.js';
 import { TerminalTitleWriter } from '../chat/terminalTitle.js';
 import { aggregateFromCache, loadUsageCache, refreshUsageCache } from '../session/usageCache.js';
-import { aggregateModelUsage, DEFAULT_BUCKET_LIMIT, type UsageTimeBucket } from '../session/usageReport.js';
+import { aggregateModelUsage, aggregateSubagentUsage, DEFAULT_BUCKET_LIMIT, type UsageTimeBucket } from '../session/usageReport.js';
 import type { WireEvent } from '../agent/wirelog.js';
 import { renderSkillActivation, skillListing, type SkillRegistry } from '../skill/registry.js';
 import type { ReflectOptions } from '../agent/reflect.js';
@@ -94,7 +94,7 @@ import { clearUndoSnapshots, computeUndo, popUndoSnapshots, pushUndoSnapshot, ty
 import { historyToDisplayItems } from '../chat/historyReplay.js';
 import { planTurnEnd } from '../chat/turnEnd.js';
 import { formatDuration } from '../chat/duration.js';
-import { formatUsageByTime, formatUsageReport } from '../chat/usagePanel.js';
+import { formatSubagentUsageSection, formatUsageByTime, formatUsageReport } from '../chat/usagePanel.js';
 import { parseThinkArgs, THINK_CHOICES, thinkLevelsOf, thinkStreamParam, type ThinkOverride } from '../chat/thinkCommand.js';
 import { scanFileIndex } from '../chat/fileIndex.js';
 import { applyCtrlB } from '../chat/ctrlB.js';
@@ -3709,9 +3709,13 @@ ${task.output === '' ? '（暂无输出）' : task.output}`,
           kind: 'note',
           text: formatUsageReport(aggregateModelUsage(events), `本目录全部会话（${ids.length} 个）`),
         });
+        const subAll = formatSubagentUsageSection(aggregateSubagentUsage(events));
+        if (subAll !== null) this.push({ kind: 'note', text: subAll });
       } else {
         const events = this.deps.store.loadWire(this.session.cwd, this.session.id);
         this.push({ kind: 'note', text: formatUsageReport(aggregateModelUsage(events), `会话 ${this.session.id}`) });
+        const subOne = formatSubagentUsageSection(aggregateSubagentUsage(events));
+        if (subOne !== null) this.push({ kind: 'note', text: subOne });
       }
     } catch (e) {
       this.push({ kind: 'error', text: `读取用量失败：${(e as Error).message}` });

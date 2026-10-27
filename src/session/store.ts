@@ -105,6 +105,13 @@ export interface SessionData extends SessionMeta {
    * O(全事件数) 降到 O(尾段数)。旧快照缺失时回退全量读取，行为不变。
    */
   wireByteOffset?: number;
+  /**
+   * 累计计费 token（仅子 agent 会话填写：随快照落盘的会话级合计，resume 时接着累计）。
+   * 与 wire log 的逐轮 model.usage 明细互补——明细回答「哪一轮烧了多少」，
+   * 本字段回答「这个子 agent 会话一共烧了多少」，后者在交互式跑完后只能来自这里
+   * （runner 闭包里的累计值不落盘就随进程消失）。
+   */
+  tokensUsed?: number;
 }
 
 /** resume 产物：检查点 + 尾段重放后的完整会话态，外加通知幂等集合（供后台任务对账用）。 */

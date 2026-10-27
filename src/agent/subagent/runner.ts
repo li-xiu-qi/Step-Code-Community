@@ -450,6 +450,10 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): {
     const persist = (): void => {
       try {
         subSession.messages = messages;
+        // 累计计费 token 随快照落盘：子的用量只活在 runner 闭包里，不落盘的话
+        // 交互式跑完事后无法回答「这个子 agent 一共烧了多少」（wire log 只有
+        // 逐轮明细，没有按会话的合计）。resume 时从旧值接着累计（见下方初始化）。
+        subSession.tokensUsed = tokensUsed;
         deps.subagentStore.appendMessages(deps.cwd, sessionId, messages);
         deps.subagentStore.saveSnapshot(subSession);
       } catch {
@@ -477,6 +481,10 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): {
     // 这两个维度补上这个盲区。
     // 定义在 try 外：catch 分支补发终态时也要带上这两个统计。
     let toolUses = 0;
+    // 累计计费 token：定义在 try 外且初始化放在 persist 之前——persist 闭包里要读它
+    // 随快照落盘（子 agent 用量只活在这个闭包里，不落盘则交互式跑完事后查不到总量），
+    // 放 try 内会作用域够不着。只累计带 billedDelta 的真实 usage（run 内累加，见下）。
+    let tokensUsed = subSession.tokensUsed ?? 0;
     const startedAt = Date.now();
     // 墙钟超时包装：创建独立 AbortController，同时监听父信号和超时定时器。
     // 超时后 abort 该 controller，runAgent 的 for-await 循环收到 abort 信号退出。
@@ -577,9 +585,9 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): {
     let lastTurnStopReason: string | undefined;
       let aborted = false;
       let lastCause: unknown;
-      // 累计计费 token（放 runImpl 闭包：摘要过短追加轮的第二次 run() 自然连续累计）；
+      // 累计初值已在 try 外声明（persist 闭包同作用域）：resume 的会话盘上可能已有
+      // 前几轮跑出的累计，从零开始会把「这个子 agent 会话的总成本」写成「最后一次 dispatch 的成本」。
       // 只累计带 billedDelta 的真实 usage，压缩后的纯估算事件无增量可计、跳过。
-      let tokensUsed = 0;
       // 子 agent 剥离 goal 续接：复用主 hooks 会让子 agent 的 end_turn 触发主 goal 的 incrementTurn 污染计量；
       // Stop hook 续接对子 agent 也不适用（一次性语义在主会话层）
       const subHooks: LoopHooks = { ...deps.hooks };
@@ -589,6 +597,30 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): {
       if (req.writeAllowRoot !== undefined && subHooks.authorizeToolCall !== undefined) {
         subHooks.authorizeToolCall = wrapWriteGuard(subHooks.authorizeToolCall, cwd, req.writeAllowRoot);
       }
+      // 子的 wire 事件透传给父时打归属标签：父 wire log 里主的与子的 model.usage
+      // 混写，没有归属字段就分不开（/usage 子 agent 维度与事后复盘的数据源，
+      // 字段语义见 WireEvent['model.usage'] 注释）。只 tag model.usage：其他事件
+      // （压缩、通知）没有归属语义，原样转发。值取 sessionId 而非 sid：resume/fork
+      // 后 sid 会变，按会话合计必须用持久 id。
+      // model 补写：inherit 场景（别名未命中/未指定）binding.model 为 undefined，
+      // 子的 usage 事件不带 model 字段，父表会把这部分量归进 unknown 行——用配置默认
+      // 模型回填是尽力归因（会话内 /model 覆盖时可能偏差，但绝大多数情况正确）。
+      const parentOnWireEvent = deps.onWireEvent;
+      const effectiveModel = binding.model ?? deps.config?.model;
+      const taggedWireEvent =
+        parentOnWireEvent !== undefined
+          ? (ev: import('../../agent/wirelog.js').WireEvent): void => {
+              if (ev.type === 'model.usage') {
+                parentOnWireEvent({
+                  ...ev,
+                  subagentSessionId: sessionId,
+                  ...(ev.model === undefined && effectiveModel !== undefined ? { model: effectiveModel } : {}),
+                });
+              } else {
+                parentOnWireEvent(ev);
+              }
+            }
+          : undefined;
       const run = async (): Promise<void> => {
         for await (const ev of runAgent({
           provider: binding.provider,
@@ -610,7 +642,7 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): {
           compactionModel: deps.compactionModel,
           compactionProvider: deps.compactionProvider,
           userMessageBudget: deps.userMessageBudget,
-          ...(deps.onWireEvent !== undefined ? { onWireEvent: deps.onWireEvent } : {}),
+          ...(taggedWireEvent !== undefined ? { onWireEvent: taggedWireEvent } : {}),
         })) {
           if (ev.type === 'tool_start') {
             toolUses += 1;

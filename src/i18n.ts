@@ -553,6 +553,7 @@ const zh = {
   'app.usage.bucket.week': '周',
   'app.usage.bucket.month': '月',
   'app.usage.timeNone': '最近 {limit} 个{bucket}都没有模型往返记录。',
+  'app.usage.subagentHeader': 'subagent · {sessions} 个会话 · {turns} 轮 · 计费 {billed} tokens',
 
   // --- App /sessions /resume（cli.ts sessions 子命令复用 app.sessions.none / app.sessions.untitled / app.resume.notFound）---
   'app.sessions.none': '本工作目录暂无历史会话。',
@@ -1332,6 +1333,7 @@ const en: Record<keyof typeof zh, string> = {
   'app.usage.bucket.week': 'week',
   'app.usage.bucket.month': 'month',
   'app.usage.timeNone': 'No model round-trips in the last {limit} {bucket}s.',
+  'app.usage.subagentHeader': 'subagent · {sessions} sessions · {turns} turns · {billed} billed tokens',
 
   'app.sessions.none': 'No past sessions in this working directory.',
   'app.agents.none': 'The current session has not spawned any subagents.',

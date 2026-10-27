@@ -304,6 +304,8 @@ describe('result 终态摘要事件', () => {
       durationMs: 4213,
       toolUses: 3,
       usage: { totalTokens: 9071, billedTotal: 5000 },
+      // 未传时缺省 0（无子 agent 往返），字段恒在，消费方无需判存在性
+      subagentBilledTokens: 0,
       sessionId: '20260811-abc',
     });
     expect(JSON.stringify(ev)).not.toContain('\n');

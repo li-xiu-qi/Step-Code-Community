@@ -180,6 +180,8 @@ export type ResultEvent =
       durationMs: number;
       toolUses: number;
       usage: { totalTokens: number; billedTotal: number };
+      /** 本场子 agent 计费 token 合计（wire 逐轮重算；无子 agent 往返时为 0）。 */
+      subagentBilledTokens: number;
       sessionId: string;
     }
   | {
@@ -189,6 +191,8 @@ export type ResultEvent =
       durationMs: number;
       toolUses: number;
       usage: { totalTokens: number; billedTotal: number };
+      /** 本场子 agent 计费 token 合计（wire 逐轮重算；无子 agent 往返时为 0）。 */
+      subagentBilledTokens: number;
       sessionId: string;
     };
 
@@ -198,6 +202,7 @@ export function resultEvent(ev: {
   toolUses: number;
   totalTokens: number;
   billedTotal: number;
+  subagentBilledTokens?: number;
   sessionId: string;
   subtype: 'success' | 'error';
 }): ResultEvent {
@@ -208,6 +213,7 @@ export function resultEvent(ev: {
     durationMs: ev.durationMs,
     toolUses: ev.toolUses,
     usage: { totalTokens: ev.totalTokens, billedTotal: ev.billedTotal },
+    subagentBilledTokens: ev.subagentBilledTokens ?? 0,
     sessionId: ev.sessionId,
   };
 }

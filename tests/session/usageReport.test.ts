@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { WireEvent } from '../../src/agent/wirelog.js';
 import {
   aggregateModelUsage,
+  aggregateSubagentUsage,
   aggregateUsageByTime,
   cacheHitRate,
   DEFAULT_BUCKET_LIMIT,
@@ -310,5 +311,58 @@ describe('aggregateUsageByTime', () => {
     expect(DEFAULT_BUCKET_LIMIT.day).toBe(14);
     expect(DEFAULT_BUCKET_LIMIT.week).toBe(8);
     expect(DEFAULT_BUCKET_LIMIT.month).toBe(2);
+  });
+});
+
+describe('aggregateSubagentUsage', () => {
+  it('按 subagentSessionId 分组，主 agent 往返（无归属字段）被排除', () => {
+    const events: WireEvent[] = [
+      usage('main-model', 100, 10, 0),
+      { ...usage('sub-a-model', 50, 5, 0), subagentSessionId: 'sub-a' },
+      { ...usage('sub-a-model', 30, 3, 0), subagentSessionId: 'sub-a' },
+      { ...usage('sub-b-model', 20, 2, 0), subagentSessionId: 'sub-b' },
+    ];
+    const report = aggregateSubagentUsage(events);
+    expect(report.rows).toHaveLength(2);
+    expect(report.total.turns).toBe(3);
+    expect(report.total.billedTokens).toBe(50 + 5 + 30 + 3 + 20 + 2);
+    const a = report.rows.find((r) => r.sessionId === 'sub-a')!;
+    expect(a.turns).toBe(2);
+    expect(a.billedTokens).toBe(88);
+    expect(a.models).toEqual(['sub-a-model']);
+  });
+
+  it('按计费量降序，同量按 sessionId 稳定排序', () => {
+    const events: WireEvent[] = [
+      { ...usage('m', 10, 0, 0), subagentSessionId: 'bbb' },
+      { ...usage('m', 30, 0, 0), subagentSessionId: 'ccc' },
+      { ...usage('m', 10, 0, 0), subagentSessionId: 'aaa' },
+    ];
+    const report = aggregateSubagentUsage(events);
+    expect(report.rows.map((r) => r.sessionId)).toEqual(['ccc', 'aaa', 'bbb']);
+  });
+
+  it('同一子会话中途换模型，models 去重升序保留全部', () => {
+    const events: WireEvent[] = [
+      { ...usage('z-model', 10, 0, 0), subagentSessionId: 's1' },
+      { ...usage('a-model', 10, 0, 0), subagentSessionId: 's1' },
+      { ...usage('a-model', 10, 0, 0), subagentSessionId: 's1' },
+    ];
+    const report = aggregateSubagentUsage(events);
+    expect(report.rows[0]!.models).toEqual(['a-model', 'z-model']);
+  });
+
+  it('空事件流返回空行集与零合计', () => {
+    const report = aggregateSubagentUsage([]);
+    expect(report.rows).toEqual([]);
+    expect(report.total.turns).toBe(0);
+    expect(report.total.billedTokens).toBe(0);
+  });
+
+  it('billedTokens 缺省时按 input+output 自补，不产生 NaN', () => {
+    const ev = { ...usage('m', 100, 10, 50, 5), billedTokens: undefined } as unknown as WireEvent;
+    const report = aggregateSubagentUsage([{ ...ev, subagentSessionId: 's1' }]);
+    expect(report.rows[0]!.billedTokens).toBe(110);
+    expect(Number.isNaN(report.rows[0]!.billedTokens)).toBe(false);
   });
 });

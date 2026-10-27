@@ -129,6 +129,17 @@ export type WireEvent =
       measuredLength: number;
       /** 本轮停止原因，用于把异常轮（max_tokens / error）与正常轮分开统计。 */
       stopReason: string;
+      /**
+       * 本轮回合属于哪个子 agent 会话（仅子 agent 运行产生的往返带此字段）。
+       *
+       * 为什么需要：子的 onWireEvent 透传给父，主的与子的 model.usage 混写在同一份
+       * wire log 里，没有归属字段就分不开——`/usage` 的子 agent 维度与「这个子 agent
+       * 一共烧了多少」的事后复盘都靠它。取值是子会话的持久 id（与 `subagents/<id>.json`
+       * 同名，可 join 复盘），不是 UI 路由用的 sid：sid 在 resume/fork 后会变，
+       * 按它分组会把同一会话的成本劈成多段。
+       * 缺省（主 agent 的往返）即无归属，消费方按「字段在不在」判断而非比对空值。
+       */
+      subagentSessionId?: string;
     }
   | {
       /** 权限模式切换。 */
