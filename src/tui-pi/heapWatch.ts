@@ -116,7 +116,7 @@ export function checkHeapOnce(
     opts.notify(
       `堆内存将尽（${Math.round(used / 1024 / 1024)}MB / 上限 ${Math.round(limit / 1024 / 1024)}MB，` +
         `${(ratio * 100).toFixed(0)}%）。为避免 V8 直接 abort 把终端留在污染态，现在主动退出；` +
-        '会话已保存，用 /resume 或 step -r 续接。',
+        '会话已保存，用 /resume 或 step-code -r 续接。',
     );
     opts.onCritical?.({ usedMB: Math.round(used / 1024 / 1024), limitMB: Math.round(limit / 1024 / 1024) });
     return out;

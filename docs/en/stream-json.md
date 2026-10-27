@@ -1,9 +1,9 @@
 # stream-json Event Stream
 
-`step -p "..." --output-format stream-json` writes every event of the run to stdout as **one JSON object per line**, for consumption by external programs.
+`step-code -p "..." --output-format stream-json` writes every event of the run to stdout as **one JSON object per line**, for consumption by external programs.
 
 ```bash
-step -p "Read the README and summarize it" --output-format stream-json --yolo
+step-code -p "Read the README and summarize it" --output-format stream-json --yolo
 ```
 
 ```json
@@ -12,7 +12,7 @@ step -p "Read the README and summarize it" --output-format stream-json --yolo
 {"type":"tool_end","id":"tu_1","name":"read_file","result":"...","isError":false}
 {"type":"usage","totalTokens":19414,"measuredLength":2,"billedDelta":19414}
 {"type":"turn_done"}
-{"type":"session.resume_hint","session_id":"20260802-abc","command":"step -r 20260802-abc","content":"To resume this session: step -r 20260802-abc"}
+{"type":"session.resume_hint","session_id":"20260802-abc","command":"step-code -r 20260802-abc","content":"To resume this session: step-code -r 20260802-abc"}
 ```
 
 ## Envelope contract
@@ -92,7 +92,7 @@ Emitted when the main agent spawns sub-agents. **With parallel spawns, attribute
 On `subagent.end`:
 
 - **It always arrives.** Normal completion, interruption, or internal exception — every `subagent.start` gets a matching `subagent.end`. Safe to use as your "is this sub-agent still running" signal.
-- `summary` is truncated past 500 characters, in which case `summary_truncated: true` appears. Retrieve the full output via `session_id`: `step sessions show <session_id>`.
+- `summary` is truncated past 500 characters, in which case `summary_truncated: true` appears. Retrieve the full output via `session_id`: `step-code sessions show <session_id>`.
 - `tool_uses` and `duration_ms` are that sub-agent's tool call count and wall-clock time.
 
 ### Session metadata (`session.*`)
@@ -121,7 +121,7 @@ So the robust pattern is: **parse events from stdout, collect stderr separately,
 | Reasoning | Not emitted | `thinking_*` events | Not emitted |
 | Sub-agents | Brief stderr lines (tools and errors only) | All five events | Not emitted |
 
-`text` targets humans and shell pipelines; `stream-json` targets programs that need real-time progress; `json` targets programs that only need the final result — its stdout object has the same shape as the `result` event, so `step -p "..." --output-format json | jq .text` works directly.
+`text` targets humans and shell pipelines; `stream-json` targets programs that need real-time progress; `json` targets programs that only need the final result — its stdout object has the same shape as the `result` event, so `step-code -p "..." --output-format json | jq .text` works directly.
 
 ## Exit codes
 

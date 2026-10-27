@@ -22,7 +22,7 @@ git clone https://github.com/li-xiu-qi/Step-Code-Community.git
 cd Step-Code-Community
 pnpm install
 pnpm build
-pnpm link --global   # afterwards you can use the step command directly
+pnpm link --global   # afterwards you can use the step-code command directly
 ```
 
 For the trade-offs between the four installation methods, plus upgrading, uninstalling, and troubleshooting, see [Installation](./installation.md).
@@ -60,9 +60,9 @@ Before writing files or running commands, a confirmation prompt appears (this is
 ## 4. Common operations
 
 ```bash
-step -p "find all TODOs under src"   # non-interactive: print the result and exit
-step --continue                      # resume the previous session
-step --resume                        # open the session picker
+step-code -p "find all TODOs under src"   # non-interactive: print the result and exit
+step-code --continue                      # resume the previous session
+step-code --resume                        # open the session picker
 ```
 
 Inside the interactive interface:

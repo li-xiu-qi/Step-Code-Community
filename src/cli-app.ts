@@ -175,7 +175,7 @@ setLocale(config.language ?? 'zh');
 configureWebResultCache(config);
 
 // 配置启动自检：把 loadConfig 静默跳过/降级的项摆到用户面前（正常配置下零输出）。
-// 规则与 `step doctor config` 共用 collectConfigWarnings，两个入口不会给出不同结论。
+// 规则与 `step-code doctor config` 共用 collectConfigWarnings，两个入口不会给出不同结论。
 // 必须放在 setLocale 之后——文案走 i18n 查表。呈现通道按运行模式分流（见下方两处）：
 // 交互 TUI 走转录区 note（交互模式独占终端，绝不写 stderr/stdout），非交互走 stderr。
 const configWarnings = configDiagnostics !== undefined ? collectConfigWarnings(configDiagnostics.rawToml) : [];
@@ -331,7 +331,7 @@ if (program.args[0] === 'subagents') {
   } else if (sub === 'search') {
     const query = program.args[2];
     if (query === undefined || query.length === 0) {
-      console.error('用法：step subagents search <关键词>');
+      console.error('用法：step-code subagents search <关键词>');
       process.exit(1);
     }
     const q = query.toLowerCase();
@@ -1228,7 +1228,7 @@ if (opts.reflect === true) {
 } else if (opts.print !== undefined) {
   configureLogger({ mode: 'headless' });
   // prompt 来源优先级：位置参数 > -p 紧跟值 > stdin。
-  // 位置参数存在时（如 `step "prompt" -p` 或 `step -p --output-format stream-json "prompt"`），
+  // 位置参数存在时（如 `step-code "prompt" -p` 或 `step-code -p --output-format stream-json "prompt"`），
   // commander 的 `allowExcessArguments` 会把多余的 token 留在 program.args，优先取用。
   // 旧的 `-p <prompt>` 紧跟形式不变。
   let prompt = (opts.print as unknown) === true ? '' : (opts.print as string);

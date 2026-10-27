@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **命令名统一为 step-code**：社区版产物的启动命令是 `step-code`（SEA 产物与更新资产均为 step-code-* 命名），退出恢复提示、崩溃续接提示、堆内存告警、`sessions`/`subagents`/`doctor`/`skill` 等命令用法文案、终端窗口标题前缀（`step-code ·`）以及 zh/en 全部文档里的命令示例，统一从 `step` 改为 `step-code`；npm bin 仍保留 `step`/`step-community` 别名未动。
+
 ### Added
 
 - **`/usage` 子 agent 维度与子会话计费落盘**：子 agent 运行时产生的 `model.usage` 事件透传父会话事件日志时打上 `subagentSessionId` 归属标签（取子会话持久 id，resume/fork 后不漂移）；`/usage` 与 `/usage --all` 的主表之外，凡统计窗口内有子 agent 往返，另附一张按子会话分组的附表（轮次、计费量、总量、用过的模型，id 截断 8 位可回 subagents/ 目录定位快照）。子会话的计费总量同时随快照落盘为 `tokensUsed` 字段，resume 从旧值接着累计，交互式跑完事后也能回答「这个子 agent 一共烧了多少」。交互退出时的一行汇总在有子 agent 消耗时追加「（含子 agent N tok）」；无头模式（`-p --output-format json/stream-json`）的 result 事件新增 `subagentBilledTokens` 字段（无子 agent 往返时恒为 0），主循环 `usage.billedTotal` 只反映主会话最后一轮、不含子 agent，这一字段补齐了该盲区。

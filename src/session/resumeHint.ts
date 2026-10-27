@@ -1,13 +1,13 @@
 import { t } from '../i18n.js';
 
 /**
- * 退出时的会话恢复提示（形如 "To resume this session: step -r <id>"）。
+ * 退出时的会话恢复提示（形如 "To resume this session: step-code -r <id>"）。
  * 命令与 CLI 的 -r/--resume 参数对应，是提示文案与命令行之间的契约。
  */
 
-/** 恢复命令文本。 */
+/** 恢复命令文本。社区版产物（SEA/npm）的命令名是 step-code，不再是 step。 */
 export function resumeCommand(sessionId: string): string {
-  return `step -r ${sessionId}`;
+  return `step-code -r ${sessionId}`;
 }
 
 /** 文本模式的提示行（本地化，TUI 与 -p text 模式打到 stderr）。 */

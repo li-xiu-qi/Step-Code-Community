@@ -433,7 +433,7 @@ describe('httpErrorToApiError', () => {
     // 都准确，而且不会过期（官方开放新协议时它自然消失），所以我们的职责只有一个：
     // 原样传给用户，不要吞、不要截断、不要用自己猜的措辞覆盖它。
     //
-    // 相关决策：曾计划在 `step doctor config` 里加 (model, protocol) 组合预检，
+    // 相关决策：曾计划在 `step-code doctor config` 里加 (model, protocol) 组合预检，
     // 后判定不做——预检需要硬编码「哪个模型只在哪个接口开放」的清单，那是服务端行为
     // 快照，官方一变更就成误报；而服务端这条报错永远是最新的。详见 AGENTS.md 缺口清单。
     const body = JSON.stringify({

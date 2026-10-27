@@ -62,7 +62,7 @@ describe('sanitizeTitleText', () => {
 
 describe('buildTitleSequence', () => {
   it('普通环境发 OSC 0 + BEL', () => {
-    expect(buildTitleSequence(withTitlePrefix('hello'), empty)).toBe('\x1b]0;step · hello\x07');
+    expect(buildTitleSequence(withTitlePrefix('hello'), empty)).toBe('\x1b]0;step-code · hello\x07');
   });
 
   it('空标题是清空语义（不加前缀）', () => {
@@ -71,7 +71,7 @@ describe('buildTitleSequence', () => {
 
   it('tmux 内走 DCS passthrough 且内部 ESC 双写', () => {
     const seq = buildTitleSequence(withTitlePrefix('t'), { TMUX: '/tmp/tmux-1000/default' });
-    expect(seq).toBe('\x1bPtmux;\x1b\x1b]0;step · t\x07\x1b\\');
+    expect(seq).toBe('\x1bPtmux;\x1b\x1b]0;step-code · t\x07\x1b\\');
   });
 
   it('screen（TERM=screen-256color）同样走 DCS passthrough', () => {
@@ -82,7 +82,7 @@ describe('buildTitleSequence', () => {
 
 describe('withTitlePrefix', () => {
   it('非空标题加统一前缀', () => {
-    expect(withTitlePrefix('任务')).toBe('step · 任务');
+    expect(withTitlePrefix('任务')).toBe('step-code · 任务');
   });
   it('空标题不加前缀（清空语义）', () => {
     expect(withTitlePrefix('')).toBe('');
@@ -110,7 +110,7 @@ describe('TerminalTitleWriter', () => {
     const w = new TerminalTitleWriter({ TERM: 'xterm-256color' }, true, true, (s) => written.push(s));
     w.set('查看存储占用');
     w.reset();
-    expect(written).toEqual(['\x1b]0;step · 查看存储占用\x07', '\x1b]0;\x07']);
+    expect(written).toEqual(['\x1b]0;step-code · 查看存储占用\x07', '\x1b]0;\x07']);
   });
 
   // re-assert 机制（2026-10-08 加）：标题是控制台级共享属性，Ctrl+G 外部编辑器
@@ -123,7 +123,7 @@ describe('TerminalTitleWriter', () => {
     w.set('任务A');
     w.set('任务A');
     w.set('任务A');
-    expect(written).toEqual(['\x1b]0;step · 任务A\x07']);
+    expect(written).toEqual(['\x1b]0;step-code · 任务A\x07']);
   });
 
   it('set 文本变化时照常写', () => {
@@ -131,7 +131,7 @@ describe('TerminalTitleWriter', () => {
     const w = new TerminalTitleWriter({ TERM: 'xterm-256color' }, true, true, (s) => written.push(s));
     w.set('任务A');
     w.set('任务B');
-    expect(written).toEqual(['\x1b]0;step · 任务A\x07', '\x1b]0;step · 任务B\x07']);
+    expect(written).toEqual(['\x1b]0;step-code · 任务A\x07', '\x1b]0;step-code · 任务B\x07']);
   });
 
   it('reassert 绕过去重强制重发，用于外部抢走标题后夺回', () => {
@@ -141,9 +141,9 @@ describe('TerminalTitleWriter', () => {
     w.reassert();
     w.reassert();
     expect(written).toEqual([
-      '\x1b]0;step · 任务A\x07',
-      '\x1b]0;step · 任务A\x07',
-      '\x1b]0;step · 任务A\x07',
+      '\x1b]0;step-code · 任务A\x07',
+      '\x1b]0;step-code · 任务A\x07',
+      '\x1b]0;step-code · 任务A\x07',
     ]);
   });
 
@@ -160,6 +160,6 @@ describe('TerminalTitleWriter', () => {
     w.set('任务A');
     w.reset();
     w.set('任务A');
-    expect(written).toEqual(['\x1b]0;step · 任务A\x07', '\x1b]0;\x07', '\x1b]0;step · 任务A\x07']);
+    expect(written).toEqual(['\x1b]0;step-code · 任务A\x07', '\x1b]0;\x07', '\x1b]0;step-code · 任务A\x07']);
   });
 });

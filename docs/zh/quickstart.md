@@ -59,9 +59,9 @@ step
 ## 4. 常用操作
 
 ```bash
-step -p "在 src 下找出所有 TODO"   # 非交互：执行完打印结果退出
-step --continue                    # 续接上次会话
-step --resume                      # 打开会话选择器
+step-code -p "在 src 下找出所有 TODO"   # 非交互：执行完打印结果退出
+step-code --continue                    # 续接上次会话
+step-code --resume                      # 打开会话选择器
 ```
 
 交互界面里：

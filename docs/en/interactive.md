@@ -21,7 +21,7 @@ You page through history with the terminal's native scrollback (wheel or scrollb
 
 Tool output is collapsed by default into a one-line summary ("N lines of output · Ctrl+O to expand"), and once committed to history it stays a collapsed summary forever, keeping history compact. Ctrl+O opens the full-screen viewer: recent expandable tool output and thinking content, grouped by turn and rendered in full (Markdown, colorized diffs, italic thinking). Use ↑↓ or `k`/`j` to scroll by line, PgUp/PgDn to page, ←/→ to switch turns, Home/`g` to jump to the top, End/`G` to jump to the bottom, and Esc/`q` or Ctrl+O again to close. The viewer has its own scrolling and does not affect terminal scrollback.
 
-When you resume a session (`step -r` / `/resume`), the conversation history is re-rendered to the terminal and looks the same as it did live. Long sessions replay only the most recent turns by default, with a note at the top saying the earlier ones are collapsed. See [Session management](./sessions.md#replaying-history-on-resume) for details.
+When you resume a session (`step-code -r` / `/resume`), the conversation history is re-rendered to the terminal and looks the same as it did live. Long sessions replay only the most recent turns by default, with a note at the top saying the earlier ones are collapsed. See [Session management](./sessions.md#replaying-history-on-resume) for details.
 
 ## Slash commands
 
@@ -178,7 +178,7 @@ Plan mode is session-level state, persisted on toggle and read back when the ses
 
 ## The session picker
 
-`/resume` with no argument (or `step -r` on the command line without an id) opens the interactive session picker: ↑↓ to move (**wrapping around**, unlike the ↑↓ of the provider channel panel, which stops at the ends; paging lets you get through every session), type directly for fuzzy search, Enter to resume, Esc to cancel, Delete/Ctrl+D to delete the highlighted session (`[y/N]` second confirmation; the current session cannot be deleted), and r to rename the highlighted session (renaming does not affect the ordering; the command line `step sessions rename <id> <name>` is equivalent). `/resume <id>` switches directly by text. `/sessions` is an alias of `/resume` and behaves identically; to list sessions read-only, use the command line `step sessions list`. When the current directory has no session history, it only prints a note and does not open the picker. The permission tier and the model are persisted with the session and read back on resume. See [Session management](./sessions.md#interactive-session-picker-shared-by--r-on-the-command-line-and-resume-in-the-interface) for details.
+`/resume` with no argument (or `step-code -r` on the command line without an id) opens the interactive session picker: ↑↓ to move (**wrapping around**, unlike the ↑↓ of the provider channel panel, which stops at the ends; paging lets you get through every session), type directly for fuzzy search, Enter to resume, Esc to cancel, Delete/Ctrl+D to delete the highlighted session (`[y/N]` second confirmation; the current session cannot be deleted), and r to rename the highlighted session (renaming does not affect the ordering; the command line `step-code sessions rename <id> <name>` is equivalent). `/resume <id>` switches directly by text. `/sessions` is an alias of `/resume` and behaves identically; to list sessions read-only, use the command line `step-code sessions list`. When the current directory has no session history, it only prints a note and does not open the picker. The permission tier and the model are persisted with the session and read back on resume. See [Session management](./sessions.md#interactive-session-picker-shared-by--r-on-the-command-line-and-resume-in-the-interface) for details.
 
 ## Switching models
 
@@ -189,7 +189,7 @@ Plan mode is session-level state, persisted on toggle and read back when the ses
 - While the model is working (busy/streaming), switching is refused with a note.
 - When the current session already has history, a warning appears at the top of the picker: "Switching models invalidates the existing prompt cache; start a new session with `/new` to avoid extra token cost".
 
-`/model <alias>` switches directly by text, skipping the picker. Either way, confirming rebuilds the provider from the alias's merged config, the context window follows along, and the status bar shows the new model's display name. Confirming also updates the top-level `model` in config.toml to the chosen alias, so the next new session uses it (the two cases of a `step --model` command-line override and resuming an old session with `/resume` are not written back).
+`/model <alias>` switches directly by text, skipping the picker. Either way, confirming rebuilds the provider from the alias's merged config, the context window follows along, and the status bar shows the new model's display name. Confirming also updates the top-level `model` in config.toml to the chosen alias, so the next new session uses it (the two cases of a `step-code --model` command-line override and resuming an old session with `/resume` are not written back).
 
 **Shift+Enter for session-only switch**: in the picker, pressing Shift+Enter confirms the model switch but does not write back to config.toml — useful for "try another model for this turn, keep the old one as default". Enter means "switch and set as default"; Shift+Enter means "switch for this session only".
 
@@ -219,7 +219,7 @@ When a preset comes with a default model, that is switched to as well, otherwise
 
 ### Deleting a channel
 
-What D in the panel deletes is a custom channel in config.toml: after confirmation, the whole `[providers.<id>]` section and every `[models.<alias>]` section under it are removed together (and if the top-level `model` pointer points at a deleted alias, it is cleared too), with an automatic timestamped backup before the write, an automatic `step doctor config` validation after it, and a rollback on failure. When you delete the channel currently in effect, this session's provider instance keeps working in memory and lapses on restart or on a switch; after the deletion, `/reload` makes the config take effect throughout.
+What D in the panel deletes is a custom channel in config.toml: after confirmation, the whole `[providers.<id>]` section and every `[models.<alias>]` section under it are removed together (and if the top-level `model` pointer points at a deleted alias, it is cleared too), with an automatic timestamped backup before the write, an automatic `step-code doctor config` validation after it, and a rollback on failure. When you delete the channel currently in effect, this session's provider instance keeps working in memory and lapses on restart or on a switch; after the deletion, `/reload` makes the config take effect throughout.
 
 ### Adding a channel (/provider add)
 
@@ -253,18 +253,18 @@ After an enable/disable change, follow the prompt to run `/new` or restart for i
 
 ```bash
 step                          # interactive (enters the pi-tui interface, manual permissions by default)
-step -p "find every TODO under src"          # non-interactive: run a single instruction and exit
-step --yolo -p "rename a.txt to b.txt"    # --yolo allows everything / --auto allows writes (non-interactive writes need one of them)
-step --continue -p "continue the previous task"       # session continuation (-c)
-step --session <id>                     # resume a specific session
-step --resume                           # open the interactive session picker (-r [id])
-step --provider anthropic -p "..."      # switch the provider preset
-step --model step-3.7-flash -p "..."   # specify the model
+step-code -p "find every TODO under src"          # non-interactive: run a single instruction and exit
+step-code --yolo -p "rename a.txt to b.txt"    # --yolo allows everything / --auto allows writes (non-interactive writes need one of them)
+step-code --continue -p "continue the previous task"       # session continuation (-c)
+step-code --session <id>                     # resume a specific session
+step-code --resume                           # open the interactive session picker (-r [id])
+step-code --provider anthropic -p "..."      # switch the provider preset
+step-code --model step-3.7-flash -p "..."   # specify the model
 step -C /path/to/project -p "..."       # specify the working directory
-step --output-format stream-json -p "..."   # one JSON line per event
-step sessions list                      # headless subcommand: session management
-step doctor config [path]               # validate config.toml (exit code 0/1)
-step export-debug-zip [sessionId]       # export a debug bundle
+step-code --output-format stream-json -p "..."   # one JSON line per event
+step-code sessions list                      # headless subcommand: session management
+step-code doctor config [path]               # validate config.toml (exit code 0/1)
+step-code export-debug-zip [sessionId]       # export a debug bundle
 ```
 
 | Argument | Notes |
@@ -281,7 +281,7 @@ step export-debug-zip [sessionId]       # export a debug bundle
 | `--reflect` | Run /reflect non-interactively (together with `-c` / `--session`) |
 | `-V, --version` / `-h, --help` | Version number / help |
 
-Headless subcommands (they do not enter the TUI): `step sessions list`, `step sessions show <id>`, `step sessions delete <id>`, `step sessions rename <id> <name>`, `step doctor config [path]`, `step export-debug-zip [sessionId]`. Both `doctor config` and `export-debug-zip` run before the config is read, so you can validate and export a debug bundle even when the config is broken.
+Headless subcommands (they do not enter the TUI): `step-code sessions list`, `step-code sessions show <id>`, `step-code sessions delete <id>`, `step-code sessions rename <id> <name>`, `step-code doctor config [path]`, `step-code export-debug-zip [sessionId]`. Both `doctor config` and `export-debug-zip` run before the config is read, so you can validate and export a debug bundle even when the config is broken.
 
 ## Custom commands and review rules
 
@@ -290,11 +290,11 @@ Slash commands are not limited to built-ins. You can define your own commands by
 ## Non-interactive mode
 
 ```bash
-step -p "instruction"                 # runs and exits; results go to stdout, tools and errors to stderr
-step --yolo -p "rename a.txt to b.txt"
-step -p --output-format stream-json "..."   # one JSON line per event, for programs to consume
+step-code -p "instruction"                 # runs and exits; results go to stdout, tools and errors to stderr
+step-code --yolo -p "rename a.txt to b.txt"
+step-code -p --output-format stream-json "..."   # one JSON line per event, for programs to consume
 ```
 
-Non-interactive mode can be used in a pipeline: `step -p "summarize this file" < README.md` puts the assistant output on stdout, ready to feed into a downstream command.
+Non-interactive mode can be used in a pipeline: `step-code -p "summarize this file" < README.md` puts the assistant output on stdout, ready to feed into a downstream command.
 
 To consume a run programmatically (envelope contract, all event types, versioning rules), see [stream-json event stream](./stream-json.md).

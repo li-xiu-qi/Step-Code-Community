@@ -159,7 +159,7 @@ export function classifyJimpError(msg: string, exists: (p: string) => boolean = 
     }
     if (staleProc) {
       return `图像解码依赖（jimp）解析失败：本进程启动后程序目录被更名/移动（模块路径已悬空），运行中无法修复。` +
-        `请退出后以 step -r <会话id> 恢复会话，新进程从新路径启动即恢复正常。`;
+        `请退出后以 step-code -r <会话id> 恢复会话，新进程从新路径启动即恢复正常。`;
     }
     return `图像解码依赖（jimp）缺失：${msg}。这是环境问题而非图片损坏，请在所用 step 变体目录执行 pnpm install 修复。`;
   }

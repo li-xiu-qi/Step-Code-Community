@@ -50,7 +50,7 @@ One command installs the latest version (a permalink that always resolves to the
 
 ```bash
 npm i -g https://github.com/li-xiu-qi/Step-Code-Community/releases/latest/download/step-code.tgz
-step --version
+step-code --version
 ```
 
 The tarball includes a pre-built `dist/`. `npm i -g <url>` only unpacks it and links `bin.step`—**nothing is compiled on your machine, and no dependencies are fetched.**
@@ -67,7 +67,7 @@ Install directly from the development branch to get the latest code at the momen
 
 ```bash
 npm i -g github:li-xiu-qi/Step-Code-Community#step-code-community
-step --version
+step-code --version
 ```
 
 npm clones the repo, installs build dependencies, and then compiles `dist/` on your machine via the `prepare` hook. The trade-off is speed, and build dependencies remain in the global install directory. Measured on 2026-08-02 with Windows + npm and a local git source: about 1 minute, installing 285 packages.
@@ -150,7 +150,7 @@ npm uninstall -g step-code
 
 ```bash
 cd Step-Code-Community
-pnpm unlink --global   # removes the global step command
+pnpm unlink --global   # removes the global step-code command
 ```
 
 Configuration, session records, and other data live in `~/.step-code/`. The uninstall command does not touch them; delete that directory manually for a full cleanup.
@@ -159,7 +159,7 @@ Configuration, session records, and other data live in `~/.step-code/`. The unin
 
 **`step` command not found**: for npm global installs, check whether the `npm bin -g` directory is on PATH; for source installs, check `pnpm bin --global`. Add the corresponding directory to PATH and restart the terminal.
 
-**Not sure which version is running**: `step --version` outputs something like `0.1.0 (a1b2c3d 2026-08-03T02:46Z)`, where the parenthesized part is the commit and build timestamp at build time. The version number changes once per release cycle, while the build identifier changes on every build—only by combining both can you uniquely identify a specific artifact. A `+dirty` suffix after the commit means the artifact was built from a workspace with uncommitted changes and does not correspond to any commit. If only the version number is present with no parenthesized part, it means git information was unavailable at build time (e.g. built from a tarball).
+**Not sure which version is running**: `step-code --version` outputs something like `0.1.0 (a1b2c3d 2026-08-03T02:46Z)`, where the parenthesized part is the commit and build timestamp at build time. The version number changes once per release cycle, while the build identifier changes on every build—only by combining both can you uniquely identify a specific artifact. A `+dirty` suffix after the commit means the artifact was built from a workspace with uncommitted changes and does not correspond to any commit. If only the version number is present with no parenthesized part, it means git information was unavailable at build time (e.g. built from a tarball).
 
 **`bash` tool reports "no usable shell interpreter" on Windows**: none of Git Bash, WSL, busybox, or PowerShell was detected. Installing [Git for Windows](https://git-scm.com/download/win) is the easiest fix; if it is already installed but in a non-standard location, set the `STEP_SHELL_PATH` environment variable to the absolute path of `bash.exe`.
 

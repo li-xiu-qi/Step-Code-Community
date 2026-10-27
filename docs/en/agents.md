@@ -28,7 +28,7 @@ You do not need to invoke this by hand. Just say something like "spawn sub-agent
 | `run_in_background` | When `true`, the spawn is asynchronous and returns a `task_id` immediately; use `task_output` to retrieve the result |
 | `resume` | A sub-agent session id: continue that session from where it left off, with `prompt` appended as a new instruction to the existing history (no new session is created and the per-session spawn quota is not consumed); the call is refused while the target session is running |
 
-The sub-agent's result string carries its session id — pass that id to `resume` when you need it to keep building on its earlier work. If the summary a sub-agent returns on completion is shorter than 200 characters, one extra turn is appended asking it to expand (at most once), which avoids the "did a lot, reported one sentence" outcome. A sub-agent's full working history is persisted: when it fails or you want to dig into the details, replay it with `step subagents show <id>`, or drill in with the `/agents` command in the interactive UI (lists sub-agents spawned by the current session; see [Session management](./sessions.md#subagent-sessions)).
+The sub-agent's result string carries its session id — pass that id to `resume` when you need it to keep building on its earlier work. If the summary a sub-agent returns on completion is shorter than 200 characters, one extra turn is appended asking it to expand (at most once), which avoids the "did a lot, reported one sentence" outcome. A sub-agent's full working history is persisted: when it fails or you want to dig into the details, replay it with `step-code subagents show <id>`, or drill in with the `/agents` command in the interactive UI (lists sub-agents spawned by the current session; see [Session management](./sessions.md#subagent-sessions)).
 
 ### Custom agent definition format
 
@@ -118,7 +118,7 @@ These types are provided by the built-in registry with no extra configuration. E
 
 ### ACP server mode
 
-`step --acp` starts an ACP (Agent Client Protocol) JSON-RPC stdio server, allowing IDEs or external tools to drive step-code via stdin/stdout.
+`step-code --acp` starts an ACP (Agent Client Protocol) JSON-RPC stdio server, allowing IDEs or external tools to drive step-code via stdin/stdout.
 
 Supported methods:
 

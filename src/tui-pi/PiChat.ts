@@ -943,8 +943,8 @@ export class PiChat {
       const hb = readHeartbeat(diagDir());
       const resumeHint =
         hb !== null && hb.pid === ungraceful.pid
-          ? `死在半路的会话是 ${hb.sessionId}（${hb.cwd}），恢复命令：step -r ${hb.sessionId}`
-          : '恢复命令见退出时提示（step -r <会话id>）。';
+          ? `死在半路的会话是 ${hb.sessionId}（${hb.cwd}），恢复命令：step-code -r ${hb.sessionId}`
+          : '恢复命令见退出时提示（step-code -r <会话id>）。';
       this.push({
         kind: 'note',
         text: `检测到上次运行（pid ${ungraceful.pid}，${when}）未正常退出：没有留下任何退出记录。` +

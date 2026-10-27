@@ -3,7 +3,7 @@
  * 轻量入口：只处理 --help/--version 和两个无头子命令（doctor/export-debug-zip），
  * 其余命令动态加载 cli-app.ts（含完整 agent 栈），避免 --help 时加载整棵模块树。
  *
- * 启动性能：`step --help` 只加载 commander + buildInfo（< 1s），
+ * 启动性能：`step-code --help` 只加载 commander + buildInfo（< 1s），
  * 不再触发 44 个静态 import 的全量模块树求值。
  */
 import { Command } from 'commander';
@@ -14,7 +14,7 @@ program
   .name('step')
   .description('Step Code — 终端编码 agent，由阶跃 Step 系列模型驱动')
   .version(versionLine())
-  // 允许位置参数（用于 `step sessions [list|show|delete] <id>` 子命令检测）
+  // 允许位置参数（用于 `step-code sessions [list|show|delete] <id>` 子命令检测）
   .allowExcessArguments(true)
   .allowUnknownOption(true) // doctor config 的 --test-capabilities 是位置参数，不是 commander 选项
   .option('-p, --print [prompt]', '非交互模式：执行单条指令，流式打印结果后退出。prompt 可省略，从 stdin 读取')
@@ -66,7 +66,7 @@ if (args0 === 'doctor') {
   const { runDoctorConfig } = await import('./config/doctor.js');
   configureLogger({ mode: 'headless' });
   if (program.args[1] !== 'config') {
-    process.stderr.write('usage: step doctor config [path] [--test-capabilities]\n');
+    process.stderr.write('usage: step-code doctor config [path] [--test-capabilities]\n');
     process.exit(1);
   }
   const testCapabilities = program.args.includes('--test-capabilities');

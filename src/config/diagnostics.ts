@@ -1,5 +1,5 @@
 /**
- * config.toml 的结构化诊断：一份检查规则，两个入口（`step doctor config` 与启动自检）共用。
+ * config.toml 的结构化诊断：一份检查规则，两个入口（`step-code doctor config` 与启动自检）共用。
  *
  * 为什么产出结构化 code 而不是成品文案：两个入口的文案要求不同——doctor 是 headless
  * 中文输出（`warn: <描述>`，tests/configDoctor.test.ts 断言该前缀），TUI 必须走 i18n

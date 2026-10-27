@@ -45,7 +45,7 @@ xattr -d com.apple.quarantine step 2>/dev/null || true
 
 ```bash
 npm i -g https://github.com/li-xiu-qi/Step-Code-Community/releases/latest/download/step-code.tgz
-step --version
+step-code --version
 ```
 
 tarball 内含预编译的 `dist/`，`npm i -g <url>` 只解包并链接 `bin.step`，**不在你机器上编译，也不拉依赖**。
@@ -62,7 +62,7 @@ npm i -g https://github.com/li-xiu-qi/Step-Code-Community/releases/download/v0.1
 
 ```bash
 npm i -g github:li-xiu-qi/Step-Code-Community#step-code-community
-step --version
+step-code --version
 ```
 
 npm 会先克隆仓库、安装构建依赖，再通过 `prepare` 钩子在本机编译出 `dist/`。代价是慢，且构建依赖会留在全局安装目录里。实测（2026-08-02，Windows + npm，本地 git 源）：耗时约 1 分钟，装入 285 个包。
@@ -154,7 +154,7 @@ pnpm unlink --global   # 移除全局 step 命令
 
 **`step` 命令找不到**：npm 全局装的话，检查 `npm bin -g` 的目录是否在 PATH 里；源码安装则看 `pnpm bin --global`。把对应目录加入 PATH 后重开终端。
 
-**分不清自己跑的是哪个版本**：`step --version` 的输出形如 `0.1.0 (a1b2c3d 2026-08-03T02:46Z)`，括号里是构建时的 commit 与时间。版本号一个发布周期才动一次，构建标识每次构建都变——这两个信息合起来才能唯一定位一份产物。带 `+dirty` 说明它构建自有未提交改动的工作区，不对应任何一个 commit；只有版本号没有括号，说明构建时拿不到 git 信息（例如从 tarball 构建）。
+**分不清自己跑的是哪个版本**：`step-code --version` 的输出形如 `0.1.0 (a1b2c3d 2026-08-03T02:46Z)`，括号里是构建时的 commit 与时间。版本号一个发布周期才动一次，构建标识每次构建都变——这两个信息合起来才能唯一定位一份产物。带 `+dirty` 说明它构建自有未提交改动的工作区，不对应任何一个 commit；只有版本号没有括号，说明构建时拿不到 git 信息（例如从 tarball 构建）。
 
 **Windows 下 `bash` 工具报错「未找到可用的 shell 解释器」**：说明 Git Bash、WSL、busybox、PowerShell 都没探测到。装 [Git for Windows](https://git-scm.com/download/win) 最省事；已装但在非标准路径时，把 `bash.exe` 绝对路径设到环境变量 `STEP_SHELL_PATH`。
 

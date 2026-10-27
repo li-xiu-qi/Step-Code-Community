@@ -55,7 +55,7 @@ describe('builtin skill 注册', () => {
     const rendered = renderSkillActivation(UPDATE_CONFIG_SKILL, '');
     expect(rendered).toContain('<step-skill-loaded name="update-config" source="builtin">');
     expect(rendered).toContain('变更协议');
-    expect(rendered).toContain('step doctor config');
+    expect(rendered).toContain('step-code doctor config');
   });
 
   it('内置 stepCode skill 提到子 agent 管理四件套与 trace 导出', () => {

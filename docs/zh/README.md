@@ -29,8 +29,8 @@ Step Code 是终端里的编码 agent CLI，由阶跃星辰 Step 系列模型驱
 
 ```bash
 step                    # 进入交互界面
-step -p "指令"          # 非交互执行单条指令
-step --continue         # 续接上次会话
+step-code -p "指令"          # 非交互执行单条指令
+step-code --continue         # 续接上次会话
 ```
 
 交互界面里输入 `/help` 查看全部斜杠命令。

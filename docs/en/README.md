@@ -30,8 +30,8 @@ This guide follows the order you are likely to need things in. If you are new, s
 
 ```bash
 step                    # enter the interactive interface
-step -p "<instruction>" # run a single instruction non-interactively
-step --continue         # resume the previous session
+step-code -p "<instruction>" # run a single instruction non-interactively
+step-code --continue         # resume the previous session
 ```
 
 Type `/help` in the interactive interface to list every slash command.

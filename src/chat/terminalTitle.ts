@@ -32,7 +32,7 @@ export const NO_TERMINAL_TITLE_ENV = 'STEP_CODE_NO_TERMINAL_TITLE';
 const TITLE_MAX_WIDTH = 60;
 
 /** 标题前缀：与其它 CLI 共用 tab 时能分辨来源。 */
-const TITLE_PREFIX = 'step · ';
+const TITLE_PREFIX = 'step-code · ';
 
 /**
  * 是否可以写终端标题。env 与 isTTY 作参数注入（便于单测，也避免模块级读取 process）。

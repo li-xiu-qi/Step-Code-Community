@@ -277,7 +277,7 @@ apiKey 回落链（渠道分支）：渠道 api_key → 渠道 api_key_env → �
 1. 澄清意图：确认用户要改哪个键、改成什么值。键名先查上面第二节的表，猜不到就问。
 2. 改前 Read 原 config.toml 全文。若内容无法解析（TOML 语法已坏），报告现状并停止，绝不覆盖坏文件。
 3. 用 cp 复制出候选副本 config.toml-new，只对副本做 Edit，只动目标键，不原地改、不整体重写、不动无关条目与注释。
-4. 校验副本：执行 step doctor config <副本路径>，退出码非 0 就把错误报给用户并停止，不进入覆盖步骤。
+4. 校验副本：执行 step-code doctor config <副本路径>，退出码非 0 就把错误报给用户并停止，不进入覆盖步骤。
 5. 备份原文件为 config.toml.bak-<yyyyMMdd-HHmmss>（时间戳命名，保留全部历史，绝不覆盖旧备份）。
 6. 用 mv 把校验通过的副本覆盖为 config.toml。
 7. 告知用户生效方式：TUI 内执行 /reload 热生效，或下个会话自动生效。
@@ -295,7 +295,7 @@ apiKey 回落链（渠道分支）：渠道 api_key → 渠道 api_key_env → �
 - 不猜键名：先查第二节内嵌表，表里没有的键不存在（如顶层 api_key、default_yolo 都是臆造键）。
 - 不丢无关条目：只动目标键，其余字段、注释、section 原样保留。
 - 备份不覆盖旧备份：永远用新时间戳。
-- 校验不过不覆盖：step doctor config 退出码非 0 时停止并报告。
+- 校验不过不覆盖：step-code doctor config 退出码非 0 时停止并报告。
 - 密钥优先 api_key_env 间接引用，避免明文落盘；用户坚持明文时提醒风险后照做。
 `;
 

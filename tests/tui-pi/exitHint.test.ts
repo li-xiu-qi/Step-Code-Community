@@ -1,5 +1,5 @@
 /**
- * 退出恢复提示（step -r <id>）的打印条件测试。
+ * 退出恢复提示（step-code -r <id>）的打印条件测试。
  *
  * 背景：hasContent 只看「退出瞬间的 history 是否非空」，/new 之后 history 清空
  * 归 false——用过内容的会话只要 /new 过，退出时恢复提示和 token 汇总就全没了

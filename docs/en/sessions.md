@@ -14,20 +14,20 @@ Every conversation is automatically saved as a snapshot under `~/.step-code/sess
 ## Continuing and resuming
 
 ```bash
-step --continue        # continue the most recent session in the current directory
-step -c -p "continue"  # continue in non-interactive mode
-step --resume          # open the interactive session picker (↑↓ to browse, type to search, Enter to resume)
-step --resume <id>     # resume a specific session directly
-step --session <id>    # same as --resume <id>
+step-code --continue        # continue the most recent session in the current directory
+step-code -c -p "continue"  # continue in non-interactive mode
+step-code --resume          # open the interactive session picker (↑↓ to browse, type to search, Enter to resume)
+step-code --resume <id>     # resume a specific session directly
+step-code --session <id>    # same as --resume <id>
 ```
 
 Headless management:
 
 ```bash
-step sessions list          # list sessions for the current directory
-step sessions show <id>     # view session contents
-step sessions delete <id>   # delete
-step sessions rename <id> <name>   # rename (equivalent to pressing r in the picker)
+step-code sessions list          # list sessions for the current directory
+step-code sessions show <id>     # view session contents
+step-code sessions delete <id>   # delete
+step-code sessions rename <id> <name>   # rename (equivalent to pressing r in the picker)
 ```
 
 Inside the interactive interface: `/resume` without an id opens the interactive session picker, `/resume <id>` switches straight to a specific session, `/sessions` lists sessions read-only, and `/new` starts a new session.
@@ -38,7 +38,7 @@ Inside the interactive interface: `/resume` without an id opens the interactive 
 - **Typing searches incrementally** (matching the title and the first message, space-separated terms combined with AND); Backspace deletes one character at a time.
 - **Enter** resumes the highlighted session, **Esc** cancels.
 - **Delete / Ctrl+D** deletes the highlighted session after a `[y/N]` confirmation (local files, not recoverable); the session currently in use cannot be deleted. The current session is marked as current in the list.
-- **r** renames the highlighted session: enter edit mode, type the new name, and press Enter to confirm (an empty name clears the custom name). Renaming does not refresh the last-used time, so it will not push the session to the top of the list; display precedence is custom name > title > id, and the custom name participates in search. The command line `step sessions rename <id> <name>` is equivalent.
+- **r** renames the highlighted session: enter edit mode, type the new name, and press Enter to confirm (an empty name clears the custom name). Renaming does not refresh the last-used time, so it will not push the session to the top of the list; display precedence is custom name > title > id, and the custom name participates in search. The command line `step-code sessions rename <id> <name>` is equivalent.
 
 ### Session-level state persistence
 
@@ -46,7 +46,7 @@ The following state is saved with the session and read back when you reopen and 
 
 ### Replaying history on resume
 
-When you resume a session (`step -r`, `--continue`, or `/resume` in the interface), the historical conversation is re-rendered into the terminal: user input, assistant replies, thinking blocks, tool calls, and results are laid out in their original order and look the same as a live conversation. Tool calls show the execution status and result from that time; reminder messages injected internally for the model are not displayed.
+When you resume a session (`step-code -r`, `--continue`, or `/resume` in the interface), the historical conversation is re-rendered into the terminal: user input, assistant replies, thinking blocks, tool calls, and results are laid out in their original order and look the same as a live conversation. Tool calls show the execution status and result from that time; reminder messages injected internally for the model are not displayed.
 
 A dual-metric note appears at the bottom, for example "Resumed session X (23 turns · 302 messages)":
 
@@ -69,11 +69,11 @@ The complete raw history is unaffected by compaction: each session also keeps an
 
 ## Review (/reflect)
 
-`/reflect` walks the full conversation history in segments and prints out reusable methodological lessons distilled from it. Run it once when wrapping up a long session to capture how this one got done. The non-interactive equivalent is `step --reflect -c`.
+`/reflect` walks the full conversation history in segments and prints out reusable methodological lessons distilled from it. Run it once when wrapping up a long session to capture how this one got done. The non-interactive equivalent is `step-code --reflect -c`.
 
 ## Export
 
-`/export-debug-zip` or `step export-debug-zip [sessionId]` exports a session debug bundle (zip) for troubleshooting.
+`/export-debug-zip` or `step-code export-debug-zip [sessionId]` exports a session debug bundle (zip) for troubleshooting.
 
 ## Non-interactive output
 
@@ -89,12 +89,12 @@ Every subagent run (spawned via `spawn_agent`) is persisted as its own session u
 Headless management:
 
 ```bash
-step subagents list          # list subagent sessions for this directory (type · status · parent)
-step subagents show <id>     # replay a subagent's full history
-step subagents delete <id>   # delete (refused while the session is running and holds its lock)
+step-code subagents list          # list subagent sessions for this directory (type · status · parent)
+step-code subagents show <id>     # replay a subagent's full history
+step-code subagents delete <id>   # delete (refused while the session is running and holds its lock)
 ```
 
-Inside the TUI, the `/resume` picker shows main sessions only; selecting one resumes that session directly (see the interactive picker section above for details). Sub-agent sessions are managed separately by the `/agents` command: it lists sub-agent sessions spawned from the current session, and selecting one drills into that sub-agent's full history (read-only, current session unchanged). **Note: the drill-in view is read-only — you cannot keep chatting inside a sub-agent session.** To have a sub-agent continue from its earlier work, use the `spawn_agent` tool's `resume` parameter (initiated by the model). Headless access is available via `step subagents list` / `step subagents show <id>`.
+Inside the TUI, the `/resume` picker shows main sessions only; selecting one resumes that session directly (see the interactive picker section above for details). Sub-agent sessions are managed separately by the `/agents` command: it lists sub-agent sessions spawned from the current session, and selecting one drills into that sub-agent's full history (read-only, current session unchanged). **Note: the drill-in view is read-only — you cannot keep chatting inside a sub-agent session.** To have a sub-agent continue from its earlier work, use the `spawn_agent` tool's `resume` parameter (initiated by the model). Headless access is available via `step-code subagents list` / `step-code subagents show <id>`.
 
 **Resuming**: the `spawn_agent` tool accepts `resume=<subagent session id>` to continue from where the session left off — the new instruction is appended as a user message instead of replacing the history. Finished and failed sessions can both be resumed; the only gate is that the target session is not currently running (an active lock yields an explicit refusal). Resuming is not a new spawn and does not consume the per-session spawn quota. Tool results carry the subagent session id so the model can reference it later.
 

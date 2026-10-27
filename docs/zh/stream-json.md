@@ -1,9 +1,9 @@
 # stream-json 事件流
 
-`step -p "..." --output-format stream-json` 会把本次运行的每个事件按**一行一个 JSON 对象**写到 stdout，供外部程序消费。
+`step-code -p "..." --output-format stream-json` 会把本次运行的每个事件按**一行一个 JSON 对象**写到 stdout，供外部程序消费。
 
 ```bash
-step -p "读一下 README 并总结" --output-format stream-json --yolo
+step-code -p "读一下 README 并总结" --output-format stream-json --yolo
 ```
 
 ```json
@@ -12,7 +12,7 @@ step -p "读一下 README 并总结" --output-format stream-json --yolo
 {"type":"tool_end","id":"tu_1","name":"read_file","result":"...","isError":false}
 {"type":"usage","totalTokens":19414,"measuredLength":2,"billedDelta":19414}
 {"type":"turn_done"}
-{"type":"session.resume_hint","session_id":"20260802-abc","command":"step -r 20260802-abc","content":"To resume this session: step -r 20260802-abc"}
+{"type":"session.resume_hint","session_id":"20260802-abc","command":"step-code -r 20260802-abc","content":"To resume this session: step-code -r 20260802-abc"}
 ```
 
 ## 信封契约
@@ -91,7 +91,7 @@ for line in proc.stdout:
 关于 `subagent.end`：
 
 - **一定会到达。** 无论正常完成、被中断、还是内部异常，每个 `subagent.start` 都有对应的 `subagent.end`。可以放心用它做「子 agent 是否还在跑」的判定。
-- `summary` 超过 500 字符会被截断，此时出现 `summary_truncated: true`。完整产出用 `session_id` 取：`step sessions show <session_id>`。
+- `summary` 超过 500 字符会被截断，此时出现 `summary_truncated: true`。完整产出用 `session_id` 取：`step-code sessions show <session_id>`。
 - `tool_uses` 与 `duration_ms` 是该子 agent 的工具调用次数与墙钟耗时。
 
 ### 会话元信息（`session.*`）

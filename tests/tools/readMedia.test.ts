@@ -403,7 +403,7 @@ describe('read_media · classifyJimpError 错误分类', () => {
   it('本模块文件在磁盘上已不存在（目录更名后的旧进程）→ 提示重启恢复会话，而非 pnpm install', () => {
     const msg = classifyJimpError("Cannot find package 'jimp'", () => false);
     expect(msg).toContain('模块路径已悬空');
-    expect(msg).toContain('step -r');
+    expect(msg).toContain('step-code -r');
     expect(msg).not.toContain('pnpm install');
   });
 });

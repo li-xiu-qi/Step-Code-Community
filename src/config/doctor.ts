@@ -1,5 +1,5 @@
 /**
- * 无头（脱离 Ink/TTY）的 `step doctor config <path>` 子命令逻辑。
+ * 无头（脱离 Ink/TTY）的 `step-code doctor config <path>` 子命令逻辑。
  *
  * 用途：配置文件覆盖写入前的独立校验（内置 update-config skill 变更协议的第 4 步），
  * 以及用户自查。只读，不改任何文件；退出码 0 = 通过（可有警告），非 0 = 失败。

@@ -119,7 +119,7 @@ describe('致命水位：在 V8 abort 之前干净退出', () => {
     expect(ctx.criticals).toBe(1);
     expect(ctx.notes).toHaveLength(1);
     expect(ctx.notes[0]).toMatch(/\d+MB \/ 上限 4096MB/);
-    expect(ctx.notes[0]).toContain('step -r');
+    expect(ctx.notes[0]).toContain('step-code -r');
   });
 
   it('致命档优先于 dump：不写快照（几百 MB 的 IO 只会把进程更快推过上限）', () => {

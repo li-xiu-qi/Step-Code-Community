@@ -9,20 +9,20 @@
 ## 续接与恢复
 
 ```bash
-step --continue        # 续接当前目录最近一次会话
-step -c -p "继续"      # 非交互模式下续接
-step --resume          # 打开交互式会话选择器（↑↓ 浏览、打字搜索、Enter 恢复）
-step --resume <id>     # 直接恢复指定会话
-step --session <id>    # 同 --resume <id>
+step-code --continue        # 续接当前目录最近一次会话
+step-code -c -p "继续"      # 非交互模式下续接
+step-code --resume          # 打开交互式会话选择器（↑↓ 浏览、打字搜索、Enter 恢复）
+step-code --resume <id>     # 直接恢复指定会话
+step-code --session <id>    # 同 --resume <id>
 ```
 
 无头管理：
 
 ```bash
-step sessions list          # 列出当前目录的会话
-step sessions show <id>     # 查看会话内容
-step sessions delete <id>   # 删除
-step sessions rename <id> <名字>   # 重命名（等价于选择器里按 r）
+step-code sessions list          # 列出当前目录的会话
+step-code sessions show <id>     # 查看会话内容
+step-code sessions delete <id>   # 删除
+step-code sessions rename <id> <名字>   # 重命名（等价于选择器里按 r）
 ```
 
 交互界面内：`/resume` 不带 id 弹出交互式会话选择器，`/resume <id>` 直切指定会话，`/sessions` 只读列出会话，`/new` 开新会话。
@@ -33,7 +33,7 @@ step sessions rename <id> <名字>   # 重命名（等价于选择器里按 r）
 - 直接**打字即增量搜索**（匹配标题与首条消息，空格分词 AND），Backspace 逐字删。
 - **Enter** 恢复高亮会话，**Esc** 取消。
 - **Delete / Ctrl+D** 删除高亮会话，进入 `[y/N]` 二次确认（本地文件不可逆）；当前正在使用的会话不可删除。列表中当前会话标「当前」。
-- **r** 重命名高亮会话：进入编辑态输入新名字，Enter 确认（空名即清除自定义名）。改名不刷新最近使用时间，不会把会话顶到列表最前；展示优先级为 自定义名 > 标题 > id，自定义名参与搜索。命令行 `step sessions rename <id> <名字>` 等价。
+- **r** 重命名高亮会话：进入编辑态输入新名字，Enter 确认（空名即清除自定义名）。改名不刷新最近使用时间，不会把会话顶到列表最前；展示优先级为 自定义名 > 标题 > id，自定义名参与搜索。命令行 `step-code sessions rename <id> <名字>` 等价。
 
 ### 会话级状态持久化
 
@@ -41,7 +41,7 @@ step sessions rename <id> <名字>   # 重命名（等价于选择器里按 r）
 
 ### 恢复时重放历史内容
 
-恢复会话（`step -r`、`--continue` 或界面内 `/resume`）时，历史对话会重新渲染到终端——用户输入、助手回复、思考块、工具调用与结果都按原顺序铺开，和实时对话看起来一致。工具调用会显示当时的执行状态与结果，模型内部注入的提醒消息不展示。
+恢复会话（`step-code -r`、`--continue` 或界面内 `/resume`）时，历史对话会重新渲染到终端——用户输入、助手回复、思考块、工具调用与结果都按原顺序铺开，和实时对话看起来一致。工具调用会显示当时的执行状态与结果，模型内部注入的提醒消息不展示。
 
 底部会给出双口径提示，例如「已恢复会话 X（23 轮 · 302 条消息）」：
 
@@ -85,11 +85,11 @@ step sessions rename <id> <名字>   # 重命名（等价于选择器里按 r）
 
 ## 回顾（/reflect）
 
-`/reflect` 分段遍历完整对话历史，提炼可复用的方法论经验打印出来。长会话收尾时跑一次，把"这次是怎么做成的"沉淀下来。非交互等价物：`step --reflect -c`。
+`/reflect` 分段遍历完整对话历史，提炼可复用的方法论经验打印出来。长会话收尾时跑一次，把"这次是怎么做成的"沉淀下来。非交互等价物：`step-code --reflect -c`。
 
 ## 导出
 
-`/export-debug-zip` 或 `step export-debug-zip [sessionId]` 导出会话调试包（zip），排查问题时使用。
+`/export-debug-zip` 或 `step-code export-debug-zip [sessionId]` 导出会话调试包（zip），排查问题时使用。
 
 ## 非交互输出
 
@@ -103,7 +103,7 @@ step sessions rename <id> <名字>   # 重命名（等价于选择器里按 r）
 
 **投递**：用 `session_send` 工具，指定目标会话 id 与消息正文。消息落到全局队列（`~/.step-code/sessions/session-queue/`），不按工作目录分桶，跨目录也能投递。
 
-**消费**：目标会话在每次 run 启动的第一步自动 drain 队列——交互模式（`step`）与非交互模式（`step -p`）都会。取出的消息注入为新一轮用户输入，模型据此继续执行。消费是"拉取 + 标记"：取出后标记已消费，不会重复注入；目标会话若一直空闲、无后续 run，消息会等到下次启动或续跑才被消费。
+**消费**：目标会话在每次 run 启动的第一步自动 drain 队列——交互模式（`step`）与非交互模式（`step-code -p`）都会。取出的消息注入为新一轮用户输入，模型据此继续执行。消费是"拉取 + 标记"：取出后标记已消费，不会重复注入；目标会话若一直空闲、无后续 run，消息会等到下次启动或续跑才被消费。
 
 **查看**：`session_inbox` 查看当前会话待收的跨会话消息（不消费）。
 
@@ -116,12 +116,12 @@ step sessions rename <id> <名字>   # 重命名（等价于选择器里按 r）
 无头管理：
 
 ```bash
-step subagents list          # 列出当前目录的子会话（类型 · 状态 · 父会话）
-step subagents show <id>     # 完整回看子 agent 历史
-step subagents delete <id>   # 删除（正在运行、持活跃锁的会被拒绝）
+step-code subagents list          # 列出当前目录的子会话（类型 · 状态 · 父会话）
+step-code subagents show <id>     # 完整回看子 agent 历史
+step-code subagents delete <id>   # 删除（正在运行、持活跃锁的会被拒绝）
 ```
 
-界面内 `/resume` 弹出的选择器只列主会话，选中直接恢复该会话（详见上节交互式选择器说明）。子 agent 会话由 `/agents` 命令独立管理：列出当前会话派生的子 agent 会话，选中可下钻查看该子 agent 的完整历史（只读，不切换当前会话）。**注意：下钻查看是只读的，不能在子 agent 会话里继续对话**——让子 agent 在已有工作基础上继续，走 `spawn_agent` 工具的 `resume` 参数（由模型侧发起）。通过 `step subagents list` / `step subagents show <id>` 可无头访问。
+界面内 `/resume` 弹出的选择器只列主会话，选中直接恢复该会话（详见上节交互式选择器说明）。子 agent 会话由 `/agents` 命令独立管理：列出当前会话派生的子 agent 会话，选中可下钻查看该子 agent 的完整历史（只读，不切换当前会话）。**注意：下钻查看是只读的，不能在子 agent 会话里继续对话**——让子 agent 在已有工作基础上继续，走 `spawn_agent` 工具的 `resume` 参数（由模型侧发起）。通过 `step-code subagents list` / `step-code subagents show <id>` 可无头访问。
 
 **续跑**：`spawn_agent` 工具支持 `resume=<子会话 id>` 参数，从历史断点继续执行——新指令追加为一条 user 消息，不替换已有历史；已完成与失败的子会话都可续跑，唯一限制是目标会话当前没在运行（持活跃锁会被明确拒绝）。resume 不是新派生，不占单会话派生配额。工具返回串里带有子会话 id，模型后续可自行引用续跑。
 

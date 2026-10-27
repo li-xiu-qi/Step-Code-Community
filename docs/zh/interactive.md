@@ -16,7 +16,7 @@ pi-tui 终端界面：顶部欢迎框，中间是会话流（你的输入、模�
 
 工具输出默认折叠为一行摘要（「N 行输出 · Ctrl+O 展开」），定稿入历史后恒为折叠摘要，保证历史紧凑。Ctrl+O 打开全屏查看器：最近的可展开工具输出与思考内容按轮次分组、完整渲染（Markdown/diff 上色/思考斜体），↑↓ 或 `k`/`j` 滚行、PgUp/PgDn 翻屏、←/→ 切轮、Home/`g` 跳顶、End/`G` 跳底、Esc/`q` 或再按 Ctrl+O 关闭；查看器有独立滚动，不影响终端 scrollback。
 
-恢复会话（`step -r` / `/resume`）时，历史对话会重新渲染到终端，和实时看起来一致；长会话默认只重放最近若干轮，更早的在顶部提示已折叠。详见[会话管理](./sessions.md#恢复时重放历史内容)。
+恢复会话（`step-code -r` / `/resume`）时，历史对话会重新渲染到终端，和实时看起来一致；长会话默认只重放最近若干轮，更早的在顶部提示已折叠。详见[会话管理](./sessions.md#恢复时重放历史内容)。
 
 ## 斜杠命令
 
@@ -173,7 +173,7 @@ manual / auto 下需要确认时弹出竖向编号列表，四个选项：
 
 ## 会话选择器
 
-`/resume` 无参（或命令行 `step -r` 不带 id）打开交互式会话选择器：↑↓ 移动（**循环回卷**，与渠道管理面板到头停住的 ↑↓ 不同；分页翻页看完全部会话）、直接打字模糊搜索、Enter 恢复、Esc 取消，Delete/Ctrl+D 删除高亮会话（`[y/N]` 二次确认，当前会话不可删），按 r 重命名高亮会话（改名不影响排序，命令行 `step sessions rename <id> <名字>` 等价）。`/resume <id>` 文本直切。`/sessions` 是 `/resume` 的别名，行为完全相同；只读列出会话走命令行 `step sessions list`。当前目录没有历史会话时只提示、不开选择器。权限模式与模型随会话持久化，恢复时读回。详见[会话管理](./sessions.md#交互式会话选择器命令行--r-与界面内-resume-通用)。
+`/resume` 无参（或命令行 `step-code -r` 不带 id）打开交互式会话选择器：↑↓ 移动（**循环回卷**，与渠道管理面板到头停住的 ↑↓ 不同；分页翻页看完全部会话）、直接打字模糊搜索、Enter 恢复、Esc 取消，Delete/Ctrl+D 删除高亮会话（`[y/N]` 二次确认，当前会话不可删），按 r 重命名高亮会话（改名不影响排序，命令行 `step-code sessions rename <id> <名字>` 等价）。`/resume <id>` 文本直切。`/sessions` 是 `/resume` 的别名，行为完全相同；只读列出会话走命令行 `step-code sessions list`。当前目录没有历史会话时只提示、不开选择器。权限模式与模型随会话持久化，恢复时读回。详见[会话管理](./sessions.md#交互式会话选择器命令行--r-与界面内-resume-通用)。
 
 ## 切换模型
 
@@ -184,7 +184,7 @@ manual / auto 下需要确认时弹出竖向编号列表，四个选项：
 - 模型正在工作（busy/streaming）时拒绝切换并提示。
 - 当前会话已有历史时，选择器顶部会警告「切换模型会使已有 prompt cache 失效，`/new` 开新会话可避免额外 token 消耗」。
 
-`/model <别名>` 是文本直切，跳过选择器。两种方式确认后都会按别名的合并配置重建 provider，上下文窗口随之跟随，状态栏显示新模型的显示名。确认后会把 config.toml 顶层 `model` 一并更新为所选别名，下次启动新会话即沿用（`step --model` 命令行覆盖与 `/resume` 恢复旧会话两种情况不写回）。
+`/model <别名>` 是文本直切，跳过选择器。两种方式确认后都会按别名的合并配置重建 provider，上下文窗口随之跟随，状态栏显示新模型的显示名。确认后会把 config.toml 顶层 `model` 一并更新为所选别名，下次启动新会话即沿用（`step-code --model` 命令行覆盖与 `/resume` 恢复旧会话两种情况不写回）。
 
 **Shift+Enter 仅本会话切换**：在选择器里按 Shift+Enter 确认模型切换但不写回 config.toml——适合「这轮试试别的模型，下次还是用原来的」的场景。Enter 是「切换并设为默认」，Shift+Enter 是「切换仅本会话」。
 
@@ -214,7 +214,7 @@ manual / auto 下需要确认时弹出竖向编号列表，四个选项：
 
 ### 删除渠道
 
-面板里 D 删除的是 config.toml 里的自定义渠道：确认后把 `[providers.<id>]` 整节与它名下的全部 `[models.<别名>]` 整节一并摘除（顶层 `model` 指针若指向被删别名也一并清除），写前自动时间戳备份、写完自动 `step doctor config` 校验、失败回滚。删除当前生效渠道时本会话的 provider 实例在内存中继续可用，重启或切换后失效；删除后 `/reload` 让配置全面生效。
+面板里 D 删除的是 config.toml 里的自定义渠道：确认后把 `[providers.<id>]` 整节与它名下的全部 `[models.<别名>]` 整节一并摘除（顶层 `model` 指针若指向被删别名也一并清除），写前自动时间戳备份、写完自动 `step-code doctor config` 校验、失败回滚。删除当前生效渠道时本会话的 provider 实例在内存中继续可用，重启或切换后失效；删除后 `/reload` 让配置全面生效。
 
 ### 新增渠道（/provider add）
 
@@ -248,18 +248,18 @@ Step 3.x 系列是恒思考模型，响应会带思考过程。TUI 无条件渲�
 
 ```bash
 step                          # 交互式（进 TUI 界面，默认 manual 权限）
-step -p "在 src 下找出所有 TODO"          # 非交互：执行单条指令后退出
-step --yolo -p "重命名 a.txt 为 b.txt"    # --yolo 全放行 / --auto 写放行（非交互写操作需要其一）
-step --continue -p "继续上次的任务"       # 会话续接（-c）
-step --session <id>                     # 恢复指定会话
-step --resume                           # 打开交互式会话选择器（-r [id]）
-step --provider anthropic -p "..."      # 切换服务商预设
-step --model step-3.7-flash -p "..."   # 指定模型
+step-code -p "在 src 下找出所有 TODO"          # 非交互：执行单条指令后退出
+step-code --yolo -p "重命名 a.txt 为 b.txt"    # --yolo 全放行 / --auto 写放行（非交互写操作需要其一）
+step-code --continue -p "继续上次的任务"       # 会话续接（-c）
+step-code --session <id>                     # 恢复指定会话
+step-code --resume                           # 打开交互式会话选择器（-r [id]）
+step-code --provider anthropic -p "..."      # 切换服务商预设
+step-code --model step-3.7-flash -p "..."   # 指定模型
 step -C /path/to/project -p "..."       # 指定工作目录
-step --output-format stream-json -p "..."   # 每事件一行 JSON
-step sessions list                      # 无头子命令：会话管理
-step doctor config [path]               # 校验 config.toml（退出码 0/1）
-step export-debug-zip [sessionId]       # 导出调试包
+step-code --output-format stream-json -p "..."   # 每事件一行 JSON
+step-code sessions list                      # 无头子命令：会话管理
+step-code doctor config [path]               # 校验 config.toml（退出码 0/1）
+step-code export-debug-zip [sessionId]       # 导出调试包
 ```
 
 | 参数 | 说明 |
@@ -276,7 +276,7 @@ step export-debug-zip [sessionId]       # 导出调试包
 | `--reflect` | 非交互跑 /reflect（配合 `-c` / `--session`） |
 | `-V, --version` / `-h, --help` | 版本号 / 帮助 |
 
-无头子命令（不进 TUI）：`step sessions list`、`step sessions show <id>`、`step sessions delete <id>`、`step sessions rename <id> <名字>`、`step doctor config [path]`、`step export-debug-zip [sessionId]`。`doctor config` 与 `export-debug-zip` 都在读配置之前执行，配置坏了也能校验、也能导出调试包。
+无头子命令（不进 TUI）：`step-code sessions list`、`step-code sessions show <id>`、`step-code sessions delete <id>`、`step-code sessions rename <id> <名字>`、`step-code doctor config [path]`、`step-code export-debug-zip [sessionId]`。`doctor config` 与 `export-debug-zip` 都在读配置之前执行，配置坏了也能校验、也能导出调试包。
 
 ## 自定义命令与 review 规则
 
@@ -285,11 +285,11 @@ step export-debug-zip [sessionId]       # 导出调试包
 ## 非交互模式
 
 ```bash
-step -p "指令"                        # 执行完退出，结果走 stdout，工具/错误走 stderr
-step --yolo -p "重命名 a.txt 为 b.txt"
-step -p --output-format stream-json "..."   # 每事件一行 JSON，供程序消费
+step-code -p "指令"                        # 执行完退出，结果走 stdout，工具/错误走 stderr
+step-code --yolo -p "重命名 a.txt 为 b.txt"
+step-code -p --output-format stream-json "..."   # 每事件一行 JSON，供程序消费
 ```
 
-非交互模式可进管道：`step -p "总结这个文件" < README.md`，assistant 输出在 stdout，可直接接下游命令。
+非交互模式可进管道：`step-code -p "总结这个文件" < README.md`，assistant 输出在 stdout，可直接接下游命令。
 
 要用程序消费运行过程（事件信封、全部事件类型、版本兼容规则），见 [stream-json 事件流](./stream-json.md)。

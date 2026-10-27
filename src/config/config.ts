@@ -724,7 +724,7 @@ export class TomlParseError extends Error {
     super(
       `配置文件解析失败：${tomlPath}\n  ${detail}\n` +
         `  该文件未生效，为避免用一份你没写过的配置运行，已停止启动。\n` +
-        `  修完可用 step doctor config 校验；若要暂时忽略它以默认配置启动，设 ${ignoreEnv}=1。`,
+        `  修完可用 step-code doctor config 校验；若要暂时忽略它以默认配置启动，设 ${ignoreEnv}=1。`,
     );
     this.name = 'TomlParseError';
     this.detail = detail;
